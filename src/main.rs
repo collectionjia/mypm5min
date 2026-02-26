@@ -307,17 +307,6 @@ async fn main() -> Result<()> {
     info!("✅ 所有组件初始化完成，认证验证通过");
 
 
-    // RPC 健康检查组件（端点探测、熔断、指标）
-    let rpc_cfg = tracing_checks::CheckConfig::builder()
-        .timeout(Duration::from_secs(5))
-        .endpoint("https://clob.polymarket.com")
-        .build();
-    let _tracing_checkser = tracing_checks::RpcChecker::new(rpc_cfg);
-    let _rpc_circuit = tracing_checks::CircuitBreaker::new();
-    let _rpc_metrics = tracing_checks::Metrics::new();
-    let _ = _tracing_checkser.validate_endpoint("https://clob.polymarket.com");
-    let _ = _tracing_checkser.validate_endpoint("https://gamma-api.polymarket.com");
-
     // 创建仓位平衡器
     let position_balancer = Arc::new(PositionBalancer::new(
         clob_client.clone(),
@@ -410,16 +399,6 @@ async fn main() -> Result<()> {
         if markets.is_empty() {
             warn!("未找到任何市场，跳过当前窗口");
             continue;
-        }
-
-        // RPC 端点健康检查（主循环前批量探测）
-        let _ep_validator = tracing_checks::EndpointValidator::new();
-        let _ = _ep_validator.normalize("https://clob.polymarket.com");
-        let _status = _tracing_checkser.perform_health_check_sync("https://clob.polymarket.com");
-        let _ = _rpc_circuit.status_allows_request(_status);
-        if !_rpc_circuit.is_open() {
-            _rpc_circuit.record_success();
-            _rpc_metrics.record_check(true);
         }
 
         // 新一轮开始：重置风险敞口，使本轮从 0 敞口重新累计
