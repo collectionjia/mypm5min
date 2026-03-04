@@ -598,6 +598,9 @@ async fn main() -> Result<()> {
                                 } else {
                                     market_title.to_string()
                                 };
+                                let now_countdown = Utc::now();
+                                let sec_to_end = (window_end - now_countdown).num_seconds();
+                                let countdown_active = sec_to_end <= 60 && sec_to_end >= 50;
 
                                 // 倒计时策略：在距窗口结束 60-50 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.98则跳过
                                 {
@@ -645,6 +648,9 @@ async fn main() -> Result<()> {
                                             }
                                         }
                                     }
+                                }
+                                if countdown_active {
+                                    continue;
                                 }
 
                                 let (prefix, spread_info) = total_ask_price
