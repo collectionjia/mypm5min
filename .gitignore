@@ -1,0 +1,15 @@
+# Build artifacts
+/target/
+
+# IDE and OS junk
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets and local config
+.env
+license.key
+
+# Logs
+*.log
+bot.log

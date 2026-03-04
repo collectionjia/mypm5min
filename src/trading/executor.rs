@@ -126,6 +126,32 @@ impl TradingExecutor {
             .map_err(|e| anyhow::anyhow!("卖出订单提交失败: {}", e))
     }
 
+    /// 以指定价格下 GTC 买单（用于策略性单边下单）
+    pub async fn buy_at_price(
+        &self,
+        token_id: U256,
+        price: Decimal,
+        size: Decimal,
+    ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
+        let signer = LocalSigner::from_str(&self.private_key)?
+            .with_chain_id(Some(POLYGON));
+        let order = self
+            .client
+            .limit_order()
+            .token_id(token_id)
+            .side(Side::Buy)
+            .price(price)
+            .size(size)
+            .order_type(OrderType::GTC)
+            .build()
+            .await?;
+        let signed = self.client.sign(&signer, order).await?;
+        self.client
+            .post_order(signed)
+            .await
+            .map_err(|e| anyhow::anyhow!("买入订单提交失败: {}", e))
+    }
+
     /// 按方向取滑点：仅下降(↓)用 second，上涨(↑)和持平(−/空)用 first
     fn slippage_for_direction(&self, dir: &str) -> Decimal {
         if dir == "↓" {

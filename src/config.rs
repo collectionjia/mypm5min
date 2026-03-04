@@ -66,6 +66,14 @@ pub struct Config {
     pub wind_down_before_window_end_minutes: u64,
     /// 收尾时单腿卖出的限价单价格（尽量快速成交），默认0.01
     pub wind_down_sell_price: f64,
+
+    /// AI 预测配置
+    pub ai_api_url: String, // AI 接口地址
+    pub ai_api_key: String, // AI API Key
+    pub ai_model: String,   // AI 模型名称
+    pub ai_prompt_template: String, // 自定义 Prompt 模板（可选）
+    pub ai_confidence_threshold: f64, // 最小置信度阈值（0.0-1.0）
+    pub ai_check_interval_secs: u64, // AI 检查间隔（秒）
 }
 
 impl Config {
@@ -166,6 +174,24 @@ impl Config {
                 .unwrap_or_else(|_| "0.01".to_string())
                 .parse()
                 .unwrap_or(0.01), // 默认0.01
+            
+            // AI 配置
+            ai_api_url: env::var("AI_API_URL")
+                .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string()),
+            ai_api_key: env::var("AI_API_KEY")
+                .unwrap_or_else(|_| "".to_string()),
+            ai_model: env::var("AI_MODEL")
+                .unwrap_or_else(|_| "gpt-4-turbo".to_string()),
+            ai_prompt_template: env::var("AI_PROMPT_TEMPLATE")
+                .unwrap_or_else(|_| "".to_string()),
+            ai_confidence_threshold: env::var("AI_CONFIDENCE_THRESHOLD")
+                .unwrap_or_else(|_| "0.7".to_string())
+                .parse()
+                .unwrap_or(0.7),
+            ai_check_interval_secs: env::var("AI_CHECK_INTERVAL_SECS")
+                .unwrap_or_else(|_| "30".to_string())
+                .parse()
+                .unwrap_or(30),
         })
     }
 }

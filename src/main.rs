@@ -456,6 +456,8 @@ async fn main() -> Result<()> {
 
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
+        // 倒计时策略：每个市场仅投注一次的标记
+        let one_dollar_attempted: DashMap<B256, bool> = DashMap::new();
 
         // 监控订单簿更新
         loop {
@@ -596,6 +598,54 @@ async fn main() -> Result<()> {
                                 } else {
                                     market_title.to_string()
                                 };
+
+                                // 倒计时策略：在距窗口结束 60-50 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.98则跳过
+                                {
+                                    let now = Utc::now();
+                                    let seconds_until_end = (window_end - now).num_seconds();
+                                    if seconds_until_end <= 60 && seconds_until_end >= 50 {
+                                        if one_dollar_attempted.get(&market_id).is_none() {
+                                            if let (Some((y_price, y_size)), Some((n_price, n_size))) = (yes_best_ask, no_best_ask) {
+                                                if y_price >= dec!(0.98) || n_price >= dec!(0.98) {
+                                                    debug!("⏸️ 价格>=0.98，倒计时策略跳过 | 市场:{}", market_display);
+                                                    one_dollar_attempted.insert(market_id, true);
+                                                } else {
+                                                    // 选择较大的一边
+                                                    let (chosen_token, chosen_price, side_str) = if y_price >= n_price {
+                                                        (pair.yes_book.asset_id, y_price, "YES")
+                                                    } else {
+                                                        (pair.no_book.asset_id, n_price, "NO")
+                                                    };
+                                                    // 计算下单份额：1 / 价格，向下取两位
+                                                    let mut qty = (dec!(1.0) / chosen_price) * dec!(100.0);
+                                                    qty = qty.floor() / dec!(100.0);
+                                                    if qty < dec!(0.01) {
+                                                        debug!("⏸️ 份额过小，倒计时策略跳过 | 市场:{} | 价格:{:.4}", market_display, chosen_price);
+                                                        one_dollar_attempted.insert(market_id, true);
+                                                    } else {
+                                                        // 仅执行一次尝试
+                                                        one_dollar_attempted.insert(market_id, true);
+                                                        info!("⏱️ 倒计时策略下单 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}", market_display, side_str, chosen_price, qty);
+                                                        let executor_clone = executor.clone();
+                                                        let pt = _risk_manager.position_tracker();
+                                                        tokio::spawn(async move {
+                                                            match executor_clone.buy_at_price(chosen_token, chosen_price, qty).await {
+                                                                Ok(resp) => {
+                                                                    info!("✅ 倒计时策略下单成功 | tx={}", resp.transaction_hash);
+                                                                    pt.update_exposure_cost(chosen_token, chosen_price, qty);
+                                                                    pt.update_position(chosen_token, qty);
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!("❌ 倒计时策略下单失败: {}", e);
+                                                                }
+                                                            }
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
 
                                 let (prefix, spread_info) = total_ask_price
                                     .map(|t| {
@@ -895,4 +945,3 @@ async fn main() -> Result<()> {
         info!("当前窗口监控结束，刷新市场进入下一轮");
     }
 }
-
