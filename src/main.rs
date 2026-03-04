@@ -653,6 +653,15 @@ async fn main() -> Result<()> {
                                     continue;
                                 }
 
+                                // 计算订单总量（Ask + Bid）
+                                let yes_ask_vol: Decimal = pair.yes_book.asks.iter().map(|o| o.size).sum();
+                                let yes_bid_vol: Decimal = pair.yes_book.bids.iter().map(|o| o.size).sum();
+                                let yes_total_vol = yes_ask_vol + yes_bid_vol;
+
+                                let no_ask_vol: Decimal = pair.no_book.asks.iter().map(|o| o.size).sum();
+                                let no_bid_vol: Decimal = pair.no_book.bids.iter().map(|o| o.size).sum();
+                                let no_total_vol = no_ask_vol + no_bid_vol;
+
                                 let (prefix, spread_info) = total_ask_price
                                     .map(|t| {
                                         if t < dec!(1.0) {
@@ -686,9 +695,12 @@ async fn main() -> Result<()> {
                                     .unwrap_or_else(|| "No:无".to_string());
 
                                 info!(
-                                    "{} {} | {} | {} | {}",
+                                    "{} {} | 倒计时:{}s | Yes总量:{:.2} | No总量:{:.2} | {} | {} | {}",
                                     prefix,
                                     market_display,
+                                    sec_to_end,
+                                    yes_total_vol,
+                                    no_total_vol,
                                     yes_info,
                                     no_info,
                                     spread_info
