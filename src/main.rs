@@ -602,57 +602,6 @@ async fn main() -> Result<()> {
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
                                 let countdown_active = sec_to_end <= 60 && sec_to_end >= 50;
 
-                                // 倒计时策略：在距窗口结束 60-50 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.98则跳过
-                                {
-                                    let now = Utc::now();
-                                    let seconds_until_end = (window_end - now).num_seconds();
-                                    if seconds_until_end <= 60 && seconds_until_end >= 50 {
-                                        if one_dollar_attempted.get(&market_id).is_none() {
-                                            if let (Some((y_price, y_size)), Some((n_price, n_size))) = (yes_best_ask, no_best_ask) {
-                                                if y_price >= dec!(0.98) || n_price >= dec!(0.98) {
-                                                    debug!("⏸️ 价格>=0.98，倒计时策略跳过 | 市场:{}", market_display);
-                                                    one_dollar_attempted.insert(market_id, true);
-                                                } else {
-                                                    // 选择较大的一边
-                                                    let (chosen_token, chosen_price, side_str) = if y_price >= n_price {
-                                                        (pair.yes_book.asset_id, y_price, "YES")
-                                                    } else {
-                                                        (pair.no_book.asset_id, n_price, "NO")
-                                                    };
-                                                    // 计算下单份额：1 / 价格，向下取两位
-                                                    let mut qty = (dec!(1.0) / chosen_price) * dec!(100.0);
-                                                    qty = qty.floor() / dec!(100.0);
-                                                    if qty < dec!(0.01) {
-                                                        debug!("⏸️ 份额过小，倒计时策略跳过 | 市场:{} | 价格:{:.4}", market_display, chosen_price);
-                                                        one_dollar_attempted.insert(market_id, true);
-                                                    } else {
-                                                        // 仅执行一次尝试
-                                                        one_dollar_attempted.insert(market_id, true);
-                                                        info!("⏱️ 倒计时策略下单 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}", market_display, side_str, chosen_price, qty);
-                                                        let executor_clone = executor.clone();
-                                                        let pt = _risk_manager.position_tracker();
-                                                        tokio::spawn(async move {
-                                                            match executor_clone.buy_at_price(chosen_token, chosen_price, qty).await {
-                                                                Ok(resp) => {
-                                                                    info!("✅ 倒计时策略下单成功 | tx={}", resp.transaction_hash);
-                                                                    pt.update_exposure_cost(chosen_token, chosen_price, qty);
-                                                                    pt.update_position(chosen_token, qty);
-                                                                }
-                                                                Err(e) => {
-                                                                    warn!("❌ 倒计时策略下单失败: {}", e);
-                                                                }
-                                                            }
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                if countdown_active {
-                                    continue;
-                                }
-
                                 // 计算订单总量（Ask + Bid）
                                 let yes_ask_vol: Decimal = pair.yes_book.asks.iter().map(|o| o.size).sum();
                                 let yes_bid_vol: Decimal = pair.yes_book.bids.iter().map(|o| o.size).sum();
@@ -661,6 +610,67 @@ async fn main() -> Result<()> {
                                 let no_ask_vol: Decimal = pair.no_book.asks.iter().map(|o| o.size).sum();
                                 let no_bid_vol: Decimal = pair.no_book.bids.iter().map(|o| o.size).sum();
                                 let no_total_vol = no_ask_vol + no_bid_vol;
+
+                                // 倒计时策略：在距窗口结束 60-50 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.98则跳过
+                                {
+                                    if countdown_active {
+                                        if one_dollar_attempted.get(&market_id).is_none() {
+                                            if let (Some((y_price, _)), Some((n_price, _))) = (yes_best_ask, no_best_ask) {
+                                                if y_price >= dec!(0.98) || n_price >= dec!(0.98) {
+                                                    debug!("⏸️ 价格>=0.98，倒计时策略跳过 | 市场:{}", market_display);
+                                                    // 不标记已尝试，允许重试
+                                                } else {
+                                                    // 选择价格较大的一边
+                                                    let (chosen_token, chosen_price, side_str, is_yes) = if y_price >= n_price {
+                                                        (pair.yes_book.asset_id, y_price, "YES", true)
+                                                    } else {
+                                                        (pair.no_book.asset_id, n_price, "NO", false)
+                                                    };
+                                                    
+                                                    // 检查数量是否也偏大（量价齐升）
+                                                    let volume_condition_met = if is_yes {
+                                                        yes_total_vol > no_total_vol
+                                                    } else {
+                                                        no_total_vol > yes_total_vol
+                                                    };
+
+                                                    if !volume_condition_met {
+                                                        debug!("⏸️ 量价不匹配（价格大但数量小），倒计时策略跳过 | 市场:{} | 方向:{} | YesVol:{:.0} | NoVol:{:.0}", 
+                                                            market_display, side_str, yes_total_vol, no_total_vol);
+                                                        // 不标记已尝试，允许重试
+                                                    } else {
+                                                        // 计算下单份额：1 / 价格，向下取两位
+                                                        let mut qty = (dec!(1.0) / chosen_price) * dec!(100.0);
+                                                        qty = qty.floor() / dec!(100.0);
+                                                        if qty < dec!(0.01) {
+                                                            debug!("⏸️ 份额过小，倒计时策略跳过 | 市场:{} | 价格:{:.4}", market_display, chosen_price);
+                                                            // 不标记已尝试，允许重试
+                                                        } else {
+                                                            // 仅执行一次尝试
+                                                            one_dollar_attempted.insert(market_id, true);
+                                                            info!("⏱️ 倒计时策略下单 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2} | YesVol:{:.0} | NoVol:{:.0}", 
+                                                                market_display, side_str, chosen_price, qty, yes_total_vol, no_total_vol);
+                                                            let executor_clone = executor.clone();
+                                                            let pt = _risk_manager.position_tracker();
+                                                            tokio::spawn(async move {
+                                                                match executor_clone.buy_at_price(chosen_token, chosen_price, qty).await {
+                                                                    Ok(resp) => {
+                                                                        info!("✅ 倒计时策略下单成功 | order_id={}", resp.order_id);
+                                                                        pt.update_exposure_cost(chosen_token, chosen_price, qty);
+                                                                        pt.update_position(chosen_token, qty);
+                                                                    }
+                                                                    Err(e) => {
+                                                                        warn!("❌ 倒计时策略下单失败: {}", e);
+                                                                    }
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
 
                                 let (prefix, spread_info) = total_ask_price
                                     .map(|t| {
@@ -705,6 +715,10 @@ async fn main() -> Result<()> {
                                     no_info,
                                     spread_info
                                 );
+
+                                if countdown_active {
+                                    continue;
+                                }
                                 
                                 // 保留原有的结构化日志用于调试（可选）
                                 debug!(
