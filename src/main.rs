@@ -92,6 +92,7 @@ async fn run_merge_task(
     private_key: String,
     position_tracker: Arc<PositionTracker>,
     wind_down_in_progress: Arc<AtomicBool>,
+    countdown_in_progress: Arc<AtomicBool>,
 ) {
     let interval = Duration::from_secs(interval_minutes * 60);
     /// 每笔 merge 之间间隔，降低 RPC  bursts
@@ -105,7 +106,7 @@ async fn run_merge_task(
     sleep(INITIAL_DELAY).await;
 
     loop {
-        if wind_down_in_progress.load(Ordering::Relaxed) {
+        if wind_down_in_progress.load(Ordering::Relaxed) || countdown_in_progress.load(Ordering::Relaxed) {
             info!("收尾进行中，本轮回 merge 跳过");
             sleep(interval).await;
             continue;
@@ -361,6 +362,7 @@ async fn main() -> Result<()> {
 
     // 收尾进行中标志：定时 merge 会检查并跳过，避免与收尾 merge 竞争
     let wind_down_in_progress = Arc::new(AtomicBool::new(false));
+    let countdown_in_progress = Arc::new(AtomicBool::new(false));
 
     // 两次套利交易之间的最小间隔
     const MIN_TRADE_INTERVAL: Duration = Duration::from_secs(3);
@@ -374,7 +376,7 @@ async fn main() -> Result<()> {
             let position_tracker = _risk_manager.position_tracker().clone();
             let wind_down_flag = wind_down_in_progress.clone();
             tokio::spawn(async move {
-                run_merge_task(merge_interval, proxy, private_key, position_tracker, wind_down_flag).await;
+                run_merge_task(merge_interval, proxy, private_key, position_tracker, wind_down_flag, countdown_in_progress.clone()).await;
             });
             info!(
                 interval_minutes = merge_interval,
@@ -687,7 +689,8 @@ async fn main() -> Result<()> {
                                 };
                                 let now_countdown = Utc::now();
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
-                                let countdown_active = sec_to_end <= 10 && sec_to_end >= 5;
+            let countdown_active = sec_to_end <= 10 && sec_to_end >= 5;
+            countdown_in_progress.store(countdown_active, Ordering::Relaxed);
                                 let sec_to_end_nonneg = sec_to_end.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
                                 let countdown_seconds = sec_to_end_nonneg % 60;
@@ -1081,8 +1084,10 @@ async fn main() -> Result<()> {
                 _ = async {
                     if let Some(ref mut timer) = balance_timer {
                         timer.tick().await;
-                        if let Err(e) = position_balancer.check_and_balance_positions(&market_token_map).await {
-                            warn!(error = %e, "仓位平衡检查失败");
+                        if !countdown_in_progress.load(Ordering::Relaxed) {
+                            if let Err(e) = position_balancer.check_and_balance_positions(&market_token_map).await {
+                                warn!(error = %e, "仓位平衡检查失败");
+                            }
                         }
                     } else {
                         futures::future::pending::<()>().await;
