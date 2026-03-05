@@ -21,6 +21,10 @@ impl PositionTracker {
         }
     }
 
+    pub fn get_position(&self, token_id: U256) -> Decimal {
+        self.positions.get(&token_id).map(|v| *v).unwrap_or(dec!(0))
+    }
+
     pub fn update_position(&self, token_id: U256, delta: Decimal) {
         trace!("update_position: 开始 | token_id:{} | delta:{}", token_id, delta);
         

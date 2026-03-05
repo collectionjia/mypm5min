@@ -461,8 +461,8 @@ async fn main() -> Result<()> {
 
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
-        // 倒计时策略：每个市场仅投注一次的标记
-        let one_dollar_attempted: DashMap<B256, bool> = DashMap::new();
+        // 倒计时策略：每个市场仅投注一次的标记，记录 (token_id, entry_price, is_active)
+        let one_dollar_attempted: DashMap<B256, (U256, Decimal, bool)> = DashMap::new();
 
         // 监控订单簿更新
         loop {
@@ -619,10 +619,61 @@ async fn main() -> Result<()> {
                                 let no_bid_vol: Decimal = pair.no_book.bids.iter().map(|o| o.size).sum();
                                 let no_total_vol = no_ask_vol + no_bid_vol;
 
-                                // 倒计时策略：在距窗口结束 30-20 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.98则跳过
+                                // 倒计时策略：在距窗口结束 10-5 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.99则跳过
                                 {
+                                    // 检查止损：如果已有持仓且亏损超过 10%
+                                    if let Some(mut entry) = one_dollar_attempted.get_mut(&market_id) {
+                                        let (token_id, entry_price, is_active) = *entry;
+                                        if is_active {
+                                            // 寻找当前卖出价（对手买单最高价）
+                                            // 假设 SDK 的 bids 是按价格降序排列（最佳买单在 first）
+                                            let best_bid = if token_id == pair.yes_book.asset_id {
+                                                pair.yes_book.bids.first().map(|b| b.price)
+                                            } else {
+                                                pair.no_book.bids.first().map(|b| b.price)
+                                            };
+
+                                            if let Some(bid_price) = best_bid {
+                                                // 如果当前卖出价 <= 入场价 * 0.9，触发止损
+                                                if bid_price <= entry_price * dec!(0.9) {
+                                                    let loss_pct = (dec!(1.0) - bid_price / entry_price) * dec!(100.0);
+                                                    info!("🛑 倒计时策略触发止损 | 市场:{} | 当前卖价:{:.4} | 入场价:{:.4} | 亏损:{:.2}%", 
+                                                        market_display, bid_price, entry_price, loss_pct);
+                                                    
+                                                    // 标记为非活跃（已触发止损），避免重复触发
+                                                    entry.2 = false;
+
+                                                    // 执行卖出
+                                                    let executor_clone = executor.clone();
+                                                    let pt = _risk_manager.position_tracker();
+                                                    // 假设卖出全部该 token 持仓
+                                                    // 获取当前持仓数量
+                                                    let current_pos = pt.get_position(token_id);
+                                                    if current_pos > dec!(0) {
+                                                        tokio::spawn(async move {
+                                                            // 使用市价卖出（实际上是用卖一价去吃单，或者挂单在买一价）
+                                                            // 为了快速成交，使用 bid_price
+                                                            match executor_clone.sell_at_price(token_id, bid_price, current_pos).await {
+                                                                Ok(resp) => {
+                                                                    info!("✅ 倒计时策略止损卖出成功 | order_id={}", resp.order_id);
+                                                                    pt.update_exposure_cost(token_id, bid_price, -current_pos);
+                                                                    pt.update_position(token_id, -current_pos);
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!("❌ 倒计时策略止损卖出失败: {}", e);
+                                                                }
+                                                            }
+                                                        });
+                                                    } else {
+                                                        warn!("倒计时策略止损触发但持仓为0 | token_id={}", token_id);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     if countdown_active {
-                                        if one_dollar_attempted.get(&market_id).is_none() {
+                                        if !one_dollar_attempted.contains_key(&market_id) {
                                             if let (Some((y_price, _)), Some((n_price, _))) = (yes_best_ask, no_best_ask) {
                                                 if y_price >= dec!(0.99) || n_price >= dec!(0.99) {
                                                     debug!("⏸️ 价格>=0.99，倒计时策略跳过 | 市场:{}", market_display);
@@ -653,7 +704,7 @@ async fn main() -> Result<()> {
                                                             qty = dec!(5.0);
                                                         }
 
-                                                        one_dollar_attempted.insert(market_id, true);
+                                                        one_dollar_attempted.insert(market_id, (chosen_token, chosen_price, true));
                                                         info!("⏱️ 倒计时策略下单 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2} | YesVol:{:.0} | NoVol:{:.0}", 
                                                             market_display, side_str, chosen_price, qty, yes_total_vol, no_total_vol);
                                                         let executor_clone = executor.clone();
