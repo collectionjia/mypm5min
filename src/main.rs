@@ -605,7 +605,7 @@ async fn main() -> Result<()> {
                                 };
                                 let now_countdown = Utc::now();
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
-                                let countdown_active = sec_to_end <= 30 && sec_to_end >= 20;
+                                let countdown_active = sec_to_end <= 20 && sec_to_end >= 10;
                                 let sec_to_end_nonneg = sec_to_end.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
                                 let countdown_seconds = sec_to_end_nonneg % 60;
@@ -624,8 +624,8 @@ async fn main() -> Result<()> {
                                     if countdown_active {
                                         if one_dollar_attempted.get(&market_id).is_none() {
                                             if let (Some((y_price, _)), Some((n_price, _))) = (yes_best_ask, no_best_ask) {
-                                                if y_price >= dec!(0.98) || n_price >= dec!(0.98) {
-                                                    debug!("⏸️ 价格>=0.98，倒计时策略跳过 | 市场:{}", market_display);
+                                                if y_price >= dec!(0.99) || n_price >= dec!(0.99) {
+                                                    debug!("⏸️ 价格>=0.99，倒计时策略跳过 | 市场:{}", market_display);
                                                     // 不标记已尝试，允许重试
                                                 } else {
                                                     // 选择价格较大的一边
