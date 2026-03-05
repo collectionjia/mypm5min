@@ -375,9 +375,10 @@ async fn main() -> Result<()> {
             let private_key = config.private_key.clone();
             let position_tracker = _risk_manager.position_tracker().clone();
             let wind_down_flag = wind_down_in_progress.clone();
-            tokio::spawn(async move {
-                run_merge_task(merge_interval, proxy, private_key, position_tracker, wind_down_flag, countdown_in_progress.clone()).await;
-            });
+                let countdown_flag_merge = countdown_in_progress.clone();
+                tokio::spawn(async move {
+                    run_merge_task(merge_interval, proxy, private_key, position_tracker, wind_down_flag, countdown_flag_merge).await;
+                });
             info!(
                 interval_minutes = merge_interval,
                 "已启动定时 Merge 任务，每 {} 分钟根据持仓执行（仅 YES+NO 双边）",
