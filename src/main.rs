@@ -606,6 +606,9 @@ async fn main() -> Result<()> {
                                 let now_countdown = Utc::now();
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
                                 let countdown_active = sec_to_end <= 60 && sec_to_end >= 50;
+                                let sec_to_end_nonneg = sec_to_end.max(0);
+                                let countdown_minutes = sec_to_end_nonneg / 60;
+                                let countdown_seconds = sec_to_end_nonneg % 60;
 
                                 // 计算订单总量（Ask + Bid）
                                 let yes_ask_vol: Decimal = pair.yes_book.asks.iter().map(|o| o.size).sum();
@@ -707,10 +710,11 @@ async fn main() -> Result<()> {
                                     .unwrap_or_else(|| "No:无".to_string());
 
                                 info!(
-                                    "{} {} | 倒计时:{}s | Yes总量:{:.2} | No总量:{:.2} | {} | {} | {}",
+                                    "{} {} | 倒计时:{}分{:02}秒 | Yes总量:{:.2} | No总量:{:.2} | {} | {} | {}",
                                     prefix,
                                     market_display,
-                                    sec_to_end,
+                                    countdown_minutes,
+                                    countdown_seconds,
                                     yes_total_vol,
                                     no_total_vol,
                                     yes_info,
