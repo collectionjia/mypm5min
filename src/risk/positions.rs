@@ -141,13 +141,6 @@ impl PositionTracker {
         info!("🔄 风险敞口已重置（新一轮）");
     }
 
-    pub fn get_position(&self, token_id: U256) -> Decimal {
-        self.positions
-            .get(&token_id)
-            .map(|v| *v.value())
-            .unwrap_or(dec!(0))
-    }
-
     /// 计算持仓不平衡度（0.0 = 完全平衡，1.0 = 完全不平衡）
     pub fn calculate_imbalance(&self, yes_token: U256, no_token: U256) -> Decimal {
         let yes_pos = self.get_position(yes_token);
