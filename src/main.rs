@@ -571,29 +571,42 @@ async fn main() -> Result<()> {
                         let wind_down_sell_price = Decimal::try_from(config_wd.wind_down_sell_price).unwrap_or(dec!(0.01));
                         info!("🧹 收尾：开始卖出所有剩余持仓（包括倒计时策略持仓） | 价格:{:.4}", wind_down_sell_price);
                         
-                        match get_positions().await {
-                            Ok(positions) => {
-                                for pos in positions.iter().filter(|p| p.size > dec!(0)) {
-                                    let size_floor = (pos.size * dec!(100)).floor() / dec!(100);
-                                    if size_floor < dec!(0.01) {
-                                        debug!(token_id = %pos.asset, size = %pos.size, "收尾：持仓过小，跳过卖出");
-                                        continue;
+                        // 循环尝试卖出，最多重试 3 次，每次获取最新持仓
+                        for retry in 0..3 {
+                            if retry > 0 {
+                                info!("收尾：第 {} 次重试卖出持仓...", retry);
+                                sleep(Duration::from_secs(2)).await;
+                            }
+                            match get_positions().await {
+                                Ok(positions) => {
+                                    let active_positions: Vec<_> = positions.iter().filter(|p| p.size > dec!(0.01)).collect();
+                                    if active_positions.is_empty() {
+                                        info!("✅ 收尾：当前无剩余持仓");
+                                        break;
                                     }
-                                    // 尝试以 wind_down_sell_price 卖出
-                                    // 注意：如果市场价格高于 wind_down_sell_price，会以市价成交（更好）
-                                    // 如果市场价格低于 wind_down_sell_price，则会挂单（可能无法成交）
-                                    // 为了确保卖出，wind_down_sell_price 应该设置得足够低（如 0.01 或 0.05）
-                                    if let Err(e) = executor_wd.sell_at_price(pos.asset, wind_down_sell_price, size_floor).await {
-                                        warn!(token_id = %pos.asset, size = %pos.size, error = %e, "收尾：卖出单腿失败");
-                                    } else {
-                                        info!("✅ 收尾：已下卖单 | token_id={:#x} | 数量:{} | 价格:{:.4}", pos.asset, size_floor, wind_down_sell_price);
-                                        
-                                        // 更新本地持仓追踪（虽然之后会重置，但为了日志准确性）
-                                        position_tracker.update_position(pos.asset, -size_floor);
+
+                                    for pos in active_positions {
+                                        let size_floor = (pos.size * dec!(100)).floor() / dec!(100);
+                                        if size_floor < dec!(0.01) {
+                                            debug!(token_id = %pos.asset, size = %pos.size, "收尾：持仓过小，跳过卖出");
+                                            continue;
+                                        }
+                                        // 尝试以 wind_down_sell_price 卖出
+                                        // 注意：如果市场价格高于 wind_down_sell_price，会以市价成交（更好）
+                                        // 如果市场价格低于 wind_down_sell_price，则会挂单（可能无法成交）
+                                        // 为了确保卖出，wind_down_sell_price 应该设置得足够低（如 0.01 或 0.05）
+                                        if let Err(e) = executor_wd.sell_at_price(pos.asset, wind_down_sell_price, size_floor).await {
+                                            warn!(token_id = %pos.asset, size = %pos.size, error = %e, "收尾：卖出单腿失败");
+                                        } else {
+                                            info!("✅ 收尾：已下卖单 | token_id={:#x} | 数量:{} | 价格:{:.4}", pos.asset, size_floor, wind_down_sell_price);
+                                            
+                                            // 更新本地持仓追踪（虽然之后会重置，但为了日志准确性）
+                                            position_tracker.update_position(pos.asset, -size_floor);
+                                        }
                                     }
                                 }
+                                Err(e) => { warn!(error = %e, "收尾：获取持仓失败，跳过卖出"); }
                             }
-                            Err(e) => { warn!(error = %e, "收尾：获取持仓失败，跳过卖出"); }
                         }
 
                         info!("🛑 收尾完成，继续监控至窗口结束");
