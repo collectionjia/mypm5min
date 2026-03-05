@@ -181,6 +181,11 @@ async fn run_merge_task(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install rustls crypto provider
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     // 初始化日志
     utils::logger::init_logger()?;
 
