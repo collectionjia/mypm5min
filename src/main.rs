@@ -644,32 +644,29 @@ async fn main() -> Result<()> {
                                                             market_display, side_str, yes_total_vol, no_total_vol);
                                                         // 不标记已尝试，允许重试
                                                     } else {
-                                                        // 计算下单份额：1 / 价格，向下取两位
                                                         let mut qty = (dec!(1.0) / chosen_price) * dec!(100.0);
                                                         qty = qty.floor() / dec!(100.0);
-                                                        if qty < dec!(0.01) {
-                                                            debug!("⏸️ 份额过小，倒计时策略跳过 | 市场:{} | 价格:{:.4}", market_display, chosen_price);
-                                                            // 不标记已尝试，允许重试
-                                                        } else {
-                                                            // 仅执行一次尝试
-                                                            one_dollar_attempted.insert(market_id, true);
-                                                            info!("⏱️ 倒计时策略下单 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2} | YesVol:{:.0} | NoVol:{:.0}", 
-                                                                market_display, side_str, chosen_price, qty, yes_total_vol, no_total_vol);
-                                                            let executor_clone = executor.clone();
-                                                            let pt = _risk_manager.position_tracker();
-                                                            tokio::spawn(async move {
-                                                                match executor_clone.buy_at_price(chosen_token, chosen_price, qty).await {
-                                                                    Ok(resp) => {
-                                                                        info!("✅ 倒计时策略下单成功 | order_id={}", resp.order_id);
-                                                                        pt.update_exposure_cost(chosen_token, chosen_price, qty);
-                                                                        pt.update_position(chosen_token, qty);
-                                                                    }
-                                                                    Err(e) => {
-                                                                        warn!("❌ 倒计时策略下单失败: {}", e);
-                                                                    }
-                                                                }
-                                                            });
+                                                        if qty < dec!(1.0) {
+                                                            qty = dec!(1.0);
                                                         }
+
+                                                        one_dollar_attempted.insert(market_id, true);
+                                                        info!("⏱️ 倒计时策略下单 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2} | YesVol:{:.0} | NoVol:{:.0}", 
+                                                            market_display, side_str, chosen_price, qty, yes_total_vol, no_total_vol);
+                                                        let executor_clone = executor.clone();
+                                                        let pt = _risk_manager.position_tracker();
+                                                        tokio::spawn(async move {
+                                                            match executor_clone.buy_at_price(chosen_token, chosen_price, qty).await {
+                                                                Ok(resp) => {
+                                                                    info!("✅ 倒计时策略下单成功 | order_id={}", resp.order_id);
+                                                                    pt.update_exposure_cost(chosen_token, chosen_price, qty);
+                                                                    pt.update_position(chosen_token, qty);
+                                                                }
+                                                                Err(e) => {
+                                                                    warn!("❌ 倒计时策略下单失败: {}", e);
+                                                                }
+                                                            }
+                                                        });
                                                     }
                                                 }
                                             }
