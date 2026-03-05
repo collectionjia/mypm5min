@@ -649,8 +649,8 @@ async fn main() -> Result<()> {
                                                     } else {
                                                         let mut qty = (dec!(1.0) / chosen_price) * dec!(100.0);
                                                         qty = qty.floor() / dec!(100.0);
-                                                        if qty < dec!(1.0) {
-                                                            qty = dec!(1.0);
+                                                        if qty < dec!(5.0) {
+                                                            qty = dec!(5.0);
                                                         }
 
                                                         one_dollar_attempted.insert(market_id, true);
