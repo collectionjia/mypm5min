@@ -605,7 +605,7 @@ async fn main() -> Result<()> {
                                 };
                                 let now_countdown = Utc::now();
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
-                                let countdown_active = sec_to_end <= 20 && sec_to_end >= 10;
+                                let countdown_active = sec_to_end <= 10 && sec_to_end >= 5;
                                 let sec_to_end_nonneg = sec_to_end.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
                                 let countdown_seconds = sec_to_end_nonneg % 60;
