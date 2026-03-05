@@ -472,6 +472,9 @@ async fn main() -> Result<()> {
                 let now = Utc::now();
                 let seconds_until_end = (window_end - now).num_seconds();
                 let threshold_seconds = config.wind_down_before_window_end_minutes as i64 * 60;
+                
+                // 如果时间到了，或者已经过期（比如窗口已经结束），都应该触发收尾
+                // 注意：如果窗口已经结束(seconds_until_end <= 0)，也应该执行收尾
                 if seconds_until_end <= threshold_seconds {
                     info!("🛑 触发收尾 | 距窗口结束 {} 秒", seconds_until_end);
                     wind_down_done = true;
@@ -482,6 +485,15 @@ async fn main() -> Result<()> {
                     let config_wd = config.clone();
                     let risk_manager_wd = _risk_manager.clone();
                     let wind_down_flag = wind_down_in_progress.clone();
+                    
+                    // 克隆 one_dollar_attempted 以便在收尾时清理倒计时策略的持仓
+                    // 注意：DashMap本身是并发安全的，但这里我们需要它的引用，而 tokio::spawn 需要 'static
+                    // 所以我们需要将 one_dollar_attempted 包装在 Arc 中，或者在 main 函数开始时就用 Arc<DashMap>
+                    // 由于目前 one_dollar_attempted 是局部变量，我们无法直接传给 'static 任务
+                    // 临时的解决方案：我们在收尾任务中不直接操作 one_dollar_attempted，
+                    // 而是通过 get_positions() 获取所有持仓并卖出，这自然涵盖了倒计时策略的持仓。
+                    // 下面的代码已经包含了 "3. 市价卖出剩余单腿持仓"，这应该已经满足了需求。
+                    
                     tokio::spawn(async move {
                         const MERGE_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -540,8 +552,25 @@ async fn main() -> Result<()> {
                             sleep(MERGE_INTERVAL).await;
                         }
 
-                        // 3. 市价卖出剩余单腿持仓
+                        // 3. 市价卖出剩余单腿持仓（这也将覆盖倒计时策略建立的持仓）
+                        // 倒计时策略在窗口结束前5-10秒建立持仓，而收尾逻辑通常在窗口结束前执行（如果配置了 wind_down_before_window_end_minutes）
+                        // 如果 wind_down_before_window_end_minutes 设置为0，则需要在窗口切换时执行卖出。
+                        // 当前代码是在 wind_down_before_window_end_minutes > 0 时触发。
+                        // 如果用户希望在"市场结束后"卖出，意味着需要在窗口时间结束后。
+                        // 但实际上，市场结束后（窗口结束后），Gamma API可能不再返回该市场，或者市场已经结算。
+                        // 如果是结算，则不需要卖出，等待结算即可（Winning side 兑换 $1，Losing side 归零）。
+                        // 用户的需求可能是：在市场即将结束前（比如最后几秒或者刚结束时）卖出，以避免进入结算流程（结算可能需要时间且有不确定性，或者为了快速回笼资金）。
+                        // 或者用户是指：倒计时策略博的是最后几秒的波动，如果没赢（或者无论输赢），都在最后时刻平仓。
+                        
+                        // 既然用户说"市场结束后，进行卖掉"，考虑到Polymarket的机制，市场结束后进入结算。
+                        // 如果是指"倒计时结束（即窗口结束）后"，那么此时往往无法交易了（市场关闭）。
+                        // 所以最合理的解释是：在市场即将结束的最后时刻（收尾阶段），把倒计时策略买入的仓位也卖掉。
+                        // 现有的收尾逻辑（步骤3）已经会卖出所有剩余的单腿持仓。
+                        // 我们只需要确保收尾逻辑被正确执行，并且卖出价格合适。
+                        
                         let wind_down_sell_price = Decimal::try_from(config_wd.wind_down_sell_price).unwrap_or(dec!(0.01));
+                        info!("🧹 收尾：开始卖出所有剩余持仓（包括倒计时策略持仓） | 价格:{:.4}", wind_down_sell_price);
+                        
                         match get_positions().await {
                             Ok(positions) => {
                                 for pos in positions.iter().filter(|p| p.size > dec!(0)) {
@@ -550,10 +579,17 @@ async fn main() -> Result<()> {
                                         debug!(token_id = %pos.asset, size = %pos.size, "收尾：持仓过小，跳过卖出");
                                         continue;
                                     }
+                                    // 尝试以 wind_down_sell_price 卖出
+                                    // 注意：如果市场价格高于 wind_down_sell_price，会以市价成交（更好）
+                                    // 如果市场价格低于 wind_down_sell_price，则会挂单（可能无法成交）
+                                    // 为了确保卖出，wind_down_sell_price 应该设置得足够低（如 0.01 或 0.05）
                                     if let Err(e) = executor_wd.sell_at_price(pos.asset, wind_down_sell_price, size_floor).await {
                                         warn!(token_id = %pos.asset, size = %pos.size, error = %e, "收尾：卖出单腿失败");
                                     } else {
                                         info!("✅ 收尾：已下卖单 | token_id={:#x} | 数量:{} | 价格:{:.4}", pos.asset, size_floor, wind_down_sell_price);
+                                        
+                                        // 更新本地持仓追踪（虽然之后会重置，但为了日志准确性）
+                                        position_tracker.update_position(pos.asset, -size_floor);
                                     }
                                 }
                             }
