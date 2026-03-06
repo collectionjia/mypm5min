@@ -859,13 +859,11 @@ async fn main() -> Result<()> {
                                     .unwrap_or_else(|| "No:无".to_string());
 
                                 info!(
-                                    "{} {} | 倒计时:{}分{:02}秒 | Yes总量:{:.2} | No总量:{:.2} | {} | {} | {}",
+                                    "{} {} | 倒计时:{}分{:02}秒 | {} | {} | {}",
                                     prefix,
                                     market_display,
                                     countdown_minutes,
                                     countdown_seconds,
-                                    yes_total_vol,
-                                    no_total_vol,
                                     yes_info,
                                     no_info,
                                     spread_info
