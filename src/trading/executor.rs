@@ -123,7 +123,13 @@ impl TradingExecutor {
         self.client
             .post_order(signed)
             .await
-            .map_err(|e| anyhow::anyhow!("卖出订单提交失败: {}", e))
+            .map_err(|e| {
+                if e.to_string().contains("not enough balance / allowance") {
+                    anyhow::anyhow!("卖出订单提交失败: 余额不足或未授权 (USDC)。请检查钱包余额及对CTF Exchange的授权。原始错误: {}", e)
+                } else {
+                    anyhow::anyhow!("卖出订单提交失败: {}", e)
+                }
+            })
     }
 
     /// 以指定价格下 GTC 买单（用于策略性单边下单）
@@ -149,7 +155,13 @@ impl TradingExecutor {
         self.client
             .post_order(signed)
             .await
-            .map_err(|e| anyhow::anyhow!("买入订单提交失败: {}", e))
+            .map_err(|e| {
+                if e.to_string().contains("not enough balance / allowance") {
+                    anyhow::anyhow!("买入订单提交失败: 余额不足或未授权 (USDC)。请检查钱包余额及对CTF Exchange的授权。原始错误: {}", e)
+                } else {
+                    anyhow::anyhow!("买入订单提交失败: {}", e)
+                }
+            })
     }
 
     /// 按方向取滑点：仅下降(↓)用 second，上涨(↑)和持平(−/空)用 first
@@ -320,6 +332,10 @@ impl TradingExecutor {
                 let send_elapsed = send_start.elapsed().as_millis();
                 let total_elapsed = total_start.elapsed().as_millis();
                 
+                if e.to_string().contains("not enough balance / allowance") {
+                    error!("⚠️  下单失败: 余额不足或未授权 (USDC)。请检查钱包余额及对CTF Exchange的授权。");
+                }
+
                 error!(
                     "❌ 批量下单API调用失败 | 订单对ID:{} | YES价格:{} (含滑点) | NO价格:{} (含滑点) | 数量:{} | 构建耗时:{}ms | 签名耗时:{}ms | 发送耗时:{}ms | 总耗时:{}ms | 错误:{}",
                     &pair_id[..8],

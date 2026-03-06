@@ -297,6 +297,18 @@ async fn main() -> Result<()> {
     match executor.verify_authentication().await {
         Ok(_) => {
             info!("✅ 认证验证成功，API调用正常");
+
+            // 检查余额和授权
+            info!("正在检查USDC余额和CTF Exchange授权...");
+            let wallet_to_check = if let Some(proxy) = config.proxy_address {
+                proxy
+            } else {
+                _signer_test.address()
+            };
+            
+            if let Err(e) = crate::utils::balance_checker::check_balance_and_allowance(wallet_to_check).await {
+                warn!("余额/授权检查失败（非致命错误）: {}", e);
+            }
         }
         Err(e) => {
             error!(error = %e, "❌ 认证验证失败！虽然authenticate()没有报错，但API调用失败。");
