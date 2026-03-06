@@ -21,6 +21,8 @@ pub struct Config {
     pub slippage: [f64; 2],
     pub gtd_expiration_secs: u64,
     pub arbitrage_order_type: OrderType,
+    pub countdown_window_max_sec: i64,
+    pub countdown_window_min_sec: i64,
 }
 
 impl Config {
@@ -34,6 +36,8 @@ impl Config {
             slippage: parse_slippage(&env::var("SLIPPAGE").unwrap_or_else(|_| "0.0,0.01".to_string())),
             gtd_expiration_secs: env::var("GTD_EXPIRATION_SECS").unwrap_or_else(|_| "300".to_string()).parse().unwrap_or(300),
             arbitrage_order_type: parse_order_type(&env::var("ARBITRAGE_ORDER_TYPE").unwrap_or_else(|_| "GTC".to_string())),
+            countdown_window_max_sec: env::var("COUNTDOWN_WINDOW_MAX_SEC").unwrap_or_else(|_| "6".to_string()).parse().unwrap_or(6),
+            countdown_window_min_sec: env::var("COUNTDOWN_WINDOW_MIN_SEC").unwrap_or_else(|_| "4".to_string()).parse().unwrap_or(4),
         })
     }
 }

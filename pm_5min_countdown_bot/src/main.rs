@@ -74,7 +74,7 @@ async fn main() -> Result<()> {
 
                         let now = Utc::now();
                         let sec_to_end = (window_end - now).num_seconds();
-                        let countdown_active = sec_to_end <= 6 && sec_to_end >= 4;
+                        let countdown_active = sec_to_end <= cfg.countdown_window_max_sec && sec_to_end >= cfg.countdown_window_min_sec;
                         let sec_to_end_nonneg = sec_to_end.max(0);
                         let countdown_minutes = sec_to_end_nonneg / 60;
                         let countdown_seconds = sec_to_end_nonneg % 60;
