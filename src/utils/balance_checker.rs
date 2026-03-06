@@ -52,7 +52,7 @@ pub async fn check_balance_and_allowance(wallet_address: Address) -> Result<()> 
     let allowance_call = contract.allowance(wallet_address, exchange_addr).call().await;
     match allowance_call {
         Ok(result) => {
-            let allowance = result._0;
+            let allowance = result;
             let allowance_dec = Decimal::from_str(&allowance.to_string()).unwrap_or_default() / Decimal::from(1_000_000);
             
             info!("对CTF Exchange ({}) 的授权额度: {}", exchange_addr, allowance_dec);
