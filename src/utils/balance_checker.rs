@@ -1,5 +1,5 @@
 use alloy::primitives::Address;
-use alloy::providers::ProviderBuilder;
+use alloy::providers::{ProviderBuilder, Provider};
 use alloy::sol;
 use anyhow::Result;
 use rust_decimal::Decimal;
