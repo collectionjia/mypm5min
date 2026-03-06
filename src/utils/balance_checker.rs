@@ -22,7 +22,14 @@ sol! {
 pub async fn check_balance_and_allowance(wallet_address: Address) -> Result<()> {
     // 使用公共RPC节点，或者尝试从环境变量获取
     let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| "https://polygon-rpc.com".to_string()).parse()?;
-    let provider = ProviderBuilder::new().with_recommended_fillers().on_http(rpc_url);
+    // ProviderBuilder::new() 默认已经包含了一些 recommended fillers，但在某些版本中可能需要明确指定或不需要
+    // 根据错误提示，似乎 with_recommended_fillers 不存在，可能是因为默认已经启用或者方法名变更
+    // 我们可以尝试直接使用 on_http，因为之前的错误是因为缺少中间件，现在我们先去掉这个调用看看，或者使用 disable_recommended_fillers 如果默认行为有问题
+    // 但根据 alloy 文档，通常是 ProviderBuilder::new().on_http(url)
+    // 如果之前的错误是 no method named `on_http`，那可能是 trait 没有引入
+    // 让我们确保引入了正确的 trait
+    
+    let provider = ProviderBuilder::new().on_http(rpc_url);
 
     let usdc_addr = Address::from_str(USDC_ADDRESS)?;
     let exchange_addr = Address::from_str(CTF_EXCHANGE_ADDRESS)?;
