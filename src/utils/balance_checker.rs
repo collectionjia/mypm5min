@@ -1,5 +1,5 @@
 use alloy::primitives::Address;
-use alloy::providers::{ProviderBuilder};
+use alloy::providers::ProviderBuilder;
 use alloy::sol;
 use anyhow::Result;
 use rust_decimal::Decimal;
@@ -12,7 +12,7 @@ const USDC_ADDRESS: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
 const CTF_EXCHANGE_ADDRESS: &str = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
 
 sol! {
-    #[derive(Debug)]
+    #[sol(rpc)]
     interface IERC20 {
         function balanceOf(address account) external view returns (uint256);
         function allowance(address owner, address spender) external view returns (uint256);
@@ -26,6 +26,7 @@ pub async fn check_balance_and_allowance(wallet_address: Address) -> Result<()> 
 
     let usdc_addr = Address::from_str(USDC_ADDRESS)?;
     let exchange_addr = Address::from_str(CTF_EXCHANGE_ADDRESS)?;
+    // 使用 new 方法，但不需要泛型参数，provider 已经包含了网络信息
     let contract = IERC20::new(usdc_addr, provider);
 
     // 查询余额
