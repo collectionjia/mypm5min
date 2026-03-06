@@ -67,6 +67,11 @@ pub struct Config {
     /// 收尾时单腿卖出的限价单价格（尽量快速成交），默认0.01
     pub wind_down_sell_price: f64,
 
+    /// 倒计时窗口开始时间（秒，距离结束），默认 10
+    pub countdown_window_max_sec: i64,
+    /// 倒计时窗口结束时间（秒，距离结束），默认 5
+    pub countdown_window_min_sec: i64,
+
     /// AI 预测配置
     pub ai_api_url: String, // AI 接口地址
     pub ai_api_key: String, // AI API Key
@@ -174,6 +179,15 @@ impl Config {
                 .unwrap_or_else(|_| "0.01".to_string())
                 .parse()
                 .unwrap_or(0.01), // 默认0.01
+
+            countdown_window_max_sec: env::var("COUNTDOWN_WINDOW_MAX_SEC")
+                .unwrap_or_else(|_| "10".to_string())
+                .parse()
+                .unwrap_or(10), // 默认10秒
+            countdown_window_min_sec: env::var("COUNTDOWN_WINDOW_MIN_SEC")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .unwrap_or(5), // 默认5秒
             
             // AI 配置
             ai_api_url: env::var("AI_API_URL")

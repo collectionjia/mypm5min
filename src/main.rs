@@ -690,7 +690,7 @@ async fn main() -> Result<()> {
                                 };
                                 let now_countdown = Utc::now();
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
-            let countdown_active = sec_to_end <= 10 && sec_to_end >= 5;
+            let countdown_active = sec_to_end <= config.countdown_window_max_sec && sec_to_end >= config.countdown_window_min_sec;
             countdown_in_progress.store(countdown_active, Ordering::Relaxed);
                                 let sec_to_end_nonneg = sec_to_end.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
