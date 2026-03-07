@@ -59,7 +59,7 @@ async fn logs_handler() -> impl IntoResponse {
     use crate::utils::logger::LOG_BUFFER;
     
     let logs: Vec<String> = if let Ok(buffer) = LOG_BUFFER.lock() {
-        buffer.iter().cloned().collect()
+        buffer.iter().cloned().collect::<Vec<_>>()
     } else {
         vec!["无法获取日志锁".to_string()]
     };

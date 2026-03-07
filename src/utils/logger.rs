@@ -7,7 +7,7 @@ use std::io::Write;
 
 // 全局日志缓冲区，用于 Web 显示
 lazy_static::lazy_static! {
-    pub static ref LOG_BUFFER: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::with_capacity(300)));
+    pub static ref LOG_BUFFER: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(300)));
 }
 
 // 自定义 Writer，将日志写入缓冲区的同输出到 stdout
