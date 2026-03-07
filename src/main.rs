@@ -744,6 +744,11 @@ async fn main() -> Result<()> {
                                 } else {
                                     market_title.to_string()
                                 };
+                                let market_category = if !market_symbol.is_empty() {
+                                    market_symbol.to_string()
+                                } else {
+                                    "其他".to_string()
+                                };
                                 let now_countdown = Utc::now();
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
             let countdown_active = sec_to_end <= config.countdown_window_max_sec && sec_to_end >= config.countdown_window_min_sec;
@@ -772,6 +777,7 @@ async fn main() -> Result<()> {
                                     let entry = web_server::MarketData {
                                         id: market_id.to_string(),
                                         name: market_display.clone(),
+                                        category: market_category.clone(),
                                         countdown: format!("{:02}:{:02}", countdown_minutes, countdown_seconds),
                                         yes_price: yes_f64,
                                         no_price: no_f64,

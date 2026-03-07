@@ -18,6 +18,7 @@ use tracing::info;
 pub struct MarketData {
     pub id: String,
     pub name: String,
+    pub category: String,
     pub countdown: String,
     pub yes_price: Option<f64>,
     pub no_price: Option<f64>,

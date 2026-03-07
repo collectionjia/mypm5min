@@ -317,7 +317,24 @@
                     return;
                 }
 
-                grid.innerHTML = markets.map(m => `
+                // 按分类分组，每个分类只取一个（最新更新的）
+                const marketsByCategory = {};
+                markets.forEach(m => {
+                    const category = m.category || '其他';
+                    if (!marketsByCategory[category]) {
+                        marketsByCategory[category] = m;
+                    } else {
+                        // 如果已存在，比较更新时间，保留最新的
+                        if (m.update_time > marketsByCategory[category].update_time) {
+                            marketsByCategory[category] = m;
+                        }
+                    }
+                });
+
+                // 转换回数组并排序（可选，按分类名称排序）
+                const displayMarkets = Object.values(marketsByCategory).sort((a, b) => a.category.localeCompare(b.category));
+
+                grid.innerHTML = displayMarkets.map(m => `
                     <div class="market-card">
                         <div class="market-header">
                             <div class="market-name">${m.name}</div>
