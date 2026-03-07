@@ -69,14 +69,51 @@
             color: white;
             margin-top: 1rem;
         }
+        #logs-container {
+            margin-top: 2rem;
+            width: 90%;
+            max-width: 800px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1rem;
+            border-radius: 8px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9rem;
+            height: 400px;
+            overflow-y: auto;
+            text-align: left;
+            white-space: pre-wrap;
+        }
+        .container {
+            width: 100%;
+            max-width: 800px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .control-panel {
+            text-align: center;
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            width: 300px;
+            margin-bottom: 1rem;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Bot 控制台</h1>
-        <div id="statusText" class="status stopped">检查中...</div>
-        <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
-        <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
+        <div class="control-panel">
+            <h1>Bot 控制台</h1>
+            <div id="statusText" class="status stopped">检查中...</div>
+            <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
+            <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
+        </div>
+
+        <div id="logs-container">
+            <div>正在加载日志...</div>
+        </div>
     </div>
 
     <script>
@@ -94,6 +131,24 @@
                 console.error('Error fetching status:', error);
                 document.getElementById('statusText').innerText = '连接失败';
                 document.getElementById('statusText').className = 'status stopped';
+            }
+        }
+
+        async function updateLogs() {
+            try {
+                const response = await fetch(`${API_BASE}/api/logs`);
+                const logs = await response.json();
+                const logsContainer = document.getElementById('logs-container');
+                
+                if (logs.length === 0) {
+                    logsContainer.innerHTML = '<div>暂无日志</div>';
+                } else {
+                    logsContainer.innerText = logs.join('');
+                    // 自动滚动到底部
+                    logsContainer.scrollTop = logsContainer.scrollHeight;
+                }
+            } catch (error) {
+                console.error('Error fetching logs:', error);
             }
         }
 
@@ -144,9 +199,12 @@
 
         // Initial load
         updateStatus();
+        updateLogs();
         
-        // Auto refresh every 5 seconds
+        // Auto refresh status every 5 seconds
         setInterval(updateStatus, 5000);
+        // Auto refresh logs every 2 seconds
+        setInterval(updateLogs, 2000);
     </script>
 </body>
 </html>

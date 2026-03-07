@@ -55,6 +55,18 @@ async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     Json(StatusResponse { running })
 }
 
+async fn logs_handler() -> impl IntoResponse {
+    use crate::utils::logger::LOG_BUFFER;
+    
+    let logs = if let Ok(buffer) = LOG_BUFFER.lock() {
+        buffer.iter().cloned().collect::<Vec<String>>()
+    } else {
+        vec!["无法获取日志锁".to_string()]
+    };
+    
+    Json(logs)
+}
+
 async fn control_handler(
     State(state): State<AppState>,
     Json(payload): Json<ControlRequest>,
