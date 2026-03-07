@@ -18,6 +18,10 @@ use rust_decimal_macros::dec;
 
 use crate::trading::TradingExecutor;
 use poly_5min_bot::positions::get_positions;
+use crate::config::Config;
+use crate::merge;
+use alloy::primitives::Address;
+use std::str::FromStr;
 
 #[derive(Clone, Serialize, Debug)]
 pub struct MarketData {
@@ -52,6 +56,13 @@ struct CloseAllResponse {
     positions_closed: usize,
 }
 
+#[derive(Serialize)]
+struct RedeemResponse {
+    success: bool,
+    message: String,
+    tx_hashes: Vec<String>,
+}
+
 #[derive(Deserialize)]
 struct ControlRequest {
     action: String, // "start" or "stop"
@@ -69,6 +80,7 @@ pub async fn start_server(
         .route("/api/status", get(status_handler))
         .route("/api/control", post(control_handler))
         .route("/api/close_all", post(close_all_handler))
+        .route("/api/redeem", post(redeem_handler))
         .route("/api/logs", get(logs_handler))
         .route("/api/trades", get(trades_handler))
         .route("/api/markets", get(markets_handler))
@@ -103,9 +115,9 @@ async fn close_all_handler(State(state): State<AppState>) -> impl IntoResponse {
 
     info!("🛑 收到Web控制台平仓指令，开始执行平仓...");
 
-    // 暂停机器人运行，防止干扰
-    state.is_running.store(false, Ordering::Relaxed);
-    info!("⏸️ 已暂停Bot自动交易，防止新开仓位");
+    // 之前会暂停Bot，现在根据需求移除暂停逻辑
+    // state.is_running.store(false, Ordering::Relaxed);
+    // info!("⏸️ 已暂停Bot自动交易，防止新开仓位");
 
     let mut closed_count = 0;
     
@@ -159,6 +171,104 @@ async fn close_all_handler(State(state): State<AppState>) -> impl IntoResponse {
         success: true,
         message: format!("已触发平仓 {} 个持仓", closed_count),
         positions_closed: closed_count,
+    })
+}
+
+async fn redeem_handler() -> impl IntoResponse {
+    info!("🎁 收到Web控制台领取奖励指令，开始执行 Merge...");
+    
+    // 加载配置
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            error!("❌ 无法加载配置: {}", e);
+            return Json(RedeemResponse {
+                success: false,
+                message: format!("配置加载失败: {}", e),
+                tx_hashes: vec![],
+            });
+        }
+    };
+
+    let proxy_address = match config.proxy_address {
+        Some(addr) => addr,
+        None => {
+            return Json(RedeemResponse {
+                success: false,
+                message: "未配置 POLYMARKET_PROXY_ADDRESS，无法执行 Merge".to_string(),
+                tx_hashes: vec![],
+            });
+        }
+    };
+
+    let private_key = config.private_key.clone();
+    let mut tx_hashes = Vec::new();
+
+    // 获取持仓
+    match get_positions().await {
+        Ok(positions) => {
+            // 找到所有 YES+NO 双边都有持仓的市场
+            // 先按 condition_id 分组
+            let mut markets: std::collections::HashMap<String, (Decimal, Decimal)> = std::collections::HashMap::new();
+            
+            for pos in positions {
+                // pos.condition_id 是 B256 转 hex 字符串
+                // pos.outcome_index: 0=YES, 1=NO
+                let entry = markets.entry(pos.condition_id.clone()).or_insert((dec!(0), dec!(0)));
+                if pos.outcome_index == 0 {
+                    entry.0 = pos.size;
+                } else if pos.outcome_index == 1 {
+                    entry.1 = pos.size;
+                }
+            }
+
+            // 筛选出双边都有持仓的市场
+            let mergeable_markets: Vec<String> = markets
+                .into_iter()
+                .filter(|(_, (yes, no))| *yes > dec!(0.000001) && *no > dec!(0.000001))
+                .map(|(cid, _)| cid)
+                .collect();
+
+            if mergeable_markets.is_empty() {
+                info!("✅ 没有可领取的奖励（无双边持仓）");
+                return Json(RedeemResponse {
+                    success: true,
+                    message: "没有可领取的奖励".to_string(),
+                    tx_hashes: vec![],
+                });
+            }
+
+            info!("🔍 发现 {} 个市场可执行 Merge", mergeable_markets.len());
+
+            for cid_str in mergeable_markets {
+                if let Ok(condition_id) = alloy::primitives::B256::from_str(&cid_str) {
+                    info!("🔄 正在 Merge 市场: {}", cid_str);
+                    match merge::merge_max(condition_id, proxy_address, &private_key, None).await {
+                        Ok(tx) => {
+                            info!("✅ Merge 成功: {}", tx);
+                            tx_hashes.push(tx);
+                        },
+                        Err(e) => {
+                            error!("❌ Merge 失败 {}: {}", cid_str, e);
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!("❌ 获取持仓失败: {}", e);
+            return Json(RedeemResponse {
+                success: false,
+                message: format!("获取持仓失败: {}", e),
+                tx_hashes: vec![],
+            });
+        }
+    }
+
+    Json(RedeemResponse {
+        success: true,
+        message: format!("已执行 {} 笔 Merge 交易", tx_hashes.len()),
+        tx_hashes,
     })
 }
 

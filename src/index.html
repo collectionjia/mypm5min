@@ -130,6 +130,14 @@
         .btn-close-all:hover {
             background-color: #d97706;
         }
+        .btn-redeem {
+            background-color: #3b82f6; /* Blue */
+            color: white;
+            margin-top: 0.5rem;
+        }
+        .btn-redeem:hover {
+            background-color: #2563eb;
+        }
         
         table {
             width: 100%;
@@ -224,6 +232,7 @@
                 <div id="statusText" class="status stopped">检查中...</div>
                 <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
                 <button id="closeAllBtn" onclick="closeAllPositions()" class="btn-close-all">一键平仓</button>
+                <button id="redeemBtn" onclick="redeemRewards()" class="btn-redeem">领取奖励</button>
                 <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
             </div>
 
@@ -345,7 +354,7 @@
         }
 
         async function closeAllPositions() {
-            if (!confirm('确定要平仓所有持仓吗？\n这将暂停Bot并以市价卖出所有持仓。')) {
+            if (!confirm('确定要平仓所有持仓吗？\n这将以市价卖出所有持仓，但不会暂停Bot。')) {
                 return;
             }
             
@@ -373,6 +382,36 @@
                 btnEl.innerText = originalText;
                 // Update status as it might have been stopped
                 updateStatus();
+            }
+        }
+
+        async function redeemRewards() {
+            if (!confirm('确定要领取奖励吗？\n这将合并所有可合并的持仓（YES+NO）为USDC。')) {
+                return;
+            }
+            
+            const btnEl = document.getElementById('redeemBtn');
+            const originalText = btnEl.innerText;
+            btnEl.disabled = true;
+            btnEl.innerText = '领取中...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/redeem`, {
+                    method: 'POST',
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`领取操作完成！\n${data.message}`);
+                } else {
+                    alert(`领取失败: ${data.message}`);
+                }
+            } catch (error) {
+                console.error('Error redeeming rewards:', error);
+                alert('请求失败，请检查控制台日志');
+            } finally {
+                btnEl.disabled = false;
+                btnEl.innerText = originalText;
             }
         }
 
