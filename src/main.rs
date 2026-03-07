@@ -851,6 +851,7 @@ async fn main() -> Result<()> {
                                                             let market_id_str = market_id.to_string();
                                                             let market_display_str = market_display.clone();
                                                             let side_string = side_str.to_string();
+                                                            use rust_decimal::prelude::ToPrimitive;
                                                             let price_f64 = chosen_price.to_f64().unwrap_or(0.0);
                                                             let size_f64 = qty.to_f64().unwrap_or(0.0);
 
