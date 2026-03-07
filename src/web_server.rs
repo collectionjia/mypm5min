@@ -36,6 +36,7 @@ pub async fn start_server(is_running: Arc<AtomicBool>) {
         .route("/", get(index_handler))
         .route("/api/status", get(status_handler))
         .route("/api/control", post(control_handler))
+        .route("/api/logs", get(logs_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
