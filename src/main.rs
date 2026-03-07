@@ -825,7 +825,6 @@ async fn main() -> Result<()> {
                                                         debug!("⏸️ 价格<{:.2}，倒计时策略跳过 | 市场:{} | 价格:{:.4}", min_price, market_display, chosen_price);
                                                         // 不标记已尝试，允许重试
                                                     } else {
-                                                        } else {
                                                         // 检查数量是否也偏大（量价齐升）
                                                         let volume_condition_met = if is_yes {
                                                             yes_total_vol > no_total_vol
@@ -860,13 +859,12 @@ async fn main() -> Result<()> {
                                                                         warn!("❌ 倒计时策略下单失败: {}", e);
                                                                     }
                                                                 }
-                                                            });
-                                                        }
+                                                        });
                                                     }
-                                                }
                                                 }
                                             }
                                         }
+                                    }
                                     }
                                 }
 
