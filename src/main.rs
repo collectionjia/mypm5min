@@ -764,12 +764,19 @@ async fn main() -> Result<()> {
                                 // 更新 Web 控制台数据
                                 {
                                     use rust_decimal::prelude::ToPrimitive;
+                                    let yes_f64 = yes_best_ask.map(|(p, _)| p.to_f64().unwrap_or(0.0));
+                                    let no_f64 = no_best_ask.map(|(p, _)| p.to_f64().unwrap_or(0.0));
+                                    let sum_val = if let (Some(y), Some(n)) = (yes_f64, no_f64) { Some(y + n) } else { None };
+                                    let diff_val = if let (Some(y), Some(n)) = (yes_f64, no_f64) { Some((y - n).abs()) } else { None };
+
                                     let entry = web_server::MarketData {
                                         id: market_id.to_string(),
                                         name: market_display.clone(),
                                         countdown: format!("{:02}:{:02}", countdown_minutes, countdown_seconds),
-                                        yes_price: yes_best_ask.map(|(p, _)| p.to_f64().unwrap_or(0.0)),
-                                        no_price: no_best_ask.map(|(p, _)| p.to_f64().unwrap_or(0.0)),
+                                        yes_price: yes_f64,
+                                        no_price: no_f64,
+                                        sum: sum_val,
+                                        diff: diff_val,
                                         update_time: Utc::now().timestamp(),
                                     };
                                     market_data.insert(market_id.to_string(), entry);

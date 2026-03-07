@@ -21,6 +21,8 @@ pub struct MarketData {
     pub countdown: String,
     pub yes_price: Option<f64>,
     pub no_price: Option<f64>,
+    pub sum: Option<f64>,
+    pub diff: Option<f64>,
     pub update_time: i64,
 }
 

@@ -331,6 +331,10 @@
                             <span class="price-label">NO</span>
                             <span class="price-value no-price">${m.no_price != null ? m.no_price.toFixed(4) : '--'}</span>
                         </div>
+                        <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #eee; display: flex; justify-content: space-between; font-size: 0.85rem;">
+                            <span>Sum: <b>${m.sum != null ? m.sum.toFixed(4) : '--'}</b></span>
+                            <span>Diff: <b>${m.diff != null ? m.diff.toFixed(4) : '--'}</b></span>
+                        </div>
                         <div style="font-size: 0.8rem; color: #999; margin-top: 0.5rem; text-align: right;">
                             更新于: ${new Date(m.update_time * 1000).toLocaleTimeString()}
                         </div>
