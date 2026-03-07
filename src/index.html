@@ -116,6 +116,62 @@
             width: 300px;
             margin-bottom: 1rem;
         }
+        
+        /* Markets Grid */
+        #markets-container {
+            margin-top: 2rem;
+            width: 90%;
+            max-width: 800px;
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 1rem;
+            width: 100%;
+        }
+        .market-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            border: 1px solid #eee;
+        }
+        .market-header {
+            display: flex;
+            justify_content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid #f0f0f0;
+            padding-bottom: 0.5rem;
+        }
+        .market-name {
+            font-weight: bold;
+            font-size: 1.1rem;
+            color: #1f2937;
+        }
+        .countdown {
+            background: #e0f2fe;
+            color: #0369a1;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        .price-row {
+            display: flex;
+            justify_content: space-between;
+            margin-bottom: 0.5rem;
+            font-size: 1.1rem;
+        }
+        .price-label {
+            color: #666;
+        }
+        .price-value {
+            font-weight: bold;
+        }
+        .yes-price { color: #10b981; }
+        .no-price { color: #ef4444; }
     </style>
 </head>
 <body>
@@ -125,6 +181,13 @@
             <div id="statusText" class="status stopped">检查中...</div>
             <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
             <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
+        </div>
+
+        <div id="markets-container">
+            <h3>实时市场</h3>
+            <div id="markets-grid" class="grid-container">
+                <div style="grid-column: 1/-1; text-align: center; color: #666; padding: 2rem;">加载中...</div>
+            </div>
         </div>
 
         <div id="trades-container">
@@ -243,14 +306,52 @@
             }
         }
 
+        async function updateMarkets() {
+            try {
+                const response = await fetch(`${API_BASE}/api/markets`);
+                const markets = await response.json();
+                const grid = document.getElementById('markets-grid');
+                
+                if (markets.length === 0) {
+                    grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #666; padding: 2rem;">暂无活跃市场数据</div>';
+                    return;
+                }
+
+                grid.innerHTML = markets.map(m => `
+                    <div class="market-card">
+                        <div class="market-header">
+                            <div class="market-name">${m.name}</div>
+                            <div class="countdown">⏳ ${m.countdown}</div>
+                        </div>
+                        <div class="price-row">
+                            <span class="price-label">YES</span>
+                            <span class="price-value yes-price">${m.yes_price != null ? m.yes_price.toFixed(4) : '--'}</span>
+                        </div>
+                        <div class="price-row">
+                            <span class="price-label">NO</span>
+                            <span class="price-value no-price">${m.no_price != null ? m.no_price.toFixed(4) : '--'}</span>
+                        </div>
+                        <div style="font-size: 0.8rem; color: #999; margin-top: 0.5rem; text-align: right;">
+                            更新于: ${new Date(m.update_time * 1000).toLocaleTimeString()}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error fetching markets:', error);
+            }
+        }
+
         // Initial load
         updateStatus();
         updateTrades();
+        updateMarkets();
         
         // Auto refresh status every 5 seconds
         setInterval(updateStatus, 5000);
         // Auto refresh trades every 5 seconds
         setInterval(updateTrades, 5000);
+        // Auto refresh markets every 1 second
+        setInterval(updateMarkets, 1000);
     </script>
 </body>
 </html>

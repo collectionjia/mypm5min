@@ -9,14 +9,26 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use dashmap::DashMap;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tracing::info;
+
+#[derive(Clone, Serialize, Debug)]
+pub struct MarketData {
+    pub id: String,
+    pub name: String,
+    pub countdown: String,
+    pub yes_price: Option<f64>,
+    pub no_price: Option<f64>,
+    pub update_time: i64,
+}
 
 // Shared state for controlling the bot
 #[derive(Clone)]
 pub struct AppState {
     pub is_running: Arc<AtomicBool>,
+    pub market_data: Arc<DashMap<String, MarketData>>,
 }
 
 #[derive(Serialize)]
@@ -29,8 +41,8 @@ struct ControlRequest {
     action: String, // "start" or "stop"
 }
 
-pub async fn start_server(is_running: Arc<AtomicBool>) {
-    let state = AppState { is_running };
+pub async fn start_server(is_running: Arc<AtomicBool>, market_data: Arc<DashMap<String, MarketData>>) {
+    let state = AppState { is_running, market_data };
 
     let app = Router::new()
         .route("/", get(index_handler))
@@ -38,6 +50,7 @@ pub async fn start_server(is_running: Arc<AtomicBool>) {
         .route("/api/control", post(control_handler))
         .route("/api/logs", get(logs_handler))
         .route("/api/trades", get(trades_handler))
+        .route("/api/markets", get(markets_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -55,6 +68,13 @@ async fn index_handler() -> Html<&'static str> {
 async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     let running = state.is_running.load(Ordering::Relaxed);
     Json(StatusResponse { running })
+}
+
+async fn markets_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let mut markets: Vec<MarketData> = state.market_data.iter().map(|r| r.value().clone()).collect();
+    // 按更新时间倒序排序
+    markets.sort_by(|a, b| b.update_time.cmp(&a.update_time));
+    Json(markets)
 }
 
 async fn logs_handler() -> impl IntoResponse {

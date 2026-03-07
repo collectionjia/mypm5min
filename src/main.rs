@@ -327,9 +327,11 @@ async fn main() -> Result<()> {
 
     // 启动 Web 控制服务器
     let is_running = Arc::new(AtomicBool::new(false)); // 默认为停止状态，等待网页启动
+    let market_data = Arc::new(DashMap::new());
     let is_running_server = is_running.clone();
+    let market_data_server = market_data.clone();
     tokio::spawn(async move {
-        web_server::start_server(is_running_server).await;
+        web_server::start_server(is_running_server, market_data_server).await;
     });
 
     info!("🌐 Web控制台已启动: http://localhost:3000");
@@ -749,6 +751,20 @@ async fn main() -> Result<()> {
                                 let no_ask_vol: Decimal = pair.no_book.asks.iter().map(|o| o.size).sum();
                                 let no_bid_vol: Decimal = pair.no_book.bids.iter().map(|o| o.size).sum();
                                 let no_total_vol = no_ask_vol + no_bid_vol;
+
+                                // 更新 Web 控制台数据
+                                {
+                                    use rust_decimal::prelude::ToPrimitive;
+                                    let entry = web_server::MarketData {
+                                        id: market_id.to_string(),
+                                        name: market_display.clone(),
+                                        countdown: format!("{:02}:{:02}", countdown_minutes, countdown_seconds),
+                                        yes_price: yes_best_ask.map(|(p, _)| p.to_f64().unwrap_or(0.0)),
+                                        no_price: no_best_ask.map(|(p, _)| p.to_f64().unwrap_or(0.0)),
+                                        update_time: Utc::now().timestamp(),
+                                    };
+                                    market_data.insert(market_id.to_string(), entry);
+                                }
 
                                 // 倒计时策略：在距窗口结束 10-5 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.99则跳过
                                 {
