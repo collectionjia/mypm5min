@@ -286,12 +286,12 @@ async fn main() -> Result<()> {
     // 创建对冲监测器（传入PositionTracker的Arc引用以更新风险敞口）
     // 对冲策略已暂时关闭，但保留hedge_monitor变量以备将来使用
     let position_tracker = _risk_manager.position_tracker();
-    let _hedge_monitor = HedgeMonitor::new(
+    let hedge_monitor = Arc::new(HedgeMonitor::new(
         clob_client.clone(),
         config.private_key.clone(),
         config.proxy_address.clone(),
         position_tracker,
-    );
+    ));
 
     // 验证认证是否真的成功 - 尝试一个简单的API调用
     info!("正在验证认证状态（通过API调用测试）...");
@@ -703,6 +703,15 @@ async fn main() -> Result<()> {
 
                     match book_result {
                         Some(Ok(book)) => {
+                            // 检查止盈止损（使用 clone 的 book）
+                            let book_clone = book.clone();
+                            let monitor_clone = hedge_monitor.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = monitor_clone.check_and_execute(&book_clone).await {
+                                    warn!("HedgeMonitor check error: {}", e);
+                                }
+                            });
+
                             // 然后处理订单簿更新（book会被move）
                             if let Some(pair) = monitor.handle_book_update(book) {
                                 // 注意：asks 最后一个为卖一价
@@ -768,56 +777,10 @@ async fn main() -> Result<()> {
 
                                 // 倒计时策略：在距窗口结束 10-5 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.99则跳过
                                 {
+                                    /*
                                     // 检查止损：如果已有持仓且亏损超过 10%
-                                    if let Some(mut entry) = one_dollar_attempted.get_mut(&market_id) {
-                                        let (token_id, entry_price, is_active) = *entry;
-                                        if is_active {
-                                            // 寻找当前卖出价（对手买单最高价）
-                                            // 假设 SDK 的 bids 是按价格降序排列（最佳买单在 first）
-                                            let best_bid = if token_id == pair.yes_book.asset_id {
-                                                pair.yes_book.bids.first().map(|b| b.price)
-                                            } else {
-                                                pair.no_book.bids.first().map(|b| b.price)
-                                            };
-
-                                            if let Some(bid_price) = best_bid {
-                                                // 如果当前卖出价 <= 入场价 * 0.9，触发止损
-                                                if bid_price <= entry_price * dec!(0.9) {
-                                                    let loss_pct = (dec!(1.0) - bid_price / entry_price) * dec!(100.0);
-                                                    info!("🛑 倒计时策略触发止损 | 市场:{} | 当前卖价:{:.4} | 入场价:{:.4} | 亏损:{:.2}%", 
-                                                        market_display, bid_price, entry_price, loss_pct);
-                                                    
-                                                    // 标记为非活跃（已触发止损），避免重复触发
-                                                    entry.2 = false;
-
-                                                    // 执行卖出
-                                                    let executor_clone = executor.clone();
-                                                    let pt = _risk_manager.position_tracker();
-                                                    // 假设卖出全部该 token 持仓
-                                                    // 获取当前持仓数量
-                                                    let current_pos = pt.get_position(token_id);
-                                                    if current_pos > dec!(0) {
-                                                        tokio::spawn(async move {
-                                                            // 使用市价卖出（实际上是用卖一价去吃单，或者挂单在买一价）
-                                                            // 为了快速成交，使用 bid_price
-                                                            match executor_clone.sell_at_price(token_id, bid_price, current_pos).await {
-                                                                Ok(resp) => {
-                                                                    info!("✅ 倒计时策略止损卖出成功 | order_id={}", resp.order_id);
-                                                                    pt.update_exposure_cost(token_id, bid_price, -current_pos);
-                                                                    pt.update_position(token_id, -current_pos);
-                                                                }
-                                                                Err(e) => {
-                                                                    warn!("❌ 倒计时策略止损卖出失败: {}", e);
-                                                                }
-                                                            }
-                                                        });
-                                                    } else {
-                                                        warn!("倒计时策略止损触发但持仓为0 | token_id={}", token_id);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                    // 已移除：现在统一使用 HedgeMonitor 进行止盈止损监控
+                                    */
 
                                     if countdown_active {
                                         if !one_dollar_attempted.contains_key(&market_id) {
@@ -834,6 +797,12 @@ async fn main() -> Result<()> {
                                                         (pair.yes_book.asset_id, y_price, "YES", true)
                                                     } else {
                                                         (pair.no_book.asset_id, n_price, "NO", false)
+                                                    };
+                                                    
+                                                    let opposite_token = if is_yes {
+                                                        pair.no_book.asset_id
+                                                    } else {
+                                                        pair.yes_book.asset_id
                                                     };
                                                     
                                                     // 检查是否低于最小价格阈值
@@ -871,12 +840,35 @@ async fn main() -> Result<()> {
                                                             let price_f64 = chosen_price.to_f64().unwrap_or(0.0);
                                                             let size_f64 = qty.to_f64().unwrap_or(0.0);
 
+                                                            let hedge_monitor_clone = hedge_monitor.clone();
+                                                            let tp_pct = Decimal::try_from(config.hedge_take_profit_pct).unwrap_or(dec!(0.05));
+                                                            let sl_pct = Decimal::try_from(config.hedge_stop_loss_pct).unwrap_or(dec!(0.05));
+                                                            let opposite_token_id = opposite_token;
+
                                                             tokio::spawn(async move {
                                                                 match executor_clone.buy_at_price(chosen_token, chosen_price, qty).await {
                                                                     Ok(resp) => {
                                                                         info!("✅ 倒计时策略下单成功 | order_id={}", resp.order_id);
                                                                         pt.update_exposure_cost(chosen_token, chosen_price, qty);
                                                                         pt.update_position(chosen_token, qty);
+                                                                        
+                                                                        // Add to hedge monitor
+                                                                        use crate::risk::recovery::RecoveryAction;
+                                                                        let action = RecoveryAction::MonitorForExit {
+                                                                            token_id: chosen_token,
+                                                                            opposite_token_id: opposite_token_id,
+                                                                            amount: qty,
+                                                                            entry_price: chosen_price,
+                                                                            take_profit_pct: tp_pct,
+                                                                            stop_loss_pct: sl_pct,
+                                                                            pair_id: market_id_str.clone(),
+                                                                            market_display: market_display_str.clone(),
+                                                                        };
+                                                                        if let Err(e) = hedge_monitor_clone.add_position(&action) {
+                                                                            warn!("❌ 添加对冲监控失败: {}", e);
+                                                                        } else {
+                                                                            info!("🛡️ 已添加对冲监控 | 止盈:{:.2}% | 止损:{:.2}%", tp_pct * dec!(100), sl_pct * dec!(100));
+                                                                        }
                                                                         
                                                                         // 记录交易历史
                                                                         use crate::utils::trade_history::{add_trade, TradeRecord};

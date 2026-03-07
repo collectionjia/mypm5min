@@ -176,9 +176,9 @@ impl Config {
                 .parse()
                 .unwrap_or(5.0), // 默认5.0
             wind_down_before_window_end_minutes: env::var("WIND_DOWN_BEFORE_WINDOW_END_MINUTES")
-                .unwrap_or_else(|_| "0".to_string())
+                .unwrap_or_else(|_| "2".to_string())
                 .parse()
-                .unwrap_or(0), // 0=不启用
+                .unwrap_or(2), // 默认2
             wind_down_sell_price: env::var("WIND_DOWN_SELL_PRICE")
                 .unwrap_or_else(|_| "0.01".to_string())
                 .parse()
