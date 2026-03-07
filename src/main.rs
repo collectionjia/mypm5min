@@ -729,7 +729,7 @@ async fn main() -> Result<()> {
                                 let market_title = market_info.map(|m| m.title.as_str()).unwrap_or("未知市场");
                                 let market_symbol = market_info.map(|m| m.crypto_symbol.as_str()).unwrap_or("");
                                 let market_display = if !market_symbol.is_empty() {
-                                    format!("{}预测市场", market_symbol)
+                                    format!("{}", market_symbol)
                                 } else {
                                     market_title.to_string()
                                 };
@@ -897,7 +897,7 @@ async fn main() -> Result<()> {
                                             let profit_pct = (dec!(1.0) - t) * dec!(100.0);
                                             ("🚨套利机会", format!("总价:{:.4} 利润:{:.2}%", t, profit_pct))
                                         } else {
-                                            ("📊", format!("总价:{:.4} (无套利)", t))
+                                            ("📊", format!("总价:{:.4} ", t))
                                         }
                                     })
                                     .unwrap_or_else(|| ("📊", "无数据".to_string()));
