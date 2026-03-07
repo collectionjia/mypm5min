@@ -8,24 +8,82 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
             display: flex;
-            justify_content: center;
+            flex-direction: column;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
             background-color: #f0f2f5;
+            padding: 20px;
+            box-sizing: border-box;
         }
         .container {
+            width: 100%;
+            max-width: 1200px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        /* Top Section: Real-time Markets */
+        #markets-container {
+            width: 100%;
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            box-sizing: border-box;
+        }
+        
+        /* Bottom Section: Split into Left (Control) and Right (Stats) */
+        .bottom-section {
+            display: flex;
+            gap: 20px;
+            width: 100%;
+            flex-wrap: wrap;
+        }
+        
+        .control-panel {
+            flex: 0 0 300px;
             text-align: center;
             background: white;
             padding: 2rem;
             border-radius: 12px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            width: 300px;
+            height: fit-content;
         }
-        h1 {
-            margin-bottom: 2rem;
+        
+        #trades-container {
+            flex: 1;
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            overflow-x: auto;
+            min-width: 300px;
+        }
+
+        /* Mobile Responsive */
+        @media (max-width: 768px) {
+            .bottom-section {
+                flex-direction: column;
+            }
+            .control-panel {
+                flex: 1;
+                width: 100%;
+                box-sizing: border-box;
+            }
+            #trades-container {
+                width: 100%;
+                box-sizing: border-box;
+            }
+        }
+
+        h1, h3 {
+            margin-top: 0;
             color: #333;
         }
+        h1 { margin-bottom: 1.5rem; }
+        h3 { margin-bottom: 1rem; border-bottom: 2px solid #f0f0f0; padding-bottom: 0.5rem; }
+
         .status {
             margin-bottom: 1.5rem;
             font-size: 1.2rem;
@@ -64,22 +122,7 @@
         .btn-stop:hover {
             background-color: #dc2626;
         }
-        .refresh-btn {
-            background-color: #3b82f6;
-            color: white;
-            margin-top: 1rem;
-        }
-        #trades-container {
-            margin-top: 2rem;
-            width: 90%;
-            max-width: 800px;
-            background: white;
-            color: #333;
-            padding: 1rem;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            overflow-x: auto;
-        }
+        
         table {
             width: 100%;
             border-collapse: collapse;
@@ -100,29 +143,7 @@
         .status-pending { color: #f59e0b; }
         .status-won { color: #10b981; font-weight: bold; }
         .status-lost { color: #ef4444; font-weight: bold; }
-        .container {
-            width: 100%;
-            max-width: 800px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        .control-panel {
-            text-align: center;
-            background: white;
-            padding: 2rem;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            width: 300px;
-            margin-bottom: 1rem;
-        }
         
-        /* Markets Grid */
-        #markets-container {
-            margin-top: 2rem;
-            width: 90%;
-            max-width: 800px;
-        }
         .grid-container {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
@@ -130,11 +151,15 @@
             width: 100%;
         }
         .market-card {
-            background: white;
-            padding: 1.5rem;
+            background: #fff;
+            padding: 1rem;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-            border: 1px solid #eee;
+            border: 1px solid #e5e7eb;
+            transition: transform 0.2s;
+        }
+        .market-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
         }
         .market-header {
             display: flex;
@@ -176,13 +201,7 @@
 </head>
 <body>
     <div class="container">
-        <div class="control-panel">
-            <h1>Bot 控制台</h1>
-            <div id="statusText" class="status stopped">检查中...</div>
-            <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
-            <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
-        </div>
-
+        <!-- Top Section: Real-time Markets -->
         <div id="markets-container">
             <h3>实时市场</h3>
             <div id="markets-grid" class="grid-container">
@@ -190,23 +209,33 @@
             </div>
         </div>
 
-        <div id="trades-container">
-            <h3>交易统计</h3>
-            <table id="trades-table">
-                <thead>
-                    <tr>
-                        <th>时间</th>
-                        <th>市场</th>
-                        <th>方向</th>
-                        <th>价格</th>
-                        <th>数量</th>
-                        <th>结果</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr><td colspan="6" style="text-align:center">暂无交易记录</td></tr>
-                </tbody>
-            </table>
+        <!-- Bottom Section: Control & Trades -->
+        <div class="bottom-section">
+            <div class="control-panel">
+                <h1>Bot 控制台</h1>
+                <div id="statusText" class="status stopped">检查中...</div>
+                <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
+                <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
+            </div>
+
+            <div id="trades-container">
+                <h3>交易统计</h3>
+                <table id="trades-table">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>市场</th>
+                            <th>方向</th>
+                            <th>价格</th>
+                            <th>数量</th>
+                            <th>结果</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td colspan="6" style="text-align:center">暂无交易记录</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 

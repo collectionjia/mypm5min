@@ -503,30 +503,46 @@ async fn main() -> Result<()> {
         loop {
             let now_all = Utc::now();
             let seconds_until_end_all = (window_end - now_all).num_seconds();
-            if seconds_until_end_all <= 0 && !post_end_claim_done {
+            // 在窗口结束前1分钟开始尝试领取，而不是等到完全结束
+            if seconds_until_end_all <= 60 && !post_end_claim_done {
                 post_end_claim_done = true;
                 let config_claim = config.clone();
                 tokio::spawn(async move {
                     if let Some(proxy) = config_claim.proxy_address {
-                        match get_positions().await {
-                            Ok(positions) => {
-                                let condition_ids = condition_ids_with_both_sides(&positions);
-                                let n = condition_ids.len();
-                                for (i, condition_id) in condition_ids.iter().enumerate() {
-                                    match merge::merge_max(*condition_id, proxy, &config_claim.private_key, None).await {
-                                        Ok(tx) => {
-                                            info!("🎁 自动领取：Merge 完成 | condition_id={:#x} | tx={}", condition_id, tx);
+                        // 循环尝试领取，直到窗口结束一段时间后，以确保所有结算都完成
+                        // 尝试5次，每次间隔30秒
+                        for i in 0..5 {
+                            if i > 0 {
+                                info!("自动领取：第 {} 次尝试...", i + 1);
+                            }
+                            match get_positions().await {
+                                Ok(positions) => {
+                                    let condition_ids = condition_ids_with_both_sides(&positions);
+                                    if condition_ids.is_empty() {
+                                        if i == 0 {
+                                            info!("自动领取：当前无双边持仓可领取");
                                         }
-                                        Err(e) => {
-                                            warn!(condition_id = %condition_id, error = %e, "自动领取：Merge 失败");
+                                    } else {
+                                        info!("自动领取：发现 {} 个市场可领取", condition_ids.len());
+                                        let n = condition_ids.len();
+                                        for (j, condition_id) in condition_ids.iter().enumerate() {
+                                            match merge::merge_max(*condition_id, proxy, &config_claim.private_key, None).await {
+                                                Ok(tx) => {
+                                                    info!("🎁 自动领取：Merge 完成 | condition_id={:#x} | tx={}", condition_id, tx);
+                                                }
+                                                Err(e) => {
+                                                    warn!(condition_id = %condition_id, error = %e, "自动领取：Merge 失败");
+                                                }
+                                            }
+                                            if j + 1 < n {
+                                                sleep(Duration::from_secs(10)).await;
+                                            }
                                         }
-                                    }
-                                    if i + 1 < n {
-                                        sleep(Duration::from_secs(30)).await;
                                     }
                                 }
+                                Err(e) => { warn!(error = %e, "自动领取：获取持仓失败，跳过"); }
                             }
-                            Err(e) => { warn!(error = %e, "自动领取：获取持仓失败，跳过"); }
+                            sleep(Duration::from_secs(30)).await;
                         }
                     } else {
                         warn!("自动领取：未配置 POLYMARKET_PROXY_ADDRESS，跳过");
@@ -662,13 +678,22 @@ async fn main() -> Result<()> {
                                         // 注意：如果市场价格高于 wind_down_sell_price，会以市价成交（更好）
                                         // 如果市场价格低于 wind_down_sell_price，则会挂单（可能无法成交）
                                         // 为了确保卖出，wind_down_sell_price 应该设置得足够低（如 0.01 或 0.05）
-                                        if let Err(e) = executor_wd.sell_at_price(pos.asset, wind_down_sell_price, size_floor).await {
-                                            warn!(token_id = %pos.asset, size = %pos.size, error = %e, "收尾：卖出单腿失败");
-                                        } else {
-                                            info!("✅ 收尾：已下卖单 | token_id={:#x} | 数量:{} | 价格:{:.4}", pos.asset, size_floor, wind_down_sell_price);
-                                            
-                                            // 更新本地持仓追踪（虽然之后会重置，但为了日志准确性）
-                                            position_tracker.update_position(pos.asset, -size_floor);
+                                        match executor_wd.sell_at_price(pos.asset, wind_down_sell_price, size_floor).await {
+                                            Ok(_) => {
+                                                info!("✅ 收尾：已下卖单 | token_id={:#x} | 数量:{} | 价格:{:.4}", pos.asset, size_floor, wind_down_sell_price);
+                                                // 更新本地持仓追踪（虽然之后会重置，但为了日志准确性）
+                                                position_tracker.update_position(pos.asset, -size_floor);
+                                            },
+                                            Err(e) => {
+                                                let error_msg = e.to_string();
+                                                if error_msg.contains("the orderbook") && error_msg.contains("does not exist") {
+                                                    warn!(token_id = %pos.asset, "收尾：订单簿不存在，可能市场已结束或已结算，跳过卖出并清理持仓");
+                                                    // 订单簿不存在，意味着无法交易，移除持仓以避免重复尝试
+                                                    position_tracker.update_position(pos.asset, -size_floor);
+                                                } else {
+                                                    warn!(token_id = %pos.asset, size = %pos.size, error = %e, "收尾：卖出单腿失败");
+                                                }
+                                            }
                                         }
                                     }
                                 }
