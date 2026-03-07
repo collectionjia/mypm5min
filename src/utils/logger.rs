@@ -19,7 +19,7 @@ impl std::io::Write for MultiWriter {
         let log_entry = String::from_utf8_lossy(buf).to_string();
         
         if let Ok(mut buffer) = LOG_BUFFER.lock() {
-            buffer.push_back(log_entry);
+            buffer.push_back(log_entry.clone());
             // 保持缓冲区大小在 300 行以内
             while buffer.len() > 300 {
                 buffer.pop_front();
