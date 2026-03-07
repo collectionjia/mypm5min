@@ -1264,6 +1264,54 @@ async fn main() -> Result<()> {
                             new_window = new_window_timestamp,
                             "检测到新的5分钟窗口，准备取消旧订阅并切换到新窗口"
                         );
+
+                        // 获取上一轮的市场信息列表 (condition_id, yes_token, no_token)
+                        let prev_round_markets: Vec<(B256, U256, U256)> = market_map.values()
+                            .map(|m| (m.market_id, m.yes_token_id, m.no_token_id))
+                            .collect();
+                        
+                        let pt = _risk_manager.position_tracker();
+                        let proxy_addr = config.proxy_address.clone();
+                        let priv_key = config.private_key.clone();
+                        
+                        // 启动异步任务：2分钟后对上一轮市场执行 Merge（领取奖励）
+                        if !prev_round_markets.is_empty() && proxy_addr.is_some() {
+                            let proxy = proxy_addr.unwrap();
+                            info!("🕒 已安排2分钟后对 {} 个上一轮市场执行平仓（Merge/Redeem）检查", prev_round_markets.len());
+                            
+                            tokio::spawn(async move {
+                                sleep(Duration::from_secs(120)).await; // 等待2分钟
+                                info!("⏰ 开始对上一轮市场执行平仓（Merge/Redeem）检查...");
+                                
+                                for (condition_id, yes_token, no_token) in prev_round_markets {
+                                    let yes_bal = pt.get_position(yes_token);
+                                    let no_bal = pt.get_position(no_token);
+                                    
+                                    // 只有当持仓大于 0.1 时才尝试 Merge，避免无谓的 RPC 请求
+                                    if yes_bal > dec!(0.1) || no_bal > dec!(0.1) {
+                                        info!("🔍 发现上一轮持仓需平仓 | condition_id={} | YES={} | NO={}", condition_id, yes_bal, no_bal);
+                                        match merge::merge_max(condition_id, proxy, &priv_key, None).await {
+                                            Ok(tx) => {
+                                                info!("✅ 上一轮市场平仓成功 | condition_id={} | tx={}", condition_id, tx);
+                                                // 更新本地持仓为0 (虽然下次同步会覆盖，但立即更新更好)
+                                                pt.update_position(yes_token, -yes_bal);
+                                                pt.update_position(no_token, -no_bal);
+                                            },
+                                            Err(e) => {
+                                                // 如果错误包含"无可用份额"，说明链上余额不足（可能是本地状态滞后），降级为debug
+                                                if e.to_string().contains("无可用份额") {
+                                                    debug!("上一轮市场链上无持仓 | condition_id={}", condition_id);
+                                                } else {
+                                                    warn!("⚠️ 上一轮市场平仓失败 | condition_id={} | error={}", condition_id, e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                info!("🏁 上一轮市场平仓任务完成");
+                            });
+                        }
+
                         // 先drop stream以释放对monitor的借用，然后清理旧的订阅
                         drop(stream);
                         monitor.clear();
