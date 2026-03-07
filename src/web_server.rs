@@ -292,9 +292,42 @@ async fn logs_handler() -> impl IntoResponse {
     Json(logs)
 }
 
-async fn trades_handler() -> impl IntoResponse {
+async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
     use crate::utils::trade_history;
-    Json(trade_history::get_trades())
+    let mut trades = trade_history::get_trades();
+    
+    // 更新交易状态（基于最新市场价格）
+    for trade in &mut trades {
+        // 如果状态不是 Pending，则跳过
+        if trade.status != "Pending" {
+            continue;
+        }
+
+        if let Some(market) = state.market_data.get(&trade.market_id) {
+            // YES方向
+            if trade.side == "YES" {
+                if let Some(yes_price) = market.yes_price {
+                    if yes_price >= 0.99 {
+                        trade.status = "Won".to_string();
+                    } else if yes_price <= 0.01 {
+                        trade.status = "Lost".to_string();
+                    }
+                }
+            } 
+            // NO方向
+            else if trade.side == "NO" {
+                if let Some(no_price) = market.no_price {
+                    if no_price >= 0.99 {
+                        trade.status = "Won".to_string();
+                    } else if no_price <= 0.01 {
+                        trade.status = "Lost".to_string();
+                    }
+                }
+            }
+        }
+    }
+    
+    Json(trades)
 }
 
 async fn control_handler(
