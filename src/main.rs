@@ -990,6 +990,36 @@ async fn main() -> Result<()> {
                                                     }
                                                 }
                                             }
+
+                                            // 新增逻辑：倒数1分钟价格差值检查
+                                            // 在倒数1分钟的时刻计算yes和no的差值，拿大值减去小值，如果小于0.15，则当局不下钱
+                                            if let Some(market_info) = market_map.get(&pair.market_id) {
+                                                use chrono::Utc;
+                                                let now = Utc::now();
+                                                let time_until_end = market_info.end_date.signed_duration_since(now);
+                                                let seconds_until_end = time_until_end.num_seconds();
+                                                
+                                                // 如果剩余时间小于等于60秒（倒数1分钟）
+                                                if seconds_until_end <= 60 {
+                                                    use rust_decimal::Decimal;
+                                                    // 计算价格差值：大值 - 小值 (abs(yes - no))
+                                                    let price_diff = (opp.yes_ask_price - opp.no_ask_price).abs();
+                                                    
+                                                    let diff_threshold = dec!(0.15);
+                                                    if price_diff < diff_threshold {
+                                                        info!(
+                                                            "🛑 倒数1分钟内价格差值过小，跳过套利 | 市场:{} | 剩余:{}秒 | Yes:{:.4} | No:{:.4} | 差值:{:.4} | 阈值:{:.4}",
+                                                            market_display,
+                                                            seconds_until_end,
+                                                            opp.yes_ask_price,
+                                                            opp.no_ask_price,
+                                                            price_diff,
+                                                            diff_threshold
+                                                        );
+                                                        continue; // 跳过这个套利机会
+                                                    }
+                                                }
+                                            }
                                             
                                             // 计算订单成本（USD）
                                             // 使用套利机会中的实际可用数量，但不超过配置的最大订单大小
