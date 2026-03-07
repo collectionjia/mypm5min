@@ -214,7 +214,8 @@ async fn redeem_handler() -> impl IntoResponse {
             for pos in positions {
                 // pos.condition_id 是 B256 转 hex 字符串
                 // pos.outcome_index: 0=YES, 1=NO
-                let entry = markets.entry(pos.condition_id.clone()).or_insert((dec!(0), dec!(0)));
+                let condition_id_str = pos.condition_id.to_string();
+                let entry = markets.entry(condition_id_str).or_insert((dec!(0), dec!(0)));
                 if pos.outcome_index == 0 {
                     entry.0 = pos.size;
                 } else if pos.outcome_index == 1 {
