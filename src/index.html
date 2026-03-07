@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polymarket Bot Control</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            display: flex;
+            justify_content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5;
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            width: 300px;
+        }
+        h1 {
+            margin-bottom: 2rem;
+            color: #333;
+        }
+        .status {
+            margin-bottom: 1.5rem;
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+        .status.running {
+            color: #10b981;
+        }
+        .status.stopped {
+            color: #ef4444;
+        }
+        button {
+            padding: 12px 24px;
+            font-size: 1rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            width: 100%;
+            margin-bottom: 1rem;
+        }
+        #toggleBtn {
+            font-weight: bold;
+        }
+        .btn-start {
+            background-color: #10b981;
+            color: white;
+        }
+        .btn-start:hover {
+            background-color: #059669;
+        }
+        .btn-stop {
+            background-color: #ef4444;
+            color: white;
+        }
+        .btn-stop:hover {
+            background-color: #dc2626;
+        }
+        .refresh-btn {
+            background-color: #3b82f6;
+            color: white;
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Bot 控制台</h1>
+        <div id="statusText" class="status stopped">检查中...</div>
+        <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
+        <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
+    </div>
+
+    <script>
+        // 使用当前页面访问的 host 作为 API base，这样无论是 localhost 还是 IP 访问都能正常工作
+        const API_BASE = window.location.origin;
+        let isRunning = false;
+
+        async function updateStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/api/status`);
+                const data = await response.json();
+                isRunning = data.running;
+                render();
+            } catch (error) {
+                console.error('Error fetching status:', error);
+                document.getElementById('statusText').innerText = '连接失败';
+                document.getElementById('statusText').className = 'status stopped';
+            }
+        }
+
+        function render() {
+            const statusEl = document.getElementById('statusText');
+            const btnEl = document.getElementById('toggleBtn');
+            
+            if (isRunning) {
+                statusEl.innerText = '🟢 运行中';
+                statusEl.className = 'status running';
+                btnEl.innerText = '停止 Bot';
+                btnEl.className = 'btn-stop';
+                btnEl.disabled = false;
+            } else {
+                statusEl.innerText = '🔴 已停止';
+                statusEl.className = 'status stopped';
+                btnEl.innerText = '启动 Bot';
+                btnEl.className = 'btn-start';
+                btnEl.disabled = false;
+            }
+            
+            document.getElementById('lastUpdated').innerText = `最后更新: ${new Date().toLocaleTimeString()}`;
+        }
+
+        async function toggleBot() {
+            const action = isRunning ? 'stop' : 'start';
+            const btnEl = document.getElementById('toggleBtn');
+            btnEl.disabled = true;
+            btnEl.innerText = '处理中...';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/control`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ action }),
+                });
+                const data = await response.json();
+                isRunning = data.running;
+                render();
+            } catch (error) {
+                console.error('Error toggling bot:', error);
+                alert('操作失败，请检查控制台日志');
+                btnEl.disabled = false;
+            }
+        }
+
+        // Initial load
+        updateStatus();
+        
+        // Auto refresh every 5 seconds
+        setInterval(updateStatus, 5000);
+    </script>
+</body>
+</html>
