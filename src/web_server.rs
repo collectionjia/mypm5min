@@ -37,6 +37,7 @@ pub async fn start_server(is_running: Arc<AtomicBool>) {
         .route("/api/status", get(status_handler))
         .route("/api/control", post(control_handler))
         .route("/api/logs", get(logs_handler))
+        .route("/api/trades", get(trades_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -66,6 +67,11 @@ async fn logs_handler() -> impl IntoResponse {
     };
     
     Json(logs)
+}
+
+async fn trades_handler() -> impl IntoResponse {
+    use crate::utils::trade_history;
+    Json(trade_history::get_trades())
 }
 
 async fn control_handler(

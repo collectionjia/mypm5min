@@ -848,12 +848,34 @@ async fn main() -> Result<()> {
                                                                 market_display, side_str, chosen_price, qty, yes_total_vol, no_total_vol);
                                                             let executor_clone = executor.clone();
                                                             let pt = _risk_manager.position_tracker();
+                                                            let market_id_str = market_id.to_string();
+                                                            let market_display_str = market_display.clone();
+                                                            let side_string = side_str.to_string();
+                                                            let price_f64 = chosen_price.to_f64().unwrap_or(0.0);
+                                                            let size_f64 = qty.to_f64().unwrap_or(0.0);
+
                                                             tokio::spawn(async move {
                                                                 match executor_clone.buy_at_price(chosen_token, chosen_price, qty).await {
                                                                     Ok(resp) => {
                                                                         info!("✅ 倒计时策略下单成功 | order_id={}", resp.order_id);
                                                                         pt.update_exposure_cost(chosen_token, chosen_price, qty);
                                                                         pt.update_position(chosen_token, qty);
+                                                                        
+                                                                        // 记录交易历史
+                                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                        use chrono::Utc;
+                                                                        
+                                                                        add_trade(TradeRecord {
+                                                                            id: resp.order_id,
+                                                                            market_id: market_id_str,
+                                                                            market_slug: market_display_str,
+                                                                            side: side_string,
+                                                                            price: price_f64,
+                                                                            size: size_f64,
+                                                                            timestamp: Utc::now().timestamp(),
+                                                                            status: "Pending".to_string(),
+                                                                            profit: None,
+                                                                        });
                                                                     }
                                                                     Err(e) => {
                                                                         warn!("❌ 倒计时策略下单失败: {}", e);
