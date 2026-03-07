@@ -122,6 +122,14 @@
         .btn-stop:hover {
             background-color: #dc2626;
         }
+        .btn-close-all {
+            background-color: #f59e0b; /* Amber/Orange */
+            color: white;
+            margin-top: 0.5rem;
+        }
+        .btn-close-all:hover {
+            background-color: #d97706;
+        }
         
         table {
             width: 100%;
@@ -215,6 +223,7 @@
                 <h1>Bot 控制台</h1>
                 <div id="statusText" class="status stopped">检查中...</div>
                 <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
+                <button id="closeAllBtn" onclick="closeAllPositions()" class="btn-close-all">一键平仓</button>
                 <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
             </div>
 
@@ -332,6 +341,38 @@
                 console.error('Error toggling bot:', error);
                 alert('操作失败，请检查控制台日志');
                 btnEl.disabled = false;
+            }
+        }
+
+        async function closeAllPositions() {
+            if (!confirm('确定要平仓所有持仓吗？\n这将暂停Bot并以市价卖出所有持仓。')) {
+                return;
+            }
+            
+            const btnEl = document.getElementById('closeAllBtn');
+            const originalText = btnEl.innerText;
+            btnEl.disabled = true;
+            btnEl.innerText = '平仓中...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/close_all`, {
+                    method: 'POST',
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`平仓操作已触发！\n${data.message}`);
+                } else {
+                    alert(`平仓失败: ${data.message}`);
+                }
+            } catch (error) {
+                console.error('Error closing positions:', error);
+                alert('请求失败，请检查控制台日志');
+            } finally {
+                btnEl.disabled = false;
+                btnEl.innerText = originalText;
+                // Update status as it might have been stopped
+                updateStatus();
             }
         }
 

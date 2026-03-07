@@ -330,8 +330,9 @@ async fn main() -> Result<()> {
     let market_data = Arc::new(DashMap::new());
     let is_running_server = is_running.clone();
     let market_data_server = market_data.clone();
+    let executor_server = Some(executor.clone());
     tokio::spawn(async move {
-        web_server::start_server(is_running_server, market_data_server).await;
+        web_server::start_server(is_running_server, market_data_server, executor_server).await;
     });
 
     info!("🌐 Web控制台已启动: http://localhost:3000");

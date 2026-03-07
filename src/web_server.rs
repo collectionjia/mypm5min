@@ -12,7 +12,12 @@ use std::sync::{
 use dashmap::DashMap;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
-use tracing::info;
+use tracing::{info, warn, error};
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
+
+use crate::trading::TradingExecutor;
+use poly_5min_bot::positions::get_positions;
 
 #[derive(Clone, Serialize, Debug)]
 pub struct MarketData {
@@ -32,6 +37,7 @@ pub struct MarketData {
 pub struct AppState {
     pub is_running: Arc<AtomicBool>,
     pub market_data: Arc<DashMap<String, MarketData>>,
+    pub executor: Option<Arc<TradingExecutor>>,
 }
 
 #[derive(Serialize)]
@@ -39,18 +45,30 @@ struct StatusResponse {
     running: bool,
 }
 
+#[derive(Serialize)]
+struct CloseAllResponse {
+    success: bool,
+    message: String,
+    positions_closed: usize,
+}
+
 #[derive(Deserialize)]
 struct ControlRequest {
     action: String, // "start" or "stop"
 }
 
-pub async fn start_server(is_running: Arc<AtomicBool>, market_data: Arc<DashMap<String, MarketData>>) {
-    let state = AppState { is_running, market_data };
+pub async fn start_server(
+    is_running: Arc<AtomicBool>,
+    market_data: Arc<DashMap<String, MarketData>>,
+    executor: Option<Arc<TradingExecutor>>,
+) {
+    let state = AppState { is_running, market_data, executor };
 
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/api/status", get(status_handler))
         .route("/api/control", post(control_handler))
+        .route("/api/close_all", post(close_all_handler))
         .route("/api/logs", get(logs_handler))
         .route("/api/trades", get(trades_handler))
         .route("/api/markets", get(markets_handler))
@@ -71,6 +89,77 @@ async fn index_handler() -> Html<&'static str> {
 async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     let running = state.is_running.load(Ordering::Relaxed);
     Json(StatusResponse { running })
+}
+
+async fn close_all_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let executor = match &state.executor {
+        Some(exec) => exec,
+        None => return Json(CloseAllResponse {
+            success: false,
+            message: "Executor not initialized".to_string(),
+            positions_closed: 0,
+        }),
+    };
+
+    info!("🛑 收到Web控制台平仓指令，开始执行平仓...");
+
+    // 暂停机器人运行，防止干扰
+    state.is_running.store(false, Ordering::Relaxed);
+    info!("⏸️ 已暂停Bot自动交易，防止新开仓位");
+
+    let mut closed_count = 0;
+    
+    // 获取当前持仓
+    match get_positions().await {
+        Ok(positions) => {
+            let active_positions: Vec<_> = positions.iter().filter(|p| p.size > dec!(0.01)).collect();
+            if active_positions.is_empty() {
+                info!("✅ 当前无剩余持仓");
+                return Json(CloseAllResponse {
+                    success: true,
+                    message: "当前无剩余持仓".to_string(),
+                    positions_closed: 0,
+                });
+            }
+
+            info!("🔍 发现 {} 个持仓需要平仓", active_positions.len());
+            
+            for pos in active_positions {
+                let size_floor = (pos.size * dec!(100)).floor() / dec!(100);
+                if size_floor < dec!(0.01) {
+                    continue;
+                }
+                
+                // 尝试以 0.05 卖出 (市价单效果，比0.01稍微高一点避免极端情况，但实际上0.01最稳妥能成交)
+                // 这里使用0.01确保只要有买单就能成交
+                let sell_price = dec!(0.01);
+                
+                match executor.sell_at_price(pos.asset, sell_price, size_floor).await {
+                    Ok(_) => {
+                        info!("✅ 已下卖单 | token_id={:#x} | 数量:{} | 价格:{:.4}", pos.asset, size_floor, sell_price);
+                        closed_count += 1;
+                    },
+                    Err(e) => {
+                        error!("❌ 平仓失败 | token_id={:#x} | 错误:{}", pos.asset, e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!("❌ 获取持仓失败: {}", e);
+            return Json(CloseAllResponse {
+                success: false,
+                message: format!("获取持仓失败: {}", e),
+                positions_closed: 0,
+            });
+        }
+    }
+
+    Json(CloseAllResponse {
+        success: true,
+        message: format!("已触发平仓 {} 个持仓", closed_count),
+        positions_closed: closed_count,
+    })
 }
 
 async fn markets_handler(State(state): State<AppState>) -> impl IntoResponse {
