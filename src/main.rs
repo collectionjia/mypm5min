@@ -10,7 +10,7 @@ use poly_5min_bot::merge;
 use poly_5min_bot::positions::{get_positions, Position};
 
 use anyhow::Result;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use futures::StreamExt;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -499,6 +499,8 @@ async fn main() -> Result<()> {
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
         // 倒计时策略：每个市场仅投注一次的标记，记录 (token_id, entry_price, is_active)
         let one_dollar_attempted: DashMap<B256, (U256, Decimal, bool)> = DashMap::new();
+        // 倒计时策略：记录已在倒数2-3秒平仓的市场
+        let countdown_closed_markets: DashSet<B256> = DashSet::new();
 
         // 监控订单簿更新
         loop {
@@ -820,6 +822,47 @@ async fn main() -> Result<()> {
                                     // 检查止损：如果已有持仓且亏损超过 10%
                                     // 已移除：现在统一使用 HedgeMonitor 进行止盈止损监控
                                     */
+
+                                    // 倒计时策略平仓：在倒数 2-3 秒内，如果之前开仓了，则市价卖出
+                                    if seconds_until_end >= 2 && seconds_until_end <= 3 {
+                                        if let Some(entry) = one_dollar_attempted.get(&market_id) {
+                                            let (token_id, _entry_price, _) = *entry;
+                                            // 检查是否已经平仓
+                                            if !countdown_closed_markets.contains(&market_id) {
+                                                countdown_closed_markets.insert(market_id);
+                                                
+                                                let pt = _risk_manager.position_tracker();
+                                                let current_pos = pt.get_position(token_id);
+                                                
+                                                // 只卖出正持仓
+                                                if current_pos > dec!(0.01) {
+                                                    let size_to_sell = (current_pos * dec!(100.0)).floor() / dec!(100.0);
+                                                    
+                                                    info!("⚡ 倒计时策略触发平仓 | 市场:{} | 剩余:{}秒 | 数量:{}", market_display, seconds_until_end, size_to_sell);
+                                                    
+                                                    let executor_clone = executor.clone();
+                                                    // 以极低价格卖出，确保成交（实际上会以市价成交，如果有人挂买单的话）
+                                                    // 使用 0.01 价格 GTC 卖出
+                                                    let sell_price = dec!(0.01); 
+                                                    
+                                                    tokio::spawn(async move {
+                                                        match executor_clone.sell_at_price(token_id, sell_price, size_to_sell).await {
+                                                            Ok(resp) => {
+                                                                info!("✅ 倒计时平仓单已提交 | order_id={}", resp.order_id);
+                                                                // 更新本地持仓追踪
+                                                                pt.update_position(token_id, -size_to_sell);
+                                                            }
+                                                            Err(e) => {
+                                                                warn!("❌ 倒计时平仓失败: {}", e);
+                                                            }
+                                                        }
+                                                    });
+                                                } else {
+                                                    debug!("倒计时平仓跳过：持仓过小或为0 | 市场:{} | 持仓:{}", market_display, current_pos);
+                                                }
+                                            }
+                                        }
+                                    }
 
                                     if countdown_active {
                                         if !one_dollar_attempted.contains_key(&market_id) {
