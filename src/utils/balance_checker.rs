@@ -20,7 +20,7 @@ sol! {
 }
 
 pub async fn get_usdc_balance(wallet_address: Address) -> Result<Decimal> {
-    let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| "https://polygon-rpc.com".to_string()).parse()?;
+    let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| "https://polygon-bor.publicnode.com".to_string()).parse()?;
     let provider = ProviderBuilder::new().connect_http(rpc_url);
 
     let usdc_addr = Address::from_str(USDC_ADDRESS)?;
@@ -35,7 +35,7 @@ pub async fn get_usdc_balance(wallet_address: Address) -> Result<Decimal> {
 
 pub async fn check_balance_and_allowance(wallet_address: Address) -> Result<()> {
     // 使用公共RPC节点，或者尝试从环境变量获取
-    let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| "https://polygon-rpc.com".to_string()).parse()?;
+    let rpc_url = std::env::var("RPC_URL").unwrap_or_else(|_| "https://polygon-bor.publicnode.com".to_string()).parse()?;
     let provider = ProviderBuilder::new().connect_http(rpc_url);
 
     let usdc_addr = Address::from_str(USDC_ADDRESS)?;
