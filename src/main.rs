@@ -824,7 +824,7 @@ async fn main() -> Result<()> {
                                     */
 
                                     // 倒计时策略平仓：在倒数 5 秒内，如果之前开仓了，则市价卖出
-                                    if seconds_until_end > 0 && seconds_until_end <= 5 {
+                                    if sec_to_end > 0 && sec_to_end <= 5 {
                                         if let Some(entry) = one_dollar_attempted.get(&market_id) {
                                             let (token_id, _entry_price, _) = *entry;
                                             // 检查是否已经平仓
@@ -838,7 +838,7 @@ async fn main() -> Result<()> {
                                                 if current_pos > dec!(0.01) {
                                                     let size_to_sell = (current_pos * dec!(100.0)).floor() / dec!(100.0);
                                                     
-                                                    info!("⚡ 倒计时策略触发平仓 | 市场:{} | 剩余:{}秒 | 数量:{}", market_display, seconds_until_end, size_to_sell);
+                                                    info!("⚡ 倒计时策略触发平仓 | 市场:{} | 剩余:{}秒 | 数量:{}", market_display, sec_to_end, size_to_sell);
                                                     
                                                     let executor_clone = executor.clone();
                                                     // 以极低价格卖出，确保成交（实际上会以市价成交，如果有人挂买单的话）
