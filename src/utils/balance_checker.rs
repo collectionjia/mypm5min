@@ -26,7 +26,7 @@ pub async fn get_usdc_balance(wallet_address: Address) -> Result<Decimal> {
     let usdc_addr = Address::from_str(USDC_ADDRESS)?;
     let contract = IERC20::new(usdc_addr, provider);
 
-    let balance = contract.balanceOf(wallet_address).call().await?._0;
+    let balance = contract.balanceOf(wallet_address).call().await?;
     // USDC has 6 decimals
     let balance_dec = Decimal::from_str(&balance.to_string()).unwrap_or_default() / Decimal::from(1_000_000);
     
@@ -47,7 +47,7 @@ pub async fn check_balance_and_allowance(wallet_address: Address) -> Result<()> 
     let balance_call = contract.balanceOf(wallet_address).call().await;
     match balance_call {
         Ok(result) => {
-            let balance = result._0;
+            let balance = result;
             // USDC有6位小数
             let balance_dec = Decimal::from_str(&balance.to_string()).unwrap_or_default() / Decimal::from(1_000_000);
             
