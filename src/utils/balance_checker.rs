@@ -47,7 +47,7 @@ pub async fn check_balance_and_allowance(wallet_address: Address) -> Result<()> 
     let balance_call = contract.balanceOf(wallet_address).call().await;
     match balance_call {
         Ok(result) => {
-            let balance = result;
+            let balance = result._0;
             // USDC有6位小数
             let balance_dec = Decimal::from_str(&balance.to_string()).unwrap_or_default() / Decimal::from(1_000_000);
             

@@ -65,9 +65,17 @@ struct RedeemResponse {
 }
 
 #[derive(Serialize)]
+struct PositionView {
+    pub asset: String,
+    pub title: String,
+    pub size: Decimal,
+    pub cur_price: Decimal,
+}
+
+#[derive(Serialize)]
 struct PortfolioResponse {
     balance: Option<String>,
-    positions: Vec<Position>,
+    positions: Vec<PositionView>,
     error: Option<String>,
 }
 
@@ -146,7 +154,12 @@ async fn portfolio_handler() -> Json<PortfolioResponse> {
 
     // 获取持仓
     let positions = match get_positions().await {
-        Ok(p) => p,
+        Ok(p) => p.into_iter().map(|pos| PositionView {
+            asset: pos.asset,
+            title: pos.title,
+            size: pos.size,
+            cur_price: pos.cur_price,
+        }).collect(),
         Err(e) => {
             warn!("获取持仓失败: {}", e);
             vec![]
