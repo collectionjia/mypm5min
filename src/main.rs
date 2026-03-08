@@ -823,6 +823,63 @@ async fn main() -> Result<()> {
                                     // 已移除：现在统一使用 HedgeMonitor 进行止盈止损监控
                                     */
 
+                                    // 30秒止损逻辑：如果跌幅 > 5%，则止损平仓
+                                    if sec_to_end >= 30 && sec_to_end <= 35 {
+                                        if let Some(entry) = one_dollar_attempted.get(&market_id) {
+                                            let (token_id, entry_price, _) = *entry;
+                                            // 检查是否已经平仓
+                                            if !countdown_closed_markets.contains(&market_id) {
+                                                // 获取当前价格（使用卖一价作为参考）
+                                                let current_price_opt = if token_id == pair.yes_book.asset_id {
+                                                    yes_best_ask.map(|(p, _)| p)
+                                                } else if token_id == pair.no_book.asset_id {
+                                                    no_best_ask.map(|(p, _)| p)
+                                                } else {
+                                                    None
+                                                };
+
+                                                if let Some(current_price) = current_price_opt {
+                                                    // 计算跌幅
+                                                    if entry_price > dec!(0) {
+                                                        let loss_pct = (entry_price - current_price) / entry_price;
+                                                        if loss_pct > dec!(0.05) {
+                                                            // 标记已平仓，防止重复触发
+                                                            countdown_closed_markets.insert(market_id);
+                                                            
+                                                            let pt = _risk_manager.position_tracker();
+                                                            let current_pos = pt.get_position(token_id);
+                                                            
+                                                            if current_pos > dec!(0.01) {
+                                                                let size_to_sell = (current_pos * dec!(100.0)).floor() / dec!(100.0);
+                                                                
+                                                                info!("📉 触发30秒止损 | 市场:{} | 剩余:{}秒 | 买入:{:.4} | 当前:{:.4} | 跌幅:{:.2}%", 
+                                                                    market_display, sec_to_end, entry_price, current_price, loss_pct * dec!(100));
+                                                                
+                                                                let executor_clone = executor.clone();
+                                                                // 止损市价卖出（挂极低价）
+                                                                let sell_price = dec!(0.01);
+                                                                
+                                                                tokio::spawn(async move {
+                                                                    match executor_clone.sell_at_price(token_id, sell_price, size_to_sell).await {
+                                                                        Ok(resp) => {
+                                                                            info!("✅ 30秒止损单已提交 | order_id={}", resp.order_id);
+                                                                            pt.update_position(token_id, -size_to_sell);
+                                                                        }
+                                                                        Err(e) => {
+                                                                            warn!("❌ 30秒止损失败: {}", e);
+                                                                        }
+                                                                    }
+                                                                });
+                                                            } else {
+                                                                debug!("30秒止损跳过：持仓过小或为0 | 市场:{}", market_display);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     // 倒计时策略平仓：在倒数 5 秒内，如果之前开仓了，则市价卖出
                                     if sec_to_end > 0 && sec_to_end <= 5 {
                                         if let Some(entry) = one_dollar_attempted.get(&market_id) {
