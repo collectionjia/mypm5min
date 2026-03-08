@@ -748,6 +748,9 @@ async fn main() -> Result<()> {
                                 let total_ask_price = yes_best_ask.and_then(|(p, _)| no_best_ask.map(|(np, _)| p + np));
 
                                 let market_id = pair.market_id;
+                                // 获取旧价格用于闪崩检测（在 last_prices 更新前获取）
+                                let prev_prices_for_crash = last_prices.get(&market_id).map(|r| (r.0, r.1));
+
                                 // 与上一拍比较得到涨跌方向（↑涨 ↓跌 −平），首拍无箭头
                                 let (yes_dir, no_dir) = match (yes_best_ask, no_best_ask) {
                                     (Some((yp, _)), Some((np, _))) => {
@@ -814,6 +817,58 @@ async fn main() -> Result<()> {
                                         update_time: Utc::now().timestamp(),
                                     };
                                     market_data.insert(market_id.to_string(), entry);
+                                }
+
+                                // 闪崩止损检测：倒计时 <= 30秒，与上一次价格相比跌幅 >= 5%
+                                if sec_to_end <= 30 {
+                                    if let Some((prev_yes, prev_no)) = prev_prices_for_crash {
+                                        if let Some(entry) = one_dollar_attempted.get(&market_id) {
+                                            let (token_id, _, _) = *entry;
+                                            if !countdown_closed_markets.contains(&market_id) {
+                                                let (curr_p, prev_p) = if token_id == pair.yes_book.asset_id {
+                                                    (yes_best_ask.map(|(p,_)| p).unwrap_or(dec!(0)), prev_yes)
+                                                } else {
+                                                    (no_best_ask.map(|(p,_)| p).unwrap_or(dec!(0)), prev_no)
+                                                };
+                                                
+                                                if prev_p > dec!(0) && curr_p > dec!(0) {
+                                                    let drop_pct = (prev_p - curr_p) / prev_p;
+                                                    if drop_pct >= dec!(0.05) {
+                                                        // 标记已平仓，防止重复触发
+                                                        countdown_closed_markets.insert(market_id);
+                                                        
+                                                        let pt = _risk_manager.position_tracker();
+                                                        let current_pos = pt.get_position(token_id);
+                                                        
+                                                        if current_pos > dec!(0.01) {
+                                                            let size_to_sell = (current_pos * dec!(100.0)).floor() / dec!(100.0);
+                                                            
+                                                            info!("📉 触发闪崩止损（瞬间跌幅{:.2}%）| 市场:{} | 剩余:{}秒 | 前价:{:.4} | 现价:{:.4}", 
+                                                                drop_pct * dec!(100), market_display, sec_to_end, prev_p, curr_p);
+                                                            
+                                                            let executor_clone = executor.clone();
+                                                            // 止损市价卖出（挂极低价）
+                                                            let sell_price = dec!(0.01);
+                                                            
+                                                            tokio::spawn(async move {
+                                                                match executor_clone.sell_at_price(token_id, sell_price, size_to_sell).await {
+                                                                    Ok(resp) => {
+                                                                        info!("✅ 闪崩止损单已提交 | order_id={}", resp.order_id);
+                                                                        pt.update_position(token_id, -size_to_sell);
+                                                                    }
+                                                                    Err(e) => {
+                                                                        warn!("❌ 闪崩止损失败: {}", e);
+                                                                    }
+                                                                }
+                                                            });
+                                                        } else {
+                                                            debug!("闪崩止损跳过：持仓过小或为0 | 市场:{}", market_display);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
                                 // 倒计时策略：在距窗口结束 10-5 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.99则跳过
