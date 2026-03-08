@@ -155,7 +155,7 @@ async fn portfolio_handler() -> Json<PortfolioResponse> {
     // 获取持仓
     let positions = match get_positions().await {
         Ok(p) => p.into_iter().map(|pos| PositionView {
-            asset: pos.asset,
+            asset: pos.asset.to_string(),
             title: pos.title,
             size: pos.size,
             cur_price: pos.cur_price,
