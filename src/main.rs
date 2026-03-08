@@ -823,8 +823,8 @@ async fn main() -> Result<()> {
                                     // 已移除：现在统一使用 HedgeMonitor 进行止盈止损监控
                                     */
 
-                                    // 倒计时策略平仓：在倒数 2-3 秒内，如果之前开仓了，则市价卖出
-                                    if seconds_until_end >= 2 && seconds_until_end <= 3 {
+                                    // 倒计时策略平仓：在倒数 5 秒内，如果之前开仓了，则市价卖出
+                                    if seconds_until_end > 0 && seconds_until_end <= 5 {
                                         if let Some(entry) = one_dollar_attempted.get(&market_id) {
                                             let (token_id, _entry_price, _) = *entry;
                                             // 检查是否已经平仓
