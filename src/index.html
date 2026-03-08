@@ -50,6 +50,16 @@
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             height: fit-content;
         }
+
+        #portfolio-container {
+            flex: 1;
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            min-width: 300px;
+            overflow-x: auto;
+        }
         
         #trades-container {
             flex: 1;
@@ -471,17 +481,65 @@
             }
         }
 
+        async function updatePortfolio() {
+            try {
+                const response = await fetch(`${API_BASE}/api/portfolio`);
+                const data = await response.json();
+                
+                // Update Balance
+                const balanceElem = document.getElementById('usdc-balance');
+                if (balanceElem) {
+                    if (data.balance) {
+                        balanceElem.textContent = parseFloat(data.balance).toFixed(2);
+                    } else if (data.error) {
+                        balanceElem.textContent = 'Error';
+                        console.error('Portfolio Error:', data.error);
+                    } else {
+                        balanceElem.textContent = '---';
+                    }
+                }
+
+                // Update Positions
+                const tbody = document.getElementById('positions-body');
+                if (tbody) {
+                    if (!data.positions || data.positions.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">无持仓</td></tr>';
+                        return;
+                    }
+
+                    tbody.innerHTML = data.positions.map(pos => {
+                        const curPrice = pos.cur_price || 0;
+                        const value = pos.size * curPrice;
+                        return `
+                            <tr>
+                                <td title="${pos.asset}"><small>${pos.asset.substring(0, 6)}...</small></td>
+                                <td>${pos.title || 'Unknown'}</td>
+                                <td>${parseFloat(pos.size).toFixed(2)}</td>
+                                <td>${curPrice > 0 ? parseFloat(curPrice).toFixed(2) : '--'}</td>
+                                <td>${value > 0 ? value.toFixed(2) : '--'}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
+
+            } catch (error) {
+                console.error('Error fetching portfolio:', error);
+            }
+        }
+
         // Initial load
         updateStatus();
         updateTrades();
         updateMarkets();
+        updatePortfolio();
         
-        // Auto refresh status every 5 seconds
-        setInterval(updateStatus, 5000);
-        // Auto refresh trades every 5 seconds
-        setInterval(updateTrades, 5000);
-        // Auto refresh markets every 1 second
-        setInterval(updateMarkets, 1000);
+        // Auto refresh status every 2 seconds
+        setInterval(updateStatus, 2000);
+        // Auto refresh trades every 3 seconds
+        setInterval(updateTrades, 3000);
+        // Auto refresh markets every 5 seconds
+        setInterval(updateMarkets, 5000);
+        setInterval(updatePortfolio, 10000); // 每10秒更新一次资产
     </script>
 </body>
 </html>

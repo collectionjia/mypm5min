@@ -17,9 +17,10 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use crate::trading::TradingExecutor;
-use poly_5min_bot::positions::get_positions;
+use poly_5min_bot::positions::{get_positions, Position};
 use crate::config::Config;
 use crate::merge;
+use crate::utils::balance_checker::get_usdc_balance;
 use alloy::primitives::Address;
 use std::str::FromStr;
 
@@ -63,6 +64,13 @@ struct RedeemResponse {
     tx_hashes: Vec<String>,
 }
 
+#[derive(Serialize)]
+struct PortfolioResponse {
+    balance: Option<String>,
+    positions: Vec<Position>,
+    error: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct ControlRequest {
     action: String, // "start" or "stop"
@@ -84,6 +92,7 @@ pub async fn start_server(
         .route("/api/logs", get(logs_handler))
         .route("/api/trades", get(trades_handler))
         .route("/api/markets", get(markets_handler))
+        .route("/api/portfolio", get(portfolio_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -101,6 +110,54 @@ async fn index_handler() -> Html<&'static str> {
 async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     let running = state.is_running.load(Ordering::Relaxed);
     Json(StatusResponse { running })
+}
+
+async fn portfolio_handler() -> Json<PortfolioResponse> {
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(PortfolioResponse {
+                balance: None,
+                positions: vec![],
+                error: Some(format!("配置加载失败: {}", e)),
+            });
+        }
+    };
+
+    let proxy_address = match config.proxy_address {
+        Some(addr) => addr,
+        None => {
+            return Json(PortfolioResponse {
+                balance: None,
+                positions: vec![],
+                error: Some("未配置 POLYMARKET_PROXY_ADDRESS".to_string()),
+            });
+        }
+    };
+
+    // 获取余额
+    let balance = match get_usdc_balance(proxy_address).await {
+        Ok(b) => Some(b.to_string()),
+        Err(e) => {
+            warn!("获取余额失败: {}", e);
+            None
+        }
+    };
+
+    // 获取持仓
+    let positions = match get_positions().await {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("获取持仓失败: {}", e);
+            vec![]
+        }
+    };
+
+    Json(PortfolioResponse {
+        balance,
+        positions,
+        error: None,
+    })
 }
 
 async fn close_all_handler(State(state): State<AppState>) -> impl IntoResponse {
