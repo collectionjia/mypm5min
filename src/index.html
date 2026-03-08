@@ -246,6 +246,29 @@
                 <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
             </div>
 
+            <div id="portfolio-container">
+                <h3>资产组合</h3>
+                <div style="margin-bottom: 1rem; font-size: 1.1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #f0f0f0;">
+                    <strong>USDC 余额:</strong> <span id="usdc-balance" style="color: #10b981; font-weight: bold;">加载中...</span>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table id="positions-table">
+                        <thead>
+                            <tr>
+                                <th>Token ID</th>
+                                <th>市场</th>
+                                <th>数量</th>
+                                <th>现价</th>
+                                <th>价值</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-body">
+                            <tr><td colspan="5" style="text-align:center">暂无持仓</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
             <div id="trades-container">
                 <h3>交易统计</h3>
                 <table id="trades-table">
