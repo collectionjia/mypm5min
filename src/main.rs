@@ -992,9 +992,6 @@ async fn main() -> Result<()> {
                                     no_token = %pair.no_book.asset_id,
                                     "订单簿对详细信息"
                                 );
-                                
-                                // 暂时禁用常规套利策略，仅保留倒计时策略
-                                continue;
 
                                 // 检测套利机会（监控阶段：只有当总价 <= 1 - 套利执行价差 时才执行套利）
                                 use rust_decimal::Decimal;
