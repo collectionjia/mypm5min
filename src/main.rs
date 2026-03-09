@@ -941,13 +941,18 @@ async fn main() -> Result<()> {
                         let proxy_addr = config.proxy_address.clone();
                         let priv_key = config.private_key.clone();
                         
-                        // 启动异步任务：20秒后对上一轮市场执行平仓（Merge/Redeem）
+                        // 启动异步任务：在下一轮倒计时剩余15秒时，对上一轮市场执行平仓（Merge/Redeem）
                         if !prev_round_markets.is_empty() && proxy_addr.is_some() {
                             let proxy = proxy_addr.unwrap();
-                            info!("🕒 已安排20秒后对 {} 个上一轮市场执行平仓（Merge/Redeem）检查", prev_round_markets.len());
+                            let settle_delay_secs = (FIVE_MIN_SECS - 15) as u64;
+                            info!(
+                                "🕒 已安排约{}秒后（下一轮倒计时剩余15秒）对 {} 个上一轮市场执行平仓（Merge/Redeem）检查",
+                                settle_delay_secs,
+                                prev_round_markets.len()
+                            );
                             
                             tokio::spawn(async move {
-                                sleep(Duration::from_secs(20)).await; // 等待20秒（给链上更多结算时间）
+                                sleep(Duration::from_secs(settle_delay_secs)).await;
                                 info!("⏰ 开始对上一轮市场执行平仓（Merge/Redeem）检查...");
                                 
                                 for (condition_id, yes_token, no_token) in prev_round_markets {
