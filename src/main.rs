@@ -861,9 +861,14 @@ async fn main() -> Result<()> {
                                                                 market_display, side_str, yes_total_vol, no_total_vol);
                                                             // 不标记已尝试，允许重试
                                                         } else {
-                                                            let mut qty = (dec!(1.0) / chosen_price) * dec!(100.0);
-                                                            qty = qty.floor() / dec!(100.0);
+                                                            // 计算下单数量：目标金额 $1
+                                                            let raw_qty = dec!(1.0) / chosen_price;
+                                                            // 向下取整到2位小数
+                                                            let mut qty = (raw_qty * dec!(100.0)).floor() / dec!(100.0);
+                                                            
+                                                            // 最小下单数量检查：Polymarket 要求最小 5 份
                                                             if qty < dec!(5.0) {
+                                                                debug!("倒计时策略：数量 {} 小于最小限制 5，修正为 5 (总金额: ${:.2})", qty, dec!(5.0) * chosen_price);
                                                                 qty = dec!(5.0);
                                                             }
 
