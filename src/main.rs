@@ -10,7 +10,7 @@ use poly_5min_bot::merge;
 use poly_5min_bot::positions::{get_positions, Position};
 
 use anyhow::Result;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use futures::StreamExt;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -484,6 +484,8 @@ async fn main() -> Result<()> {
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
         // 倒计时策略：每个市场仅投注一次的标记，记录 (token_id, entry_price, is_active)
         let one_dollar_attempted: DashMap<B256, (U256, Decimal, bool)> = DashMap::new();
+        // 强制平仓：记录已在本轮15秒平仓过的市场，避免重复
+        let force_close_done: DashSet<B256> = DashSet::new();
 
         // 监控订单簿更新
         loop {
@@ -727,6 +729,62 @@ async fn main() -> Result<()> {
                                         update_time: Utc::now().timestamp(),
                                     };
                                     market_data.insert(market_id.to_string(), entry);
+                                }
+
+                                // 当局剩余15秒，强制平仓本市场持仓（卖出YES/NO各自持仓）
+                                if sec_to_end == 15 && !force_close_done.contains(&market_id) {
+                                    force_close_done.insert(market_id);
+                                    use rust_decimal::prelude::ToPrimitive;
+                                    // 获取买一价
+                                    let yes_best_bid = pair.yes_book.bids.last().map(|b| b.price);
+                                    let no_best_bid = pair.no_book.bids.last().map(|b| b.price);
+                                    let pt = _risk_manager.position_tracker();
+                                    let yes_pos = pt.get_position(pair.yes_book.asset_id);
+                                    let no_pos = pt.get_position(pair.no_book.asset_id);
+                                    let exec = executor.clone();
+                                    let market_disp = market_display.clone();
+                                    if yes_pos > dec!(0.01) {
+                                        if let Some(bp) = yes_best_bid {
+                                            let size = (yes_pos * dec!(100)) .floor() / dec!(100);
+                                            info!("🧯 当局15秒强制平仓 | 市场:{} | 卖出 YES {} 份 | 价格:{:.4}", market_disp, size, bp);
+                                            let token = pair.yes_book.asset_id;
+                                            let ptc = _risk_manager.position_tracker();
+                                            tokio::spawn(async move {
+                                                match exec.sell_at_price(token, bp, size).await {
+                                                    Ok(_) => {
+                                                        ptc.update_position(token, -size);
+                                                        info!("✅ 强制平仓成功 | 市场:{} | YES 卖出 {} 份", market_disp, size);
+                                                    }
+                                                    Err(e) => {
+                                                        warn!("❌ 强制平仓失败 | 市场:{} | YES | {}", market_disp, e);
+                                                    }
+                                                }
+                                            });
+                                        } else {
+                                            debug!("⏸️ 无买盘，跳过 YES 强制平仓 | 市场:{}", market_disp);
+                                        }
+                                    }
+                                    if no_pos > dec!(0.01) {
+                                        if let Some(bp) = no_best_bid {
+                                            let size = (no_pos * dec!(100)) .floor() / dec!(100);
+                                            info!("🧯 当局15秒强制平仓 | 市场:{} | 卖出 NO {} 份 | 价格:{:.4}", market_disp, size, bp);
+                                            let token = pair.no_book.asset_id;
+                                            let ptc = _risk_manager.position_tracker();
+                                            tokio::spawn(async move {
+                                                match exec.sell_at_price(token, bp, size).await {
+                                                    Ok(_) => {
+                                                        ptc.update_position(token, -size);
+                                                        info!("✅ 强制平仓成功 | 市场:{} | NO 卖出 {} 份", market_disp, size);
+                                                    }
+                                                    Err(e) => {
+                                                        warn!("❌ 强制平仓失败 | 市场:{} | NO | {}", market_disp, e);
+                                                    }
+                                                }
+                                            });
+                                        } else {
+                                            debug!("⏸️ 无买盘，跳过 NO 强制平仓 | 市场:{}", market_disp);
+                                        }
+                                    }
                                 }
 
                                 // 倒计时策略：在距窗口结束 10-5 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.99则跳过
