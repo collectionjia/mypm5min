@@ -839,11 +839,10 @@ async fn main() -> Result<()> {
                                                                 market_display, side_str, yes_total_vol, no_total_vol);
                                                             // 不标记已尝试，允许重试
                                                         } else {
-                                                            // 计算下单数量：目标金额 = MAX_ORDER_SIZE_USDC
-                                                            let target_amount = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(1.0));
-                                                            let raw_qty = target_amount / chosen_price;
+                                                            // 计算下单数量：使用 MAX_ORDER_SIZE_USDC 作为固定份数
+                                                            let target_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(5.0));
                                                             // 向下取整到2位小数
-                                                            let mut qty = (raw_qty * dec!(100.0)).floor() / dec!(100.0);
+                                                            let mut qty = (target_qty * dec!(100.0)).floor() / dec!(100.0);
                                                             
                                                             // 最小下单数量检查：Polymarket 要求最小 5 份
                                                             if qty < dec!(5.0) {
