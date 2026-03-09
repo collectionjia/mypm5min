@@ -639,70 +639,8 @@ async fn main() -> Result<()> {
                         }
 
                         // 3. 市价卖出剩余单腿持仓（这也将覆盖倒计时策略建立的持仓）
-                        // 倒计时策略在窗口结束前5-10秒建立持仓，而收尾逻辑通常在窗口结束前执行（如果配置了 wind_down_before_window_end_minutes）
-                        // 如果 wind_down_before_window_end_minutes 设置为0，则需要在窗口切换时执行卖出。
-                        // 当前代码是在 wind_down_before_window_end_minutes > 0 时触发。
-                        // 如果用户希望在"市场结束后"卖出，意味着需要在窗口时间结束后。
-                        // 但实际上，市场结束后（窗口结束后），Gamma API可能不再返回该市场，或者市场已经结算。
-                        // 如果是结算，则不需要卖出，等待结算即可（Winning side 兑换 $1，Losing side 归零）。
-                        // 用户的需求可能是：在市场即将结束前（比如最后几秒或者刚结束时）卖出，以避免进入结算流程（结算可能需要时间且有不确定性，或者为了快速回笼资金）。
-                        // 或者用户是指：倒计时策略博的是最后几秒的波动，如果没赢（或者无论输赢），都在最后时刻平仓。
-                        
-                        // 既然用户说"市场结束后，进行卖掉"，考虑到Polymarket的机制，市场结束后进入结算。
-                        // 如果是指"倒计时结束（即窗口结束）后"，那么此时往往无法交易了（市场关闭）。
-                        // 所以最合理的解释是：在市场即将结束的最后时刻（收尾阶段），把倒计时策略买入的仓位也卖掉。
-                        // 现有的收尾逻辑（步骤3）已经会卖出所有剩余的单腿持仓。
-                        // 我们只需要确保收尾逻辑被正确执行，并且卖出价格合适。
-                        
-                        let wind_down_sell_price = Decimal::try_from(config_wd.wind_down_sell_price).unwrap_or(dec!(0.01));
-                        info!("🧹 收尾：开始卖出所有剩余持仓（包括倒计时策略持仓） | 价格:{:.4}", wind_down_sell_price);
-                        
-                        // 循环尝试卖出，最多重试 3 次，每次获取最新持仓
-                        for retry in 0..3 {
-                            if retry > 0 {
-                                info!("收尾：第 {} 次重试卖出持仓...", retry);
-                                sleep(Duration::from_secs(2)).await;
-                            }
-                            match get_positions().await {
-                                Ok(positions) => {
-                                    let active_positions: Vec<_> = positions.iter().filter(|p| p.size > dec!(0.01)).collect();
-                                    if active_positions.is_empty() {
-                                        info!("✅ 收尾：当前无剩余持仓");
-                                        break;
-                                    }
-
-                                    for pos in active_positions {
-                                        let size_floor = (pos.size * dec!(100)).floor() / dec!(100);
-                                        if size_floor < dec!(0.01) {
-                                            debug!(token_id = %pos.asset, size = %pos.size, "收尾：持仓过小，跳过卖出");
-                                            continue;
-                                        }
-                                        // 尝试以 wind_down_sell_price 卖出
-                                        // 注意：如果市场价格高于 wind_down_sell_price，会以市价成交（更好）
-                                        // 如果市场价格低于 wind_down_sell_price，则会挂单（可能无法成交）
-                                        // 为了确保卖出，wind_down_sell_price 应该设置得足够低（如 0.01 或 0.05）
-                                        match executor_wd.sell_at_price(pos.asset, wind_down_sell_price, size_floor).await {
-                                            Ok(_) => {
-                                                info!("✅ 收尾：已下卖单 | token_id={:#x} | 数量:{} | 价格:{:.4}", pos.asset, size_floor, wind_down_sell_price);
-                                                // 更新本地持仓追踪（虽然之后会重置，但为了日志准确性）
-                                                position_tracker.update_position(pos.asset, -size_floor);
-                                            },
-                                            Err(e) => {
-                                                let error_msg = e.to_string();
-                                                if error_msg.contains("the orderbook") && error_msg.contains("does not exist") {
-                                                    warn!(token_id = %pos.asset, "收尾：订单簿不存在，可能市场已结束或已结算，跳过卖出并清理持仓");
-                                                    // 订单簿不存在，意味着无法交易，移除持仓以避免重复尝试
-                                                    position_tracker.update_position(pos.asset, -size_floor);
-                                                } else {
-                                                    warn!(token_id = %pos.asset, size = %pos.size, error = %e, "收尾：卖出单腿失败");
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => { warn!(error = %e, "收尾：获取持仓失败，跳过卖出"); }
-                            }
-                        }
+                        // 已根据需求移除：只保留 Merge 操作，不进行强制卖出
+                        info!("🧹 收尾：已完成 Merge 操作，跳过单腿卖出（根据策略配置）");
 
                         info!("🛑 收尾完成，继续监控至窗口结束");
                         wind_down_flag.store(false, Ordering::Relaxed);
@@ -819,58 +757,6 @@ async fn main() -> Result<()> {
                                     market_data.insert(market_id.to_string(), entry);
                                 }
 
-                                // 闪崩止损检测：倒计时 <= 30秒，与上一次价格相比跌幅 >= 5%
-                                if sec_to_end <= 30 {
-                                    if let Some((prev_yes, prev_no)) = prev_prices_for_crash {
-                                        if let Some(entry) = one_dollar_attempted.get(&market_id) {
-                                            let (token_id, _, _) = *entry;
-                                            if !countdown_closed_markets.contains(&market_id) {
-                                                let (curr_p, prev_p) = if token_id == pair.yes_book.asset_id {
-                                                    (yes_best_ask.map(|(p,_)| p).unwrap_or(dec!(0)), prev_yes)
-                                                } else {
-                                                    (no_best_ask.map(|(p,_)| p).unwrap_or(dec!(0)), prev_no)
-                                                };
-                                                
-                                                if prev_p > dec!(0) && curr_p > dec!(0) {
-                                                    let drop_pct = (prev_p - curr_p) / prev_p;
-                                                    if drop_pct >= dec!(0.05) {
-                                                        // 标记已平仓，防止重复触发
-                                                        countdown_closed_markets.insert(market_id);
-                                                        
-                                                        let pt = _risk_manager.position_tracker();
-                                                        let current_pos = pt.get_position(token_id);
-                                                        
-                                                        if current_pos > dec!(0.01) {
-                                                            let size_to_sell = (current_pos * dec!(100.0)).floor() / dec!(100.0);
-                                                            
-                                                            info!("📉 触发闪崩止损（瞬间跌幅{:.2}%）| 市场:{} | 剩余:{}秒 | 前价:{:.4} | 现价:{:.4}", 
-                                                                drop_pct * dec!(100), market_display, sec_to_end, prev_p, curr_p);
-                                                            
-                                                            let executor_clone = executor.clone();
-                                                            // 止损市价卖出（挂极低价）
-                                                            let sell_price = dec!(0.01);
-                                                            
-                                                            tokio::spawn(async move {
-                                                                match executor_clone.sell_at_price(token_id, sell_price, size_to_sell).await {
-                                                                    Ok(resp) => {
-                                                                        info!("✅ 闪崩止损单已提交 | order_id={}", resp.order_id);
-                                                                        pt.update_position(token_id, -size_to_sell);
-                                                                    }
-                                                                    Err(e) => {
-                                                                        warn!("❌ 闪崩止损失败: {}", e);
-                                                                    }
-                                                                }
-                                                            });
-                                                        } else {
-                                                            debug!("闪崩止损跳过：持仓过小或为0 | 市场:{}", market_display);
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
                                 // 倒计时策略：在距窗口结束 10-5 秒之间，下注较大一边 $1（数量=1/单价，向下取两位），仅投注一次；若任一侧价格>=0.99则跳过
                                 {
                                     /*
@@ -930,47 +816,6 @@ async fn main() -> Result<()> {
                                                             }
                                                         }
                                                     }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // 倒计时策略平仓：在倒数 5 秒内，如果之前开仓了，则市价卖出
-                                    if sec_to_end > 0 && sec_to_end <= 5 {
-                                        if let Some(entry) = one_dollar_attempted.get(&market_id) {
-                                            let (token_id, _entry_price, _) = *entry;
-                                            // 检查是否已经平仓
-                                            if !countdown_closed_markets.contains(&market_id) {
-                                                countdown_closed_markets.insert(market_id);
-                                                
-                                                let pt = _risk_manager.position_tracker();
-                                                let current_pos = pt.get_position(token_id);
-                                                
-                                                // 只卖出正持仓
-                                                if current_pos > dec!(0.01) {
-                                                    let size_to_sell = (current_pos * dec!(100.0)).floor() / dec!(100.0);
-                                                    
-                                                    info!("⚡ 倒计时策略触发平仓 | 市场:{} | 剩余:{}秒 | 数量:{}", market_display, sec_to_end, size_to_sell);
-                                                    
-                                                    let executor_clone = executor.clone();
-                                                    // 以极低价格卖出，确保成交（实际上会以市价成交，如果有人挂买单的话）
-                                                    // 使用 0.01 价格 GTC 卖出
-                                                    let sell_price = dec!(0.01); 
-                                                    
-                                                    tokio::spawn(async move {
-                                                        match executor_clone.sell_at_price(token_id, sell_price, size_to_sell).await {
-                                                            Ok(resp) => {
-                                                                info!("✅ 倒计时平仓单已提交 | order_id={}", resp.order_id);
-                                                                // 更新本地持仓追踪
-                                                                pt.update_position(token_id, -size_to_sell);
-                                                            }
-                                                            Err(e) => {
-                                                                warn!("❌ 倒计时平仓失败: {}", e);
-                                                            }
-                                                        }
-                                                    });
-                                                } else {
-                                                    debug!("倒计时平仓跳过：持仓过小或为0 | 市场:{} | 持仓:{}", market_display, current_pos);
                                                 }
                                             }
                                         }
