@@ -822,9 +822,9 @@ async fn main() -> Result<()> {
                                                         pair.yes_book.asset_id
                                                     };
                                                     
-                                                    // 检查是否低于最小价格阈值
-                                                    if chosen_price < min_price {
-                                                        debug!("⏸️ 价格<{:.2}，倒计时策略跳过 | 市场:{} | 价格:{:.4}", min_price, market_display, chosen_price);
+                                                    // 检查是否低于或等于最小价格阈值（要求严格大于 MIN）
+                                                    if chosen_price <= min_price {
+                                                        debug!("⏸️ 价格<={:.2}，倒计时策略跳过 | 市场:{} | 价格:{:.4}", min_price, market_display, chosen_price);
                                                         // 不标记已尝试，允许重试
                                                     } else {
                                                         // 检查数量是否也偏大（量价齐升）
@@ -1005,12 +1005,12 @@ async fn main() -> Result<()> {
                         let proxy_addr = config.proxy_address.clone();
                         let priv_key = config.private_key.clone();
                         
-                        // 启动异步任务：在下一轮倒计时剩余15秒时，对上一轮市场执行平仓（Merge/Redeem）
+                        // 启动异步任务：在下一轮开始后10秒，对上一轮市场执行平仓（Merge/Redeem）
                         if !prev_round_markets.is_empty() && proxy_addr.is_some() {
                             let proxy = proxy_addr.unwrap();
-                            let settle_delay_secs = (FIVE_MIN_SECS - 15) as u64;
+                            let settle_delay_secs = 10u64;
                             info!(
-                                "🕒 已安排约{}秒后（下一轮倒计时剩余15秒）对 {} 个上一轮市场执行平仓（Merge/Redeem）检查",
+                                "🕒 已安排{}秒后对 {} 个上一轮市场执行平仓（Merge/Redeem）检查",
                                 settle_delay_secs,
                                 prev_round_markets.len()
                             );
