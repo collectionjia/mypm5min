@@ -941,36 +941,43 @@ async fn main() -> Result<()> {
                         let proxy_addr = config.proxy_address.clone();
                         let priv_key = config.private_key.clone();
                         
-                        // 启动异步任务：2分钟后对上一轮市场执行 Merge（领取奖励）
+                        // 启动异步任务：10秒后对上一轮市场执行平仓（Merge/Redeem）
                         if !prev_round_markets.is_empty() && proxy_addr.is_some() {
                             let proxy = proxy_addr.unwrap();
-                            info!("🕒 已安排2分钟后对 {} 个上一轮市场执行平仓（Merge/Redeem）检查", prev_round_markets.len());
+                            info!("🕒 已安排10秒后对 {} 个上一轮市场执行平仓（Merge/Redeem）检查", prev_round_markets.len());
                             
                             tokio::spawn(async move {
-                                sleep(Duration::from_secs(120)).await; // 等待2分钟
+                                sleep(Duration::from_secs(10)).await; // 等待10秒（给链上一点结算时间）
                                 info!("⏰ 开始对上一轮市场执行平仓（Merge/Redeem）检查...");
                                 
                                 for (condition_id, yes_token, no_token) in prev_round_markets {
-                                    let yes_bal = pt.get_position(yes_token);
-                                    let no_bal = pt.get_position(no_token);
-                                    
-                                    // 只有当持仓大于 0.1 时才尝试 Merge，避免无谓的 RPC 请求
-                                    if yes_bal > dec!(0.1) || no_bal > dec!(0.1) {
-                                        info!("🔍 发现上一轮持仓需平仓 | condition_id={} | YES={} | NO={}", condition_id, yes_bal, no_bal);
-                                        match merge::merge_max(condition_id, proxy, &priv_key, None).await {
-                                            Ok(tx) => {
-                                                info!("✅ 上一轮市场平仓成功 | condition_id={} | tx={}", condition_id, tx);
-                                                // 更新本地持仓为0 (虽然下次同步会覆盖，但立即更新更好)
-                                                pt.update_position(yes_token, -yes_bal);
-                                                pt.update_position(no_token, -no_bal);
-                                            },
-                                            Err(e) => {
-                                                // 如果错误包含"无可用份额"，说明链上余额不足（可能是本地状态滞后），降级为debug
-                                                if e.to_string().contains("无可用份额") {
-                                                    debug!("上一轮市场链上无持仓 | condition_id={}", condition_id);
-                                                } else {
-                                                    warn!("⚠️ 上一轮市场平仓失败 | condition_id={} | error={}", condition_id, e);
-                                                }
+                                    // 1. 尝试 Merge (如果是双边持仓)
+                                    // merge_max 内部会检查余额，如果有一边为0则直接返回错误，开销很小
+                                    match merge::merge_max(condition_id, proxy, &priv_key, None).await {
+                                        Ok(tx) => info!("✅ Merge 成功 | condition_id={} | tx={}", condition_id, tx),
+                                        Err(e) => {
+                                            if !e.to_string().contains("无可用份额") {
+                                                debug!("Merge 跳过: {}", e);
+                                            }
+                                        }
+                                    }
+
+                                    // 2. 尝试 Redeem (针对单边持仓或 Merge 后的剩余)
+                                    // 这将尝试赎回 Winning Side
+                                    match merge::redeem_max(condition_id, proxy, &priv_key, None).await {
+                                        Ok(tx) => {
+                                            info!("✅ Redeem 成功 | condition_id={} | tx={}", condition_id, tx);
+                                            // 更新本地持仓为0
+                                            let yes_bal = pt.get_position(yes_token);
+                                            let no_bal = pt.get_position(no_token);
+                                            pt.update_position(yes_token, -yes_bal);
+                                            pt.update_position(no_token, -no_bal);
+                                        },
+                                        Err(e) => {
+                                            if e.to_string().contains("无持仓") {
+                                                debug!("Redeem 跳过: 无持仓 | condition_id={}", condition_id);
+                                            } else {
+                                                warn!("⚠️ Redeem 失败 (可能未决议) | condition_id={} | error={}", condition_id, e);
                                             }
                                         }
                                     }
