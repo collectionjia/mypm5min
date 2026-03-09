@@ -294,6 +294,7 @@
         // 使用当前页面访问的 host 作为 API base，这样无论是 localhost 还是 IP 访问都能正常工作
         const API_BASE = window.location.origin;
         let isRunning = false;
+        let lastTradeCount = -1;
 
         async function updateStatus() {
             try {
@@ -312,6 +313,15 @@
             try {
                 const response = await fetch(`${API_BASE}/api/trades`);
                 const trades = await response.json();
+                
+                // Check if we need to refresh portfolio
+                if (trades.length !== lastTradeCount) {
+                    if (lastTradeCount !== -1) {
+                        updatePortfolio();
+                    }
+                    lastTradeCount = trades.length;
+                }
+
                 const tbody = document.querySelector('#trades-table tbody');
                 
                 if (trades.length === 0) {
@@ -415,6 +425,7 @@
                 btnEl.innerText = originalText;
                 // Update status as it might have been stopped
                 updateStatus();
+                updatePortfolio();
             }
         }
 
@@ -445,6 +456,7 @@
             } finally {
                 btnEl.disabled = false;
                 btnEl.innerText = originalText;
+                updatePortfolio();
             }
         }
 
@@ -562,7 +574,7 @@
         setInterval(updateTrades, 3000);
         // Auto refresh markets every 5 seconds
         setInterval(updateMarkets, 5000);
-        setInterval(updatePortfolio, 10000); // 每10秒更新一次资产
+        setInterval(updatePortfolio, 5000); // 每5秒更新一次资产
     </script>
 </body>
 </html>
