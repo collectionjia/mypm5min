@@ -741,48 +741,50 @@ async fn main() -> Result<()> {
                                     let pt = _risk_manager.position_tracker();
                                     let yes_pos = pt.get_position(pair.yes_book.asset_id);
                                     let no_pos = pt.get_position(pair.no_book.asset_id);
-                                    let exec = executor.clone();
-                                    let market_disp = market_display.clone();
+                                    let exec_yes = executor.clone();
+                                    let exec_no = executor.clone();
+                                    let market_disp_yes = market_display.clone();
+                                    let market_disp_no = market_display.clone();
                                     if yes_pos > dec!(0.01) {
                                         if let Some(bp) = yes_best_bid {
                                             let size = (yes_pos * dec!(100)) .floor() / dec!(100);
-                                            info!("🧯 当局15秒强制平仓 | 市场:{} | 卖出 YES {} 份 | 价格:{:.4}", market_disp, size, bp);
+                                            info!("🧯 当局15秒强制平仓 | 市场:{} | 卖出 YES {} 份 | 价格:{:.4}", market_disp_yes, size, bp);
                                             let token = pair.yes_book.asset_id;
                                             let ptc = _risk_manager.position_tracker();
                                             tokio::spawn(async move {
-                                                match exec.sell_at_price(token, bp, size).await {
+                                                match exec_yes.sell_at_price(token, bp, size).await {
                                                     Ok(_) => {
                                                         ptc.update_position(token, -size);
-                                                        info!("✅ 强制平仓成功 | 市场:{} | YES 卖出 {} 份", market_disp, size);
+                                                        info!("✅ 强制平仓成功 | 市场:{} | YES 卖出 {} 份", market_disp_yes, size);
                                                     }
                                                     Err(e) => {
-                                                        warn!("❌ 强制平仓失败 | 市场:{} | YES | {}", market_disp, e);
+                                                        warn!("❌ 强制平仓失败 | 市场:{} | YES | {}", market_disp_yes, e);
                                                     }
                                                 }
                                             });
                                         } else {
-                                            debug!("⏸️ 无买盘，跳过 YES 强制平仓 | 市场:{}", market_disp);
+                                            debug!("⏸️ 无买盘，跳过 YES 强制平仓 | 市场:{}", market_disp_yes);
                                         }
                                     }
                                     if no_pos > dec!(0.01) {
                                         if let Some(bp) = no_best_bid {
                                             let size = (no_pos * dec!(100)) .floor() / dec!(100);
-                                            info!("🧯 当局15秒强制平仓 | 市场:{} | 卖出 NO {} 份 | 价格:{:.4}", market_disp, size, bp);
+                                            info!("🧯 当局15秒强制平仓 | 市场:{} | 卖出 NO {} 份 | 价格:{:.4}", market_disp_no, size, bp);
                                             let token = pair.no_book.asset_id;
                                             let ptc = _risk_manager.position_tracker();
                                             tokio::spawn(async move {
-                                                match exec.sell_at_price(token, bp, size).await {
+                                                match exec_no.sell_at_price(token, bp, size).await {
                                                     Ok(_) => {
                                                         ptc.update_position(token, -size);
-                                                        info!("✅ 强制平仓成功 | 市场:{} | NO 卖出 {} 份", market_disp, size);
+                                                        info!("✅ 强制平仓成功 | 市场:{} | NO 卖出 {} 份", market_disp_no, size);
                                                     }
                                                     Err(e) => {
-                                                        warn!("❌ 强制平仓失败 | 市场:{} | NO | {}", market_disp, e);
+                                                        warn!("❌ 强制平仓失败 | 市场:{} | NO | {}", market_disp_no, e);
                                                     }
                                                 }
                                             });
                                         } else {
-                                            debug!("⏸️ 无买盘，跳过 NO 强制平仓 | 市场:{}", market_disp);
+                                            debug!("⏸️ 无买盘，跳过 NO 强制平仓 | 市场:{}", market_disp_no);
                                         }
                                     }
                                 }
