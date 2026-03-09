@@ -839,8 +839,9 @@ async fn main() -> Result<()> {
                                                                 market_display, side_str, yes_total_vol, no_total_vol);
                                                             // 不标记已尝试，允许重试
                                                         } else {
-                                                            // 计算下单数量：目标金额 $1
-                                                            let raw_qty = dec!(1.0) / chosen_price;
+                                                            // 计算下单数量：目标金额 = MAX_ORDER_SIZE_USDC
+                                                            let target_amount = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(1.0));
+                                                            let raw_qty = target_amount / chosen_price;
                                                             // 向下取整到2位小数
                                                             let mut qty = (raw_qty * dec!(100.0)).floor() / dec!(100.0);
                                                             
