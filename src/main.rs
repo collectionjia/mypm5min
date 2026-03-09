@@ -299,6 +299,9 @@ async fn main() -> Result<()> {
             if let Err(e) = crate::utils::balance_checker::check_balance_and_allowance(wallet_to_check).await {
                 warn!("余额/授权检查失败（非致命错误）: {}", e);
             }
+            if let Err(e) = crate::utils::balance_checker::check_conditional_token_approval(wallet_to_check).await {
+                warn!("ConditionalTokens 授权检查失败（非致命错误）: {}", e);
+            }
         }
         Err(e) => {
             error!(error = %e, "❌ 认证验证失败！虽然authenticate()没有报错，但API调用失败。");

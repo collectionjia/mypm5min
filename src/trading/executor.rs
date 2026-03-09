@@ -125,7 +125,7 @@ impl TradingExecutor {
             .await
             .map_err(|e| {
                 if e.to_string().contains("not enough balance / allowance") {
-                    anyhow::anyhow!("卖出订单提交失败: 余额不足或未授权 (USDC)。请检查钱包余额及对CTF Exchange的授权。原始错误: {}", e)
+                    anyhow::anyhow!("卖出订单提交失败: 余额不足或未授权（可能是份额不足，或 ConditionalTokens/USDC 未授权）。原始错误: {}", e)
                 } else {
                     anyhow::anyhow!("卖出订单提交失败: {}", e)
                 }
@@ -333,7 +333,7 @@ impl TradingExecutor {
                 let total_elapsed = total_start.elapsed().as_millis();
                 
                 if e.to_string().contains("not enough balance / allowance") {
-                    error!("⚠️  下单失败: 余额不足或未授权 (USDC)。请检查钱包余额及对CTF Exchange的授权。");
+                    error!("⚠️  下单失败: 余额不足或未授权（可能是 USDC 或 ConditionalTokens）。");
                 }
 
                 error!(

@@ -1,10 +1,11 @@
 use alloy::primitives::Address;
-use alloy::providers::{ProviderBuilder, Provider};
+use alloy::providers::ProviderBuilder;
 use alloy::sol;
 use anyhow::Result;
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use tracing::{info, warn};
+use polymarket_client_sdk::{contract_config, POLYGON};
 
 // Polygon USDC Contract (Bridged USDC.e)
 const USDC_ADDRESS: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
@@ -16,6 +17,13 @@ sol! {
     interface IERC20 {
         function balanceOf(address account) external view returns (uint256);
         function allowance(address owner, address spender) external view returns (uint256);
+    }
+}
+
+sol! {
+    #[sol(rpc)]
+    interface IERC1155 {
+        function isApprovedForAll(address account, address operator) external view returns (bool);
     }
 }
 
@@ -80,5 +88,29 @@ pub async fn check_balance_and_allowance(wallet_address: Address) -> Result<()> 
         }
     }
 
+    Ok(())
+}
+
+pub async fn check_conditional_token_approval(wallet_address: Address) -> Result<()> {
+    let rpc_url = std::env::var("RPC_URL")
+        .unwrap_or_else(|_| "https://polygon-bor.publicnode.com".to_string())
+        .parse()?;
+    let provider = ProviderBuilder::new().connect_http(rpc_url);
+
+    let exchange_addr = Address::from_str(CTF_EXCHANGE_ADDRESS)?;
+    let cfg = contract_config(POLYGON, false).ok_or_else(|| anyhow::anyhow!("不支持的 chain_id: {}", POLYGON))?;
+
+    let conditional_tokens = cfg.conditional_tokens;
+    let ct = IERC1155::new(conditional_tokens, provider);
+
+    let approved = ct.isApprovedForAll(wallet_address, exchange_addr).call().await.unwrap_or(false);
+    if approved {
+        info!("ConditionalTokens 已授权给 CTF Exchange ({})", exchange_addr);
+    } else {
+        warn!(
+            "⚠️ ConditionalTokens 未授权给 CTF Exchange ({})，卖出可能失败。请在 Polymarket 官网进行一次 SELL/Approve 以完成授权。",
+            exchange_addr
+        );
+    }
     Ok(())
 }
