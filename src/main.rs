@@ -10,23 +10,23 @@ use poly_5min_bot::merge;
 use poly_5min_bot::positions::{get_positions, Position};
 
 use anyhow::Result;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use futures::StreamExt;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 use polymarket_client_sdk::types::{Address, B256, U256};
 
 use crate::config::Config;
 use crate::market::{MarketDiscoverer, MarketInfo, MarketScheduler};
-use crate::monitor::{ArbitrageDetector, OrderBookMonitor};
+use crate::monitor::OrderBookMonitor;
 use crate::risk::positions::PositionTracker;
-use crate::risk::{HedgeMonitor, PositionBalancer, RiskManager};
+use crate::risk::{PositionBalancer, RiskManager};
 use crate::trading::TradingExecutor;
 
 /// 从持仓中筛出 **YES 和 NO 都持仓** 的 condition_id，仅这些市场才能 merge；单边持仓直接跳过。
@@ -203,7 +203,6 @@ async fn main() -> Result<()> {
     // 初始化组件（暂时不使用，主循环已禁用）
     let _discoverer = MarketDiscoverer::new(config.crypto_symbols.clone());
     let _scheduler = MarketScheduler::new(_discoverer, config.market_refresh_advance_secs);
-    let _detector = ArbitrageDetector::new(config.min_profit_threshold);
     
     // 验证私钥格式
     info!("正在验证私钥格式...");
@@ -282,16 +281,6 @@ async fn main() -> Result<()> {
     };
     
     let _risk_manager = Arc::new(RiskManager::new(clob_client.clone(), &config));
-    
-    // 创建对冲监测器（传入PositionTracker的Arc引用以更新风险敞口）
-    // 对冲策略已暂时关闭，但保留hedge_monitor变量以备将来使用
-    let position_tracker = _risk_manager.position_tracker();
-    let hedge_monitor = Arc::new(HedgeMonitor::new(
-        clob_client.clone(),
-        config.private_key.clone(),
-        config.proxy_address.clone(),
-        position_tracker,
-    ));
 
     // 验证认证是否真的成功 - 尝试一个简单的API调用
     info!("正在验证认证状态（通过API调用测试）...");
@@ -396,10 +385,6 @@ async fn main() -> Result<()> {
     let wind_down_in_progress = Arc::new(AtomicBool::new(false));
     let countdown_in_progress = Arc::new(AtomicBool::new(false));
 
-    // 两次套利交易之间的最小间隔
-    const MIN_TRADE_INTERVAL: Duration = Duration::from_secs(3);
-    let last_trade_time: Arc<tokio::sync::Mutex<Option<Instant>>> = Arc::new(tokio::sync::Mutex::new(None));
-
     // 定时 Merge：每 N 分钟根据持仓执行 merge，仅对 YES+NO 双边都持仓的市场
     let merge_interval = config.merge_interval_minutes;
     if merge_interval > 0 {
@@ -499,8 +484,6 @@ async fn main() -> Result<()> {
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
         // 倒计时策略：每个市场仅投注一次的标记，记录 (token_id, entry_price, is_active)
         let one_dollar_attempted: DashMap<B256, (U256, Decimal, bool)> = DashMap::new();
-        // 倒计时策略：记录已在倒数2-3秒平仓的市场
-        let countdown_closed_markets: DashSet<B256> = DashSet::new();
 
         // 监控订单簿更新
         loop {
@@ -669,15 +652,6 @@ async fn main() -> Result<()> {
 
                     match book_result {
                         Some(Ok(book)) => {
-                            // 检查止盈止损（使用 clone 的 book）
-                            let book_clone = book.clone();
-                            let monitor_clone = hedge_monitor.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = monitor_clone.check_and_execute(&book_clone).await {
-                                    warn!("HedgeMonitor check error: {}", e);
-                                }
-                            });
-
                             // 然后处理订单簿更新（book会被move）
                             if let Some(pair) = monitor.handle_book_update(book) {
                                 // 注意：asks 最后一个为卖一价
@@ -686,8 +660,6 @@ async fn main() -> Result<()> {
                                 let total_ask_price = yes_best_ask.and_then(|(p, _)| no_best_ask.map(|(np, _)| p + np));
 
                                 let market_id = pair.market_id;
-                                // 获取旧价格用于闪崩检测（在 last_prices 更新前获取）
-                                let prev_prices_for_crash = last_prices.get(&market_id).map(|r| (r.0, r.1));
 
                                 // 与上一拍比较得到涨跌方向（↑涨 ↓跌 −平），首拍无箭头
                                 let (yes_dir, no_dir) = match (yes_best_ask, no_best_ask) {
@@ -764,63 +736,6 @@ async fn main() -> Result<()> {
                                     // 已移除：现在统一使用 HedgeMonitor 进行止盈止损监控
                                     */
 
-                                    // 30秒止损逻辑：如果跌幅 > 5%，则止损平仓
-                                    if sec_to_end >= 30 && sec_to_end <= 35 {
-                                        if let Some(entry) = one_dollar_attempted.get(&market_id) {
-                                            let (token_id, entry_price, _) = *entry;
-                                            // 检查是否已经平仓
-                                            if !countdown_closed_markets.contains(&market_id) {
-                                                // 获取当前价格（使用卖一价作为参考）
-                                                let current_price_opt = if token_id == pair.yes_book.asset_id {
-                                                    yes_best_ask.map(|(p, _)| p)
-                                                } else if token_id == pair.no_book.asset_id {
-                                                    no_best_ask.map(|(p, _)| p)
-                                                } else {
-                                                    None
-                                                };
-
-                                                if let Some(current_price) = current_price_opt {
-                                                    // 计算跌幅
-                                                    if entry_price > dec!(0) {
-                                                        let loss_pct = (entry_price - current_price) / entry_price;
-                                                        if loss_pct > dec!(0.05) {
-                                                            // 标记已平仓，防止重复触发
-                                                            countdown_closed_markets.insert(market_id);
-                                                            
-                                                            let pt = _risk_manager.position_tracker();
-                                                            let current_pos = pt.get_position(token_id);
-                                                            
-                                                            if current_pos > dec!(0.01) {
-                                                                let size_to_sell = (current_pos * dec!(100.0)).floor() / dec!(100.0);
-                                                                
-                                                                info!("📉 触发30秒止损 | 市场:{} | 剩余:{}秒 | 买入:{:.4} | 当前:{:.4} | 跌幅:{:.2}%", 
-                                                                    market_display, sec_to_end, entry_price, current_price, loss_pct * dec!(100));
-                                                                
-                                                                let executor_clone = executor.clone();
-                                                                // 止损市价卖出（挂极低价）
-                                                                let sell_price = dec!(0.01);
-                                                                
-                                                                tokio::spawn(async move {
-                                                                    match executor_clone.sell_at_price(token_id, sell_price, size_to_sell).await {
-                                                                        Ok(resp) => {
-                                                                            info!("✅ 30秒止损单已提交 | order_id={}", resp.order_id);
-                                                                            pt.update_position(token_id, -size_to_sell);
-                                                                        }
-                                                                        Err(e) => {
-                                                                            warn!("❌ 30秒止损失败: {}", e);
-                                                                        }
-                                                                    }
-                                                                });
-                                                            } else {
-                                                                debug!("30秒止损跳过：持仓过小或为0 | 市场:{}", market_display);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
                                     if countdown_active {
                                         if !one_dollar_attempted.contains_key(&market_id) {
                                             if let (Some((y_price, _)), Some((n_price, _))) = (yes_best_ask, no_best_ask) {
@@ -884,35 +799,12 @@ async fn main() -> Result<()> {
                                                             let price_f64 = chosen_price.to_f64().unwrap_or(0.0);
                                                             let size_f64 = qty.to_f64().unwrap_or(0.0);
 
-                                                            let hedge_monitor_clone = hedge_monitor.clone();
-                                                            let tp_pct = Decimal::try_from(config.hedge_take_profit_pct).unwrap_or(dec!(0.05));
-                                                            let sl_pct = Decimal::try_from(config.hedge_stop_loss_pct).unwrap_or(dec!(0.05));
-                                                            let opposite_token_id = opposite_token;
-
                                                             tokio::spawn(async move {
                                                                 match executor_clone.buy_at_price(chosen_token, chosen_price, qty).await {
                                                                     Ok(resp) => {
                                                                         info!("✅ 倒计时策略下单成功 | order_id={}", resp.order_id);
                                                                         pt.update_exposure_cost(chosen_token, chosen_price, qty);
                                                                         pt.update_position(chosen_token, qty);
-                                                                        
-                                                                        // Add to hedge monitor
-                                                                        use crate::risk::recovery::RecoveryAction;
-                                                                        let action = RecoveryAction::MonitorForExit {
-                                                                            token_id: chosen_token,
-                                                                            opposite_token_id: opposite_token_id,
-                                                                            amount: qty,
-                                                                            entry_price: chosen_price,
-                                                                            take_profit_pct: tp_pct,
-                                                                            stop_loss_pct: sl_pct,
-                                                                            pair_id: market_id_str.clone(),
-                                                                            market_display: market_display_str.clone(),
-                                                                        };
-                                                                        if let Err(e) = hedge_monitor_clone.add_position(&action) {
-                                                                            warn!("❌ 添加对冲监控失败: {}", e);
-                                                                        } else {
-                                                                            info!("🛡️ 已添加对冲监控 | 止盈:{:.2}% | 止损:{:.2}%", tp_pct * dec!(100), sl_pct * dec!(100));
-                                                                        }
                                                                         
                                                                         // 记录交易历史
                                                                         use crate::utils::trade_history::{add_trade, TradeRecord};
@@ -997,233 +889,6 @@ async fn main() -> Result<()> {
                                     no_token = %pair.no_book.asset_id,
                                     "订单簿对详细信息"
                                 );
-
-                                // 检测套利机会（监控阶段：只有当总价 <= 1 - 套利执行价差 时才执行套利）
-                                use rust_decimal::Decimal;
-                                let execution_threshold = dec!(1.0) - Decimal::try_from(config.arbitrage_execution_spread)
-                                    .unwrap_or(dec!(0.01));
-                                if let Some(total_price) = total_ask_price {
-                                    if total_price <= execution_threshold {
-                                        if let Some(opp) = _detector.check_arbitrage(
-                                            &pair.yes_book,
-                                            &pair.no_book,
-                                            &pair.market_id,
-                                        ) {
-                                            // 检查 YES 价格是否达到阈值
-                                            if config.min_yes_price_threshold > 0.0 {
-                                                use rust_decimal::Decimal;
-                                                let min_yes_price_decimal = Decimal::try_from(config.min_yes_price_threshold)
-                                                    .unwrap_or(dec!(0.0));
-                                                if opp.yes_ask_price < min_yes_price_decimal {
-                                                    debug!(
-                                                        "⏸️ YES价格未达到阈值，跳过套利执行 | 市场:{} | YES价格:{:.4} | 阈值:{:.4}",
-                                                        market_display,
-                                                        opp.yes_ask_price,
-                                                        config.min_yes_price_threshold
-                                                    );
-                                                    continue; // 跳过这个套利机会
-                                                }
-                                            }
-                                            
-                                            // 检查 NO 价格是否达到阈值
-                                            if config.min_no_price_threshold > 0.0 {
-                                                use rust_decimal::Decimal;
-                                                let min_no_price_decimal = Decimal::try_from(config.min_no_price_threshold)
-                                                    .unwrap_or(dec!(0.0));
-                                                if opp.no_ask_price < min_no_price_decimal {
-                                                    debug!(
-                                                        "⏸️ NO价格未达到阈值，跳过套利执行 | 市场:{} | NO价格:{:.4} | 阈值:{:.4}",
-                                                        market_display,
-                                                        opp.no_ask_price,
-                                                        config.min_no_price_threshold
-                                                    );
-                                                    continue; // 跳过这个套利机会
-                                                }
-                                            }
-                                            
-                                            // 检查是否接近市场结束时间（如果配置了停止时间）
-                                            // 使用秒级精度，5分钟市场下 num_minutes() 截断可能导致漏检
-                                            if config.stop_arbitrage_before_end_minutes > 0 {
-                                                if let Some(market_info) = market_map.get(&pair.market_id) {
-                                                    use chrono::Utc;
-                                                    let now = Utc::now();
-                                                    let time_until_end = market_info.end_date.signed_duration_since(now);
-                                                    let seconds_until_end = time_until_end.num_seconds();
-                                                    let threshold_seconds = config.stop_arbitrage_before_end_minutes as i64 * 60;
-                                                    
-                                                    if seconds_until_end <= threshold_seconds {
-                                                        debug!(
-                                                            "⏰ 接近市场结束时间，跳过套利执行 | 市场:{} | 距离结束:{}秒 | 停止阈值:{}分钟",
-                                                            market_display,
-                                                            seconds_until_end,
-                                                            config.stop_arbitrage_before_end_minutes
-                                                        );
-                                                        continue; // 跳过这个套利机会
-                                                    }
-                                                }
-                                            }
-
-                                            // 新增逻辑：倒数1分钟价格差值检查
-                                            // 在倒数60秒到31秒之间进行计算，只要小于0.15，则当前不投注
-                                            if let Some(market_info) = market_map.get(&pair.market_id) {
-                                                use chrono::Utc;
-                                                let now = Utc::now();
-                                                let time_until_end = market_info.end_date.signed_duration_since(now);
-                                                let seconds_until_end = time_until_end.num_seconds();
-                                                
-                                                // 如果剩余时间在 [31, 60] 秒之间
-                                                if seconds_until_end >= 31 && seconds_until_end <= 60 {
-                                                    use rust_decimal::Decimal;
-                                                    // 计算价格差值：大值 - 小值 (abs(yes - no))
-                                                    let price_diff = (opp.yes_ask_price - opp.no_ask_price).abs();
-                                                    
-                                                    let diff_threshold = dec!(0.15);
-                                                    if price_diff < diff_threshold {
-                                                        info!(
-                                                            "🛑 倒数[31-60]秒内价格差值过小，跳过套利 | 市场:{} | 剩余:{}秒 | Yes:{:.4} | No:{:.4} | 差值:{:.4} | 阈值:{:.4}",
-                                                            market_display,
-                                                            seconds_until_end,
-                                                            opp.yes_ask_price,
-                                                            opp.no_ask_price,
-                                                            price_diff,
-                                                            diff_threshold
-                                                        );
-                                                        continue; // 跳过这个套利机会
-                                                    }
-                                                }
-                                            }
-                                            
-                                            // 计算订单成本（USD）
-                                            // 使用套利机会中的实际可用数量，但不超过配置的最大订单大小
-                                            use rust_decimal::Decimal;
-                                            let max_order_size = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(100.0));
-                                            let order_size = opp.yes_size.min(opp.no_size).min(max_order_size);
-                                            let yes_cost = opp.yes_ask_price * order_size;
-                                            let no_cost = opp.no_ask_price * order_size;
-                                            let total_cost = yes_cost + no_cost;
-                                            
-                                            // 检查风险敞口限制
-                                            let position_tracker = _risk_manager.position_tracker();
-                                            let current_exposure = position_tracker.calculate_exposure();
-                                            
-                                            if position_tracker.would_exceed_limit(yes_cost, no_cost) {
-                                                warn!(
-                                                    "⚠️ 风险敞口超限，拒绝执行套利交易 | 市场:{} | 当前敞口:{:.2} USD | 订单成本:{:.2} USD | 限制:{:.2} USD",
-                                                    market_display,
-                                                    current_exposure,
-                                                    total_cost,
-                                                    position_tracker.max_exposure()
-                                                );
-                                                continue; // 跳过这个套利机会
-                                            }
-                                            
-                                            // 检查持仓平衡（使用本地缓存，零延迟）
-                                            if position_balancer.should_skip_arbitrage(opp.yes_token_id, opp.no_token_id) {
-                                                warn!(
-                                                    "⚠️ 持仓已严重不平衡，跳过套利执行 | 市场:{}",
-                                                    market_display
-                                                );
-                                                continue; // 跳过这个套利机会
-                                            }
-                                            
-                                            // 检查交易间隔：两次交易间隔不少于 3 秒
-                                            {
-                                                let mut guard = last_trade_time.lock().await;
-                                                let now = Instant::now();
-                                                if let Some(last) = *guard {
-                                                    if now.saturating_duration_since(last) < MIN_TRADE_INTERVAL {
-                                                        let elapsed = now.saturating_duration_since(last).as_secs_f32();
-                                                        debug!(
-                                                            "⏱️ 交易间隔不足 3 秒，跳过 | 市场:{} | 距上次:{}秒",
-                                                            market_display,
-                                                            elapsed
-                                                        );
-                                                        continue; // 跳过此套利机会
-                                                    }
-                                                }
-                                                *guard = Some(now);
-                                            }
-
-                                            info!(
-                                                "⚡ 执行套利交易 | 市场:{} | 利润:{:.2}% | 下单数量:{}份 | 订单成本:{:.2} USD | 当前敞口:{:.2} USD",
-                                                market_display,
-                                                opp.profit_percentage,
-                                                order_size,
-                                                total_cost,
-                                                current_exposure
-                                            );
-                                            // 简化敞口：只要执行套利就增加敞口，不管是否成交
-                                            let _pt = _risk_manager.position_tracker();
-                                            _pt.update_exposure_cost(opp.yes_token_id, opp.yes_ask_price, order_size);
-                                            _pt.update_exposure_cost(opp.no_token_id, opp.no_ask_price, order_size);
-                                            
-                                            // 套利执行：只要总价 <= 阈值即执行，不因涨跌组合跳过；涨跌仅用于滑点分配（仅下降=second，上涨与持平=first）
-                                            // 克隆需要的变量到独立任务中（涨跌方向用于按方向分配滑点）
-                                            let executor_clone = executor.clone();
-                                            let risk_manager_clone = _risk_manager.clone();
-                                            let opp_clone = opp.clone();
-                                            let yes_dir_s = yes_dir.to_string();
-                                            let no_dir_s = no_dir.to_string();
-                                            
-                                            // 使用 tokio::spawn 异步执行套利交易，不阻塞订单簿更新处理
-                                            tokio::spawn(async move {
-                                                // 执行套利交易（滑点：仅下降=second，上涨与持平=first）
-                                                match executor_clone.execute_arbitrage_pair(&opp_clone, &yes_dir_s, &no_dir_s).await {
-                                                    Ok(result) => {
-                                                        // 先保存 pair_id，因为 result 会被移动
-                                                        let pair_id = result.pair_id.clone();
-                                                        
-                                                        // 注册到风险管理器（传入价格信息以计算风险敞口）
-                                                        risk_manager_clone.register_order_pair(
-                                                            result,
-                                                            opp_clone.market_id,
-                                                            opp_clone.yes_token_id,
-                                                            opp_clone.no_token_id,
-                                                            opp_clone.yes_ask_price,
-                                                            opp_clone.no_ask_price,
-                                                        );
-
-                                                        // 处理风险恢复
-                                                        // 对冲策略已暂时关闭，买进单边不做任何处理
-                                                        match risk_manager_clone.handle_order_pair(&pair_id).await {
-                                                            Ok(action) => {
-                                                                // 对冲策略已关闭，不再处理MonitorForExit和SellExcess
-                                                                match action {
-                                                                    crate::risk::recovery::RecoveryAction::None => {
-                                                                        // 正常情况，无需处理
-                                                                    }
-                                                                    crate::risk::recovery::RecoveryAction::MonitorForExit { .. } => {
-                                                                        info!("单边成交，但对冲策略已关闭，不做处理");
-                                                                    }
-                                                                    crate::risk::recovery::RecoveryAction::SellExcess { .. } => {
-                                                                        info!("部分成交不平衡，但对冲策略已关闭，不做处理");
-                                                                    }
-                                                                    crate::risk::recovery::RecoveryAction::ManualIntervention { reason } => {
-                                                                        warn!("需要手动干预: {}", reason);
-                                                                    }
-                                                                }
-                                                            }
-                                                            Err(e) => {
-                                                                error!("风险处理失败: {}", e);
-                                                            }
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        // 错误详情已在executor中记录，这里只记录简要信息
-                                                        let error_msg = e.to_string();
-                                                        // 提取简化的错误信息
-                                                        if error_msg.contains("套利失败") {
-                                                            // 错误信息已经格式化好了，直接使用
-                                                            error!("{}", error_msg);
-                                                        } else {
-                                                            error!("执行套利交易失败: {}", error_msg);
-                                                        }
-                                                    }
-                                                }
-                                            });
-                                        }
-                                    }
-                                }
                             }
                         }
                         Some(Err(e)) => {
