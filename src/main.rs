@@ -881,10 +881,10 @@ async fn main() -> Result<()> {
                                         },
                                     }
 
-                                    let buy_min_price = dec!(0.6);
-                                    let buy_max_price = dec!(0.7);
-                                    let sell_min_price = dec!(0.8);
-                                    let sell_max_price = dec!(0.9);
+                                    let buy_min_price = dec!(0.2);
+                                    let buy_max_price = dec!(0.3);
+                                    let sell_min_price = dec!(0.5);
+                                    let sell_max_price = dec!(0.6);
                                     let target_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(5.0));
                                     let mut qty = (target_qty * dec!(100.0)).floor() / dec!(100.0);
                                     if qty < dec!(5.0) {
