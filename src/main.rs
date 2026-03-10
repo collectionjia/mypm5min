@@ -531,6 +531,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| Utc::now());
         let mut wind_down_done = false;
         let mut post_end_claim_done = false;
+        let mut force_close_cancel_done = false;
 
         // 创建市场ID到市场信息的映射
         let market_map: HashMap<B256, &MarketInfo> = markets.iter()
@@ -765,8 +766,8 @@ async fn main() -> Result<()> {
                                 };
                                 let now_countdown = Utc::now();
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
-                                let countdown_active = sec_to_end <= 180 && sec_to_end >= 0;
-                                countdown_in_progress.store(countdown_active, Ordering::Relaxed);
+                                let countdown_strategy_active = sec_to_end > 120 && sec_to_end >= 0;
+                                countdown_in_progress.store(sec_to_end >= 0, Ordering::Relaxed);
                                 let sec_to_end_nonneg = sec_to_end.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
                                 let countdown_seconds = sec_to_end_nonneg % 60;
@@ -804,72 +805,6 @@ async fn main() -> Result<()> {
                                     market_data.insert(market_id.to_string(), entry);
                                 }
 
-                                if sec_to_end > 180 {
-                                    let now_ts = now_countdown.timestamp();
-                                    let last_ts = force_close_last_attempt
-                                        .get(&market_id)
-                                        .map(|v| *v)
-                                        .unwrap_or(0);
-
-                                    if now_ts - last_ts >= 10 {
-                                        force_close_last_attempt.insert(market_id, now_ts);
-
-                                        // 获取买一价
-                                        let yes_best_bid = pair.yes_book.bids.last().map(|b| b.price);
-                                        let no_best_bid = pair.no_book.bids.last().map(|b| b.price);
-                                        let pt = _risk_manager.position_tracker();
-                                        let yes_pos = pt.get_position(pair.yes_book.asset_id);
-                                        let no_pos = pt.get_position(pair.no_book.asset_id);
-                                        let exec_yes = executor.clone();
-                                        let exec_no = executor.clone();
-                                        let market_disp_yes = market_display.clone();
-                                        let market_disp_no = market_display.clone();
-
-                                        if yes_pos > dec!(0.01) {
-                                            if let Some(bp) = yes_best_bid {
-                                                let size = (yes_pos * dec!(100)).floor() / dec!(100);
-                                                info!("🧯 超过3分钟强制平仓 | 市场:{} | 卖出 YES {} 份 | 价格:{:.4}", market_disp_yes, size, bp);
-                                                let token = pair.yes_book.asset_id;
-                                                let ptc = _risk_manager.position_tracker();
-                                                tokio::spawn(async move {
-                                                    match exec_yes.sell_at_price(token, bp, size).await {
-                                                        Ok(_) => {
-                                                            ptc.update_position(token, -size);
-                                                            info!("✅ 强制平仓成功 | 市场:{} | YES 卖出 {} 份", market_disp_yes, size);
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("❌ 强制平仓失败 | 市场:{} | YES | {}", market_disp_yes, e);
-                                                        }
-                                                    }
-                                                });
-                                            } else {
-                                                debug!("⏸️ 无买盘，跳过 YES 强制平仓 | 市场:{}", market_disp_yes);
-                                            }
-                                        }
-                                        if no_pos > dec!(0.01) {
-                                            if let Some(bp) = no_best_bid {
-                                                let size = (no_pos * dec!(100)).floor() / dec!(100);
-                                                info!("🧯 超过3分钟强制平仓 | 市场:{} | 卖出 NO {} 份 | 价格:{:.4}", market_disp_no, size, bp);
-                                                let token = pair.no_book.asset_id;
-                                                let ptc = _risk_manager.position_tracker();
-                                                tokio::spawn(async move {
-                                                    match exec_no.sell_at_price(token, bp, size).await {
-                                                        Ok(_) => {
-                                                            ptc.update_position(token, -size);
-                                                            info!("✅ 强制平仓成功 | 市场:{} | NO 卖出 {} 份", market_disp_no, size);
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("❌ 强制平仓失败 | 市场:{} | NO | {}", market_disp_no, e);
-                                                        }
-                                                    }
-                                                });
-                                            } else {
-                                                debug!("⏸️ 无买盘，跳过 NO 强制平仓 | 市场:{}", market_disp_no);
-                                            }
-                                        }
-                                    }
-                                }
-
                                 {
                                     enum Action {
                                         Buy {
@@ -889,9 +824,9 @@ async fn main() -> Result<()> {
                                     }
 
                                     let buy_min_price = dec!(0.40);
-                                    let buy_max_price = dec!(0.45);
+                                    let buy_max_price = dec!(0.50);
                                     let sell_min_price = dec!(0.50);
-                                    let sell_max_price = dec!(0.55);
+                                    let sell_max_price = dec!(0.60);
                                     let target_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(5.0));
                                     let mut qty = (target_qty * dec!(100.0)).floor() / dec!(100.0);
                                     if qty < dec!(5.0) {
@@ -909,7 +844,7 @@ async fn main() -> Result<()> {
                                             .unwrap_or(CountdownOnceState::Idle);
                                         match snapshot {
                                             CountdownOnceState::Idle => {
-                                                if countdown_active {
+                                                if countdown_strategy_active {
                                                     let mut candidates: Vec<(Decimal, U256, String)> = Vec::new();
                                                     if let Some((p, _)) = yes_best_ask {
                                                         if p >= buy_min_price && p <= buy_max_price {
@@ -948,7 +883,7 @@ async fn main() -> Result<()> {
                                                 side,
                                                 ..
                                             } => {
-                                                if countdown_active {
+                                                if countdown_strategy_active {
                                                     let bid = if token_id == pair.yes_book.asset_id {
                                                         yes_best_bid
                                                     } else if token_id == pair.no_book.asset_id {
@@ -1189,6 +1124,134 @@ async fn main() -> Result<()> {
                 // 定期检查：1) 是否进入新的5分钟窗口 2) 收尾触发（5分钟窗口需更频繁检查）
                 _ = sleep(Duration::from_secs(1)) => {
                     let now = Utc::now();
+                    let sec_to_end = (window_end - now).num_seconds();
+                    countdown_in_progress.store(sec_to_end <= 180 && sec_to_end >= 0, Ordering::Relaxed);
+                    let force_close_active = sec_to_end <= 120 && sec_to_end >= 0;
+                    if force_close_active {
+                        if !force_close_cancel_done {
+                            force_close_cancel_done = true;
+                            let exec_cancel = executor.clone();
+                            tokio::spawn(async move {
+                                match exec_cancel.cancel_all_orders().await {
+                                    Ok(_) => info!("🧯 倒计时2分钟强制平仓：已取消所有挂单"),
+                                    Err(e) => warn!(error = %e, "🧯 倒计时2分钟强制平仓：取消所有挂单失败"),
+                                }
+                            });
+                        }
+
+                        let now_ts = now.timestamp();
+                        for (market_id, (yes_token, no_token)) in &market_token_map {
+                            let last_ts = force_close_last_attempt
+                                .get(market_id)
+                                .map(|v| *v)
+                                .unwrap_or(0);
+                            if now_ts - last_ts < 10 {
+                                continue;
+                            }
+                            force_close_last_attempt.insert(*market_id, now_ts);
+
+                            countdown_once_state.remove(market_id);
+
+                            let market_info = market_map.get(market_id);
+                            let market_title = market_info.map(|m| m.title.as_str()).unwrap_or("未知市场");
+                            let market_symbol = market_info.map(|m| m.crypto_symbol.as_str()).unwrap_or("");
+                            let market_display = if !market_symbol.is_empty() {
+                                format!("{}", market_symbol)
+                            } else {
+                                market_title.to_string()
+                            };
+
+                            let yes_best_bid = monitor
+                                .get_book(*yes_token)
+                                .and_then(|b| b.bids.last().map(|lv| lv.price));
+                            let no_best_bid = monitor
+                                .get_book(*no_token)
+                                .and_then(|b| b.bids.last().map(|lv| lv.price));
+
+                            let pt = _risk_manager.position_tracker();
+                            let yes_pos = pt.get_position(*yes_token);
+                            let no_pos = pt.get_position(*no_token);
+
+                            if yes_pos > dec!(0.01) {
+                                if let Some(bp) = yes_best_bid {
+                                    let size = (yes_pos * dec!(100)).floor() / dec!(100);
+                                    if size > dec!(0.0) {
+                                        info!(
+                                            "🧯 倒计时2分钟强制平仓 | 市场:{} | 卖出 YES {} 份 | 价格:{:.4}",
+                                            market_display, size, bp
+                                        );
+                                        let exec = executor.clone();
+                                        let token = *yes_token;
+                                        let market_disp = market_display.clone();
+                                        let ptc = _risk_manager.position_tracker();
+                                        tokio::spawn(async move {
+                                            match exec.sell_at_price(token, bp, size).await {
+                                                Ok(_) => {
+                                                    ptc.update_exposure_cost(token, bp, -size);
+                                                    ptc.update_position(token, -size);
+                                                    info!(
+                                                        "✅ 强制平仓成功 | 市场:{} | YES 卖出 {} 份",
+                                                        market_disp, size
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    warn!(
+                                                        "❌ 强制平仓失败 | 市场:{} | YES | {}",
+                                                        market_disp, e
+                                                    );
+                                                }
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    debug!(
+                                        "⏸️ 无买盘，跳过 YES 强制平仓 | 市场:{}",
+                                        market_display
+                                    );
+                                }
+                            }
+
+                            if no_pos > dec!(0.01) {
+                                if let Some(bp) = no_best_bid {
+                                    let size = (no_pos * dec!(100)).floor() / dec!(100);
+                                    if size > dec!(0.0) {
+                                        info!(
+                                            "🧯 倒计时2分钟强制平仓 | 市场:{} | 卖出 NO {} 份 | 价格:{:.4}",
+                                            market_display, size, bp
+                                        );
+                                        let exec = executor.clone();
+                                        let token = *no_token;
+                                        let market_disp = market_display.clone();
+                                        let ptc = _risk_manager.position_tracker();
+                                        tokio::spawn(async move {
+                                            match exec.sell_at_price(token, bp, size).await {
+                                                Ok(_) => {
+                                                    ptc.update_exposure_cost(token, bp, -size);
+                                                    ptc.update_position(token, -size);
+                                                    info!(
+                                                        "✅ 强制平仓成功 | 市场:{} | NO 卖出 {} 份",
+                                                        market_disp, size
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    warn!(
+                                                        "❌ 强制平仓失败 | 市场:{} | NO | {}",
+                                                        market_disp, e
+                                                    );
+                                                }
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    debug!(
+                                        "⏸️ 无买盘，跳过 NO 强制平仓 | 市场:{}",
+                                        market_display
+                                    );
+                                }
+                            }
+                        }
+                    }
+
                     let new_window_timestamp = MarketDiscoverer::calculate_current_window_timestamp(now);
 
                     // 如果当前窗口时间戳与记录的不同，说明已经进入新窗口
