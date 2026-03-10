@@ -978,11 +978,8 @@ async fn main() -> Result<()> {
                                                     match executor_clone.buy_at_price(token_id, buy_price, qty).await {
                                                         Ok(resp) => {
                                                             info!("✅ 倒计时策略买入下单成功 | order_id={}", resp.order_id);
-                                                            let filled = (resp.taking_amount * dec!(100.0)).floor() / dec!(100.0);
-                                                            if filled > dec!(0) {
-                                                                pt.update_exposure_cost(token_id, buy_price, filled);
-                                                                pt.update_position(token_id, filled);
-                                                            }
+                                                            pt.update_exposure_cost(token_id, buy_price, qty);
+                                                            pt.update_position(token_id, qty);
 
                                                             use crate::utils::trade_history::{add_trade, TradeRecord};
                                                             use chrono::Utc;
@@ -992,26 +989,22 @@ async fn main() -> Result<()> {
                                                                 market_slug: market_display_str,
                                                                 side: side.clone(),
                                                                 price: price_f64,
-                                                                size: filled.to_f64().unwrap_or(0.0),
+                                                                size: qty.to_f64().unwrap_or(0.0),
                                                                 timestamp: Utc::now().timestamp(),
-                                                                status: if filled > dec!(0) { "Bought" } else { "BuyPosted" }.to_string(),
+                                                                status: "Bought".to_string(),
                                                                 profit: None,
                                                             });
 
-                                                            if filled > dec!(0) {
-                                                                state.insert(
-                                                                    buy_market_id,
-                                                                    CountdownOnceState::Bought {
-                                                                        market_id: buy_market_id,
-                                                                        token_id,
-                                                                        qty: filled,
-                                                                        entry_price: buy_price,
-                                                                        side,
-                                                                    },
-                                                                );
-                                                            } else {
-                                                                state.remove(&buy_market_id);
-                                                            }
+                                                            state.insert(
+                                                                buy_market_id,
+                                                                CountdownOnceState::Bought {
+                                                                    market_id: buy_market_id,
+                                                                    token_id,
+                                                                    qty,
+                                                                    entry_price: buy_price,
+                                                                    side,
+                                                                },
+                                                            );
                                                         }
                                                         Err(e) => {
                                                             warn!("❌ 倒计时策略买入下单失败: {}", e);
@@ -1052,11 +1045,8 @@ async fn main() -> Result<()> {
                                                     match executor_clone.sell_at_price(token_id, sell_price, sell_size).await {
                                                         Ok(resp) => {
                                                             info!("✅ 倒计时策略卖出下单成功 | order_id={}", resp.order_id);
-                                                            let filled = (resp.taking_amount * dec!(100.0)).floor() / dec!(100.0);
-                                                            if filled > dec!(0) {
-                                                                pt.update_exposure_cost(token_id, sell_price, -filled);
-                                                                pt.update_position(token_id, -filled);
-                                                            }
+                                                            pt.update_exposure_cost(token_id, sell_price, -sell_size);
+                                                            pt.update_position(token_id, -sell_size);
 
                                                             use crate::utils::trade_history::{add_trade, TradeRecord};
                                                             use chrono::Utc;
@@ -1066,7 +1056,7 @@ async fn main() -> Result<()> {
                                                                 market_slug: market_display_str,
                                                                 side,
                                                                 price: price_f64,
-                                                                size: filled.to_f64().unwrap_or(0.0),
+                                                                size: sell_size.to_f64().unwrap_or(0.0),
                                                                 timestamp: Utc::now().timestamp(),
                                                                 status: "Sold".to_string(),
                                                                 profit: None,
