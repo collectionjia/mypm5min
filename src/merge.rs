@@ -92,20 +92,20 @@ pub fn encode_redeem_calldata(collateral: Address, parent: B256, condition: B256
     .into()
 }
 
-const RPC_URL_DEFAULT: &str = "https://polygon-bor-rpc.publicnode.com";
-const RELAYER_URL_DEFAULT: &str = "https://relayer-v2.polymarket.com";
-const USDC_POLYGON: Address = address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
+pub const RPC_URL_DEFAULT: &str = "https://polygon-bor-rpc.publicnode.com";
+pub const RELAYER_URL_DEFAULT: &str = "https://relayer-v2.polymarket.com";
+pub const USDC_POLYGON: Address = address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
 
 const RELAYER_GET_RELAY_PAYLOAD: &str = "/relay-payload";
 const RELAYER_SUBMIT: &str = "/submit";
 
-const PROXY_FACTORY: Address = address!("0xaB45c5A4B0c941a2F231C04C3f49182e1A254052");
-const RELAY_HUB: Address = address!("0xD216153c06E857cD7f72665E0aF1d7D82172F494");
-const PROXY_INIT_CODE_HASH: [u8; 32] = [
+pub const PROXY_FACTORY: Address = address!("0xaB45c5A4B0c941a2F231C04C3f49182e1A254052");
+pub const RELAY_HUB: Address = address!("0xD216153c06E857cD7f72665E0aF1d7D82172F494");
+pub const PROXY_INIT_CODE_HASH: [u8; 32] = [
     0xd2, 0x1d, 0xf8, 0xdc, 0x65, 0x88, 0x0a, 0x86, 0x06, 0xf0, 0x9f, 0xe0, 0xce, 0x3d, 0xf9, 0xb8,
     0x86, 0x92, 0x87, 0xab, 0x0b, 0x05, 0x8b, 0xe0, 0x5a, 0xa9, 0xe8, 0xaf, 0x63, 0x30, 0xa0, 0x0b,
 ];
-const PROXY_DEFAULT_GAS: u64 = 160_000;
+pub const PROXY_DEFAULT_GAS: u64 = 160_000;
 
 /// 将 0x 开头的长 hex 缩短为 `0x` + 前 8 位 + `..` + 后 6 位，便于日志。
 pub fn short_hex(s: &str) -> String {
@@ -139,7 +139,7 @@ fn encode_merge_calldata(req: &MergePositionsRequest) -> Vec<u8> {
     out
 }
 
-fn derive_proxy_wallet(eoa: Address, proxy_factory: Address) -> Address {
+pub fn derive_proxy_wallet(eoa: Address, proxy_factory: Address) -> Address {
     let salt = keccak256(eoa.as_slice());
     let mut buf = [0u8; 1 + 20 + 32 + 32];
     buf[0] = 0xff;
@@ -150,7 +150,7 @@ fn derive_proxy_wallet(eoa: Address, proxy_factory: Address) -> Address {
     Address::from_slice(&h.as_slice()[12..32])
 }
 
-fn to_hex_0x(b: &[u8]) -> String {
+pub fn to_hex_0x(b: &[u8]) -> String {
     const HEX: &[u8] = b"0123456789abcdef";
     let mut s = String::with_capacity(2 + b.len() * 2);
     s.push_str("0x");
@@ -161,7 +161,7 @@ fn to_hex_0x(b: &[u8]) -> String {
     s
 }
 
-fn build_hmac_signature(secret: &[u8], timestamp: u64, method: &str, path: &str, body: &str) -> String {
+pub fn build_hmac_signature(secret: &[u8], timestamp: u64, method: &str, path: &str, body: &str) -> String {
     let msg = format!("{}{}{}{}", timestamp, method, path, body);
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC key");
     mac.update(msg.as_bytes());
@@ -169,7 +169,7 @@ fn build_hmac_signature(secret: &[u8], timestamp: u64, method: &str, path: &str,
     sig.replace('+', "-").replace('/', "_")
 }
 
-async fn get_relay_payload(client: &reqwest::Client, base: &str, eoa: Address) -> Result<(Address, String)> {
+pub async fn get_relay_payload(client: &reqwest::Client, base: &str, eoa: Address) -> Result<(Address, String)> {
     let url = format!("{}{}", base.trim_end_matches('/'), RELAYER_GET_RELAY_PAYLOAD);
     let resp = client
         .get(&url)
@@ -196,7 +196,7 @@ async fn get_relay_payload(client: &reqwest::Client, base: &str, eoa: Address) -
     Ok((relay, nonce.to_string()))
 }
 
-fn encode_proxy_call(ctf: Address, data: &[u8]) -> Vec<u8> {
+pub fn encode_proxy_call(ctf: Address, data: &[u8]) -> Vec<u8> {
     let t = ProxyCallTuple {
         typeCode: 1u8,
         to: ctf,
@@ -206,7 +206,7 @@ fn encode_proxy_call(ctf: Address, data: &[u8]) -> Vec<u8> {
     proxyCall { calls: vec![t] }.abi_encode().to_vec()
 }
 
-fn create_struct_hash(
+pub fn create_struct_hash(
     from: Address,
     to: Address,
     data: &[u8],
@@ -232,7 +232,7 @@ fn create_struct_hash(
     keccak256(buf)
 }
 
-fn eip191_hash(struct_hash: B256) -> B256 {
+pub fn eip191_hash(struct_hash: B256) -> B256 {
     let mut msg = b"\x19Ethereum Signed Message:\n32".to_vec();
     msg.extend_from_slice(struct_hash.as_slice());
     keccak256(msg)
