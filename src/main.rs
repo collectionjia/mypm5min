@@ -893,7 +893,8 @@ async fn main() -> Result<()> {
                                     let mut action: Option<Action> = None;
                                     {
                                         let mut state = countdown_once_state.lock().await;
-                                        match &*state {
+                                        let snapshot = state.clone();
+                                        match snapshot {
                                             CountdownOnceState::Idle => {
                                                 if countdown_active {
                                                     let mut candidates: Vec<(Decimal, U256, String)> = Vec::new();
@@ -931,10 +932,10 @@ async fn main() -> Result<()> {
                                                 qty: held_qty,
                                                 side,
                                             } => {
-                                                if *held_market == market_id {
-                                                    let bid = if *token_id == pair.yes_book.asset_id {
+                                                if held_market == market_id {
+                                                    let bid = if token_id == pair.yes_book.asset_id {
                                                         yes_best_bid
-                                                    } else if *token_id == pair.no_book.asset_id {
+                                                    } else if token_id == pair.no_book.asset_id {
                                                         no_best_bid
                                                     } else {
                                                         None
@@ -943,16 +944,16 @@ async fn main() -> Result<()> {
                                                     if let Some(bp) = bid {
                                                         if bp >= sell_price {
                                                             *state = CountdownOnceState::Selling {
-                                                                market_id: *held_market,
-                                                                token_id: *token_id,
-                                                                qty: *held_qty,
+                                                                market_id: held_market,
+                                                                token_id,
+                                                                qty: held_qty,
                                                                 side: side.clone(),
                                                             };
                                                             action = Some(Action::Sell {
-                                                                market_id: *held_market,
-                                                                token_id: *token_id,
-                                                                qty: *held_qty,
-                                                                side: side.clone(),
+                                                                market_id: held_market,
+                                                                token_id,
+                                                                qty: held_qty,
+                                                                side,
                                                                 sell_price,
                                                             });
                                                         }
