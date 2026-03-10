@@ -97,7 +97,7 @@ pub const RELAYER_URL_DEFAULT: &str = "https://relayer-v2.polymarket.com";
 pub const USDC_POLYGON: Address = address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
 
 const RELAYER_GET_RELAY_PAYLOAD: &str = "/relay-payload";
-const RELAYER_SUBMIT: &str = "/submit";
+pub const RELAYER_SUBMIT: &str = "/submit";
 
 pub const PROXY_FACTORY: Address = address!("0xaB45c5A4B0c941a2F231C04C3f49182e1A254052");
 pub const RELAY_HUB: Address = address!("0xD216153c06E857cD7f72665E0aF1d7D82172F494");

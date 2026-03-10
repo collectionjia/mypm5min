@@ -75,6 +75,8 @@ pub struct Config {
     pub countdown_max_price: f64,
     /// 倒计时策略最低买入价格，低于此价格不下单，默认 0.0 (不限制)
     pub countdown_min_price: f64,
+    pub countdown_buy_price: f64,
+    pub countdown_sell_price: f64,
 
     /// AI 预测配置
     pub ai_api_url: String, // AI 接口地址
@@ -200,6 +202,14 @@ impl Config {
                 .unwrap_or_else(|_| "0.0".to_string())
                 .parse()
                 .unwrap_or(0.0), // 默认0.0
+            countdown_buy_price: env::var("COUNTDOWN_BUY_PRICE")
+                .unwrap_or_else(|_| "0.6".to_string())
+                .parse()
+                .unwrap_or(0.6),
+            countdown_sell_price: env::var("COUNTDOWN_SELL_PRICE")
+                .unwrap_or_else(|_| "0.8".to_string())
+                .parse()
+                .unwrap_or(0.8),
             
             // AI 配置
             ai_api_url: env::var("AI_API_URL")
