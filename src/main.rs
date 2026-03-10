@@ -84,6 +84,32 @@ fn merge_info_with_both_sides(positions: &[Position]) -> HashMap<B256, (U256, U2
         .collect()
 }
 
+fn adjust_order_size_for_fee(entry_price: Decimal, size: Decimal) -> Decimal {
+    use rust_decimal::prelude::ToPrimitive;
+
+    if size <= dec!(0) {
+        return dec!(0);
+    }
+
+    let p = entry_price.to_f64().unwrap_or(0.0);
+    let base = p * (1.0 - p);
+    let fee_value = 100.0 * 0.25 * base.powf(2.0);
+    let fee_decimal = Decimal::try_from(fee_value).unwrap_or(dec!(0));
+
+    let available_amount = if fee_decimal >= dec!(100.0) {
+        dec!(0.01)
+    } else {
+        size * (dec!(100.0) - fee_decimal) / dec!(100.0)
+    };
+
+    let floored_size = (available_amount * dec!(100.0)).floor() / dec!(100.0);
+    if floored_size.is_zero() {
+        dec!(0.01)
+    } else {
+        floored_size
+    }
+}
+
 #[derive(Clone)]
 enum CountdownOnceState {
     Idle,
@@ -898,21 +924,26 @@ async fn main() -> Result<()> {
                                                     };
 
                                                     if let Some(bp) = bid {
-                                                        if bp <= entry_price * dec!(0.9) {
+                                                        let pt_snapshot = _risk_manager.position_tracker();
+                                                        let available = pt_snapshot.get_position(token_id);
+                                                        let sellable_qty = held_qty.min(available);
+                                                        if sellable_qty <= dec!(0.01) {
+                                                            countdown_once_state.remove(&market_id);
+                                                        } else if bp <= entry_price * dec!(0.9) {
                                                             let px = bp;
                                                             countdown_once_state.insert(
                                                                 market_id,
                                                                 CountdownOnceState::Selling {
                                                                     market_id,
                                                                     token_id,
-                                                                    qty: held_qty,
+                                                                    qty: sellable_qty,
                                                                     side: side.clone(),
                                                                 },
                                                             );
                                                             action = Some(Action::Sell {
                                                                 market_id,
                                                                 token_id,
-                                                                qty: held_qty,
+                                                                qty: sellable_qty,
                                                                 entry_price,
                                                                 side,
                                                                 sell_price: px,
@@ -926,14 +957,14 @@ async fn main() -> Result<()> {
                                                                 CountdownOnceState::Selling {
                                                                     market_id,
                                                                     token_id,
-                                                                    qty: held_qty,
+                                                                    qty: sellable_qty,
                                                                     side: side.clone(),
                                                                 },
                                                             );
                                                             action = Some(Action::Sell {
                                                                 market_id,
                                                                 token_id,
-                                                                qty: held_qty,
+                                                                qty: sellable_qty,
                                                                 entry_price,
                                                                 side,
                                                                 sell_price: px,
@@ -968,14 +999,16 @@ async fn main() -> Result<()> {
                                                 let market_display_str = market_display.clone();
                                                 use rust_decimal::prelude::ToPrimitive;
                                                 let price_f64 = buy_price.to_f64().unwrap_or(0.0);
-                                                let size_f64 = qty.to_f64().unwrap_or(0.0);
 
                                                 tokio::spawn(async move {
                                                     match executor_clone.buy_at_price(token_id, buy_price, qty).await {
                                                         Ok(resp) => {
                                                             info!("✅ 倒计时策略买入下单成功 | order_id={}", resp.order_id);
-                                                            pt.update_exposure_cost(token_id, buy_price, qty);
-                                                            pt.update_position(token_id, qty);
+                                                            let filled = (resp.taking_amount * dec!(100.0)).floor() / dec!(100.0);
+                                                            if filled > dec!(0) {
+                                                                pt.update_exposure_cost(token_id, buy_price, filled);
+                                                                pt.update_position(token_id, filled);
+                                                            }
 
                                                             use crate::utils::trade_history::{add_trade, TradeRecord};
                                                             use chrono::Utc;
@@ -985,22 +1018,26 @@ async fn main() -> Result<()> {
                                                                 market_slug: market_display_str,
                                                                 side: side.clone(),
                                                                 price: price_f64,
-                                                                size: size_f64,
+                                                                size: filled.to_f64().unwrap_or(0.0),
                                                                 timestamp: Utc::now().timestamp(),
-                                                                status: "Bought".to_string(),
+                                                                status: if filled > dec!(0) { "Bought" } else { "BuyPosted" }.to_string(),
                                                                 profit: None,
                                                             });
 
-                                                            state.insert(
-                                                                buy_market_id,
-                                                                CountdownOnceState::Bought {
-                                                                    market_id: buy_market_id,
-                                                                    token_id,
-                                                                    qty,
-                                                                    entry_price: buy_price,
-                                                                    side,
-                                                                },
-                                                            );
+                                                            if filled > dec!(0) {
+                                                                state.insert(
+                                                                    buy_market_id,
+                                                                    CountdownOnceState::Bought {
+                                                                        market_id: buy_market_id,
+                                                                        token_id,
+                                                                        qty: filled,
+                                                                        entry_price: buy_price,
+                                                                        side,
+                                                                    },
+                                                                );
+                                                            } else {
+                                                                state.remove(&buy_market_id);
+                                                            }
                                                         }
                                                         Err(e) => {
                                                             warn!("❌ 倒计时策略买入下单失败: {}", e);
@@ -1030,14 +1067,28 @@ async fn main() -> Result<()> {
                                                 let market_display_str = market_display.clone();
                                                 use rust_decimal::prelude::ToPrimitive;
                                                 let price_f64 = sell_price.to_f64().unwrap_or(0.0);
-                                                let size_f64 = qty.to_f64().unwrap_or(0.0);
 
                                                 tokio::spawn(async move {
-                                                    match executor_clone.sell_at_price(token_id, sell_price, qty).await {
+                                                    let available = pt.get_position(token_id);
+                                                    let sellable = qty.min(available);
+                                                    let sell_size = adjust_order_size_for_fee(entry_price, sellable);
+                                                    if sell_size <= dec!(0.01) {
+                                                        if done_after_sell {
+                                                            state.insert(sell_market_id, CountdownOnceState::Done);
+                                                        } else {
+                                                            state.remove(&sell_market_id);
+                                                        }
+                                                        return;
+                                                    }
+
+                                                    match executor_clone.sell_at_price(token_id, sell_price, sell_size).await {
                                                         Ok(resp) => {
                                                             info!("✅ 倒计时策略卖出下单成功 | order_id={}", resp.order_id);
-                                                            pt.update_exposure_cost(token_id, sell_price, -qty);
-                                                            pt.update_position(token_id, -qty);
+                                                            let filled = (resp.taking_amount * dec!(100.0)).floor() / dec!(100.0);
+                                                            if filled > dec!(0) {
+                                                                pt.update_exposure_cost(token_id, sell_price, -filled);
+                                                                pt.update_position(token_id, -filled);
+                                                            }
 
                                                             use crate::utils::trade_history::{add_trade, TradeRecord};
                                                             use chrono::Utc;
@@ -1047,7 +1098,7 @@ async fn main() -> Result<()> {
                                                                 market_slug: market_display_str,
                                                                 side,
                                                                 price: price_f64,
-                                                                size: size_f64,
+                                                                size: filled.to_f64().unwrap_or(0.0),
                                                                 timestamp: Utc::now().timestamp(),
                                                                 status: sell_status.to_string(),
                                                                 profit: None,
