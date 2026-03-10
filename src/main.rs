@@ -336,6 +336,47 @@ async fn main() -> Result<()> {
     }
     info!("▶️ Bot已启动运行！");
 
+    // 启动时自动检查并领取所有已决议市场的奖励（防止重启后无法领取）
+    {
+        info!("🚀 启动自检：检查是否有未领取的奖励...");
+        if let Some(proxy) = config.proxy_address {
+            let priv_key = config.private_key.clone();
+            // 获取所有持仓
+            match _risk_manager.position_tracker().sync_from_api().await {
+                Ok(positions) => {
+                    // 提取所有涉及的 condition_id（去重）
+                    let condition_ids: std::collections::HashSet<B256> = positions.iter()
+                        .map(|p| p.condition_id)
+                        .collect();
+                    
+                    if !condition_ids.is_empty() {
+                        info!("🔍 发现 {} 个相关市场，尝试执行 Redeem...", condition_ids.len());
+                        // 启动一个异步任务来执行 Redeem，避免阻塞主线程
+                        let priv_key_clone = priv_key.clone();
+                        tokio::spawn(async move {
+                            for condition_id in condition_ids {
+                                // 对每个市场尝试 Redeem（如果未决议会失败，忽略即可）
+                                match crate::merge::redeem_max(condition_id, proxy, &priv_key_clone, None).await {
+                                    Ok(tx) => info!("✅ 启动自动领取成功 | condition_id={} | tx={}", condition_id, tx),
+                                    Err(e) => {
+                                        // 大多数失败是因为市场未决议，这是正常的，使用 debug 日志
+                                        debug!("启动自动领取跳过 (可能未决议/无获胜持仓): {} | condition_id={}", e, condition_id);
+                                    }
+                                }
+                                // 稍微间隔一下，避免请求过于频繁
+                                sleep(Duration::from_millis(200)).await;
+                            }
+                            info!("✅ 启动自动领取检查完成");
+                        });
+                    } else {
+                        info!("🔍 当前无持仓，无需 Redeem");
+                    }
+                }
+                Err(e) => warn!("⚠️ 启动自检失败：无法获取持仓 ({})", e),
+            }
+        }
+    }
+
 
     // 创建仓位平衡器
     let position_balancer = Arc::new(PositionBalancer::new(
