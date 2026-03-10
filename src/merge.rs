@@ -442,17 +442,18 @@ pub async fn merge_max(
     Ok(format!("{:#x}", tx_hash_out))
 }
 
-/// 尝试 Redeem 指定 condition_id 的所有非零持仓（Winning Side）。
-/// 如果市场未决议，或者没有任何持仓获胜，交易可能会 Revert。
+/// 尝试 Redeem 指定 condition_id 的指定 outcome indexes 的所有非零持仓。
 ///
 /// - `condition_id`: 市场的 condition ID
 /// - `proxy`: Proxy 地址
 /// - `private_key`: EOA 私钥
+/// - `outcome_indexes`: 要检查的 outcome index 列表 (0, 1, 2...)
 /// - `rpc_url`: Polygon RPC
-pub async fn redeem_max(
+pub async fn redeem_outcomes(
     condition_id: B256,
     proxy: Address,
     private_key: &str,
+    outcome_indexes: &[i32],
     rpc_url: Option<&str>,
 ) -> Result<String> {
     let rpc = rpc_url.unwrap_or(RPC_URL_DEFAULT);
@@ -467,31 +468,40 @@ pub async fn redeem_max(
     let erc1155 = IERC1155Balance::new(config.conditional_tokens, prov_read);
     let ctf = config.conditional_tokens;
 
-    let req_col_yes = CollectionIdRequest::builder().parent_collection_id(B256::ZERO).condition_id(condition_id).index_set(U256::from(1)).build();
-    let req_col_no = CollectionIdRequest::builder().parent_collection_id(B256::ZERO).condition_id(condition_id).index_set(U256::from(2)).build();
-    let col_yes = client.collection_id(&req_col_yes).await?;
-    let col_no = client.collection_id(&req_col_no).await?;
-
-    let req_pos_yes = PositionIdRequest::builder().collateral_token(USDC_POLYGON).collection_id(col_yes.collection_id).build();
-    let req_pos_no = PositionIdRequest::builder().collateral_token(USDC_POLYGON).collection_id(col_no.collection_id).build();
-    let pos_yes = client.position_id(&req_pos_yes).await?;
-    let pos_no = client.position_id(&req_pos_no).await?;
-
-    let b_yes: U256 = erc1155.balanceOf(proxy, pos_yes.position_id).call().await.unwrap_or(U256::ZERO);
-    let b_no: U256 = erc1155.balanceOf(proxy, pos_no.position_id).call().await.unwrap_or(U256::ZERO);
-
     let mut index_sets = Vec::new();
-    if b_yes > U256::ZERO {
-        index_sets.push(U256::from(1));
-    }
-    if b_no > U256::ZERO {
-        index_sets.push(U256::from(2));
+
+    for &idx in outcome_indexes {
+        // index_set = 1 << idx
+        let set_val = U256::from(1) << idx;
+        
+        // 1. Get Collection ID
+        let req_col = CollectionIdRequest::builder()
+            .parent_collection_id(B256::ZERO)
+            .condition_id(condition_id)
+            .index_set(set_val)
+            .build();
+        let col = client.collection_id(&req_col).await?;
+
+        // 2. Get Position ID
+        let req_pos = PositionIdRequest::builder()
+            .collateral_token(USDC_POLYGON)
+            .collection_id(col.collection_id)
+            .build();
+        let pos = client.position_id(&req_pos).await?;
+
+        // 3. Check Balance
+        let bal: U256 = erc1155.balanceOf(proxy, pos.position_id).call().await.unwrap_or(U256::ZERO);
+        
+        if bal > U256::ZERO {
+            index_sets.push(set_val);
+            info!("Found redeemable balance: outcome={} | set={} | bal={}", idx, set_val, bal);
+        }
     }
 
     if index_sets.is_empty() {
-        anyhow::bail!("无持仓可 Redeem：YES={} NO={}", b_yes, b_no);
+        anyhow::bail!("无持仓可 Redeem (checked indexes: {:?})", outcome_indexes);
     }
-    info!("🔄 尝试 Redeem 持仓: YES={} NO={} (IndexSets: {:?})", b_yes, b_no, index_sets);
+    info!("🔄 尝试 Redeem 持仓: Condition={:?} | IndexSets={:?}", condition_id, index_sets);
 
     // 构建 calldata
     let redeem_calldata = encode_redeem_calldata(USDC_POLYGON, B256::ZERO, condition_id, index_sets);
@@ -535,6 +545,19 @@ pub async fn redeem_max(
         .send().await.map_err(|e| anyhow::anyhow!("Safe.execTransaction (Redeem) 失败: {}", e))?;
 
     let tx_hash_out = *pending.tx_hash();
-    info!("✅ Redeem 交易已提交（Safe）tx: {:#x}", tx_hash_out);
+    // 等待交易确认
+    let _receipt = pending.get_receipt().await.map_err(|e| anyhow::anyhow!("等待 receipt 失败: {}", e))?;
+    info!("✅ Redeem 交易已确认（Safe）tx: {:#x}", tx_hash_out);
     Ok(format!("{:#x}", tx_hash_out))
+}
+
+/// 尝试 Redeem 指定 condition_id 的所有非零持仓（Winning Side）。
+/// 默认检查 outcome index 0 和 1。
+pub async fn redeem_max(
+    condition_id: B256,
+    proxy: Address,
+    private_key: &str,
+    rpc_url: Option<&str>,
+) -> Result<String> {
+    redeem_outcomes(condition_id, proxy, private_key, &[0, 1], rpc_url).await
 }

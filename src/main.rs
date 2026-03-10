@@ -344,27 +344,32 @@ async fn main() -> Result<()> {
             // 获取所有持仓
             match _risk_manager.position_tracker().sync_from_api().await {
                 Ok(positions) => {
-                    // 提取所有涉及的 condition_id（去重）
-                    let condition_ids: std::collections::HashSet<B256> = positions.iter()
-                        .map(|p| p.condition_id)
-                        .collect();
+                    // 聚合 condition_id -> outcome_indexes
+                    let mut conditions_map: std::collections::HashMap<B256, std::collections::HashSet<i32>> = std::collections::HashMap::new();
+                    for p in &positions {
+                        conditions_map
+                            .entry(p.condition_id)
+                            .or_default()
+                            .insert(p.outcome_index);
+                    }
                     
-                    if !condition_ids.is_empty() {
-                        info!("🔍 发现 {} 个相关市场，尝试执行 Redeem...", condition_ids.len());
+                    if !conditions_map.is_empty() {
+                        info!("🔍 发现 {} 个相关市场，尝试执行 Redeem...", conditions_map.len());
                         // 启动一个异步任务来执行 Redeem，避免阻塞主线程
                         let priv_key_clone = priv_key.clone();
                         tokio::spawn(async move {
-                            for condition_id in condition_ids {
+                            for (condition_id, indexes_set) in conditions_map {
+                                let indexes: Vec<i32> = indexes_set.into_iter().collect();
                                 // 对每个市场尝试 Redeem（如果未决议会失败，忽略即可）
-                                match crate::merge::redeem_max(condition_id, proxy, &priv_key_clone, None).await {
+                                match crate::merge::redeem_outcomes(condition_id, proxy, &priv_key_clone, &indexes, None).await {
                                     Ok(tx) => info!("✅ 启动自动领取成功 | condition_id={} | tx={}", condition_id, tx),
                                     Err(e) => {
                                         // 大多数失败是因为市场未决议，这是正常的，使用 debug 日志
                                         debug!("启动自动领取跳过 (可能未决议/无获胜持仓): {} | condition_id={}", e, condition_id);
                                     }
                                 }
-                                // 稍微间隔一下，避免请求过于频繁
-                                sleep(Duration::from_millis(200)).await;
+                                // 稍微间隔一下，避免请求过于频繁，且等待 nonce 更新
+                                sleep(Duration::from_millis(1000)).await;
                             }
                             info!("✅ 启动自动领取检查完成");
                         });

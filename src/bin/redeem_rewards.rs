@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
 use dotenvy::dotenv;
-use poly_5min_bot::merge::redeem_max;
+use poly_5min_bot::merge::redeem_outcomes;
 use poly_5min_bot::positions::get_positions;
 use polymarket_client_sdk::types::{Address, B256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::str::FromStr;
+use std::time::Duration;
+use tokio::time::sleep;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -44,27 +46,31 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    info!("✅ 获取到 {} 个持仓记录，开始检查可领取的奖励...", positions.len());
+    // 聚合 condition_id -> outcome_indexes
+    let mut conditions_map: HashMap<B256, HashSet<i32>> = HashMap::new();
+    for p in &positions {
+        conditions_map
+            .entry(p.condition_id)
+            .or_default()
+            .insert(p.outcome_index);
+    }
 
-    let mut processed_conditions = HashSet::new();
+    info!("✅ 获取到 {} 个持仓记录，涉及 {} 个独立市场", positions.len(), conditions_map.len());
+
     let mut success_count = 0;
     let mut fail_count = 0;
 
-    for position in positions {
-        // 去重 condition_id
-        if processed_conditions.contains(&position.condition_id) {
-            continue;
-        }
-        processed_conditions.insert(position.condition_id);
-
-        let condition_id = position.condition_id;
-        info!("🔍 检查市场 Condition ID: {:?}", condition_id);
+    for (condition_id, indexes_set) in conditions_map {
+        let indexes: Vec<i32> = indexes_set.into_iter().collect();
+        info!("🔍 检查市场 Condition ID: {:?} | Indexes: {:?}", condition_id, indexes);
 
         // 尝试 Redeem
-        match redeem_max(condition_id, proxy_address, &private_key, None).await {
+        match redeem_outcomes(condition_id, proxy_address, &private_key, &indexes, None).await {
             Ok(tx_hash) => {
                 info!("🎉 领取成功! Condition: {:?} | Tx: {}", condition_id, tx_hash);
                 success_count += 1;
+                // 成功后延时，确保 Nonce 更新和 RPC 同步
+                sleep(Duration::from_secs(3)).await;
             }
             Err(e) => {
                 let msg = e.to_string();
@@ -77,6 +83,8 @@ async fn main() -> Result<()> {
                     warn!("⚠️ 领取失败 Condition: {:?} | Error: {}", condition_id, e);
                     fail_count += 1;
                 }
+                // 即使失败也稍微延时，避免请求过快
+                sleep(Duration::from_millis(500)).await;
             }
         }
     }
