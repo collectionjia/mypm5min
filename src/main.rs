@@ -1018,10 +1018,9 @@ async fn main() -> Result<()> {
                                 sleep(Duration::from_secs(settle_delay_secs)).await;
                                 info!("⏰ 开始对上一轮市场执行平仓（Merge/Redeem）检查...");
                                 
-                                for (condition_id, yes_token, no_token) in prev_round_markets {
-                                    // 1. 尝试 Merge (如果是双边持仓)
-                                    // merge_max 内部会检查余额，如果有一边为0则直接返回错误，开销很小
-                                    match merge::merge_max(condition_id, proxy, &priv_key, None).await {
+                                // 1. 先尝试 Merge 所有市场（无需等待决议，立刻执行）
+                                for (condition_id, _, _) in &prev_round_markets {
+                                    match merge::merge_max(*condition_id, proxy, &priv_key, None).await {
                                         Ok(tx) => info!("✅ Merge 成功 | condition_id={} | tx={}", condition_id, tx),
                                         Err(e) => {
                                             if !e.to_string().contains("无可用份额") {
@@ -1029,28 +1028,65 @@ async fn main() -> Result<()> {
                                             }
                                         }
                                     }
+                                }
 
-                                    // 2. 尝试 Redeem (针对单边持仓或 Merge 后的剩余)
-                                    // 这将尝试赎回 Winning Side
-                                    match merge::redeem_max(condition_id, proxy, &priv_key, None).await {
-                                        Ok(tx) => {
-                                            info!("✅ Redeem 成功 | condition_id={} | tx={}", condition_id, tx);
-                                            // 更新本地持仓为0
-                                            let yes_bal = pt.get_position(yes_token);
-                                            let no_bal = pt.get_position(no_token);
-                                            pt.update_position(yes_token, -yes_bal);
-                                            pt.update_position(no_token, -no_bal);
-                                        },
-                                        Err(e) => {
-                                            if e.to_string().contains("无持仓") {
-                                                debug!("Redeem 跳过: 无持仓 | condition_id={}", condition_id);
-                                            } else {
-                                                warn!("⚠️ Redeem 失败 (可能未决议) | condition_id={} | error={}", condition_id, e);
+                                // 2. 循环尝试 Redeem（需等待决议，支持重试）
+                                let mut pending_markets: HashSet<B256> = prev_round_markets.iter().map(|(c, _, _)| *c).collect();
+                                let max_retries = 20; // 20 * 30s = 约10分钟
+                                
+                                for i in 0..max_retries {
+                                    if pending_markets.is_empty() {
+                                        break;
+                                    }
+                                    
+                                    if i > 0 {
+                                        info!("Redeem 重试 {}/{} | 剩余 {} 个市场等待决议...", i, max_retries, pending_markets.len());
+                                        sleep(Duration::from_secs(30)).await;
+                                    }
+
+                                    let mut completed = Vec::new();
+                                    
+                                    for (condition_id, yes_token, no_token) in &prev_round_markets {
+                                        if !pending_markets.contains(condition_id) {
+                                            continue;
+                                        }
+
+                                        match merge::redeem_max(*condition_id, proxy, &priv_key, None).await {
+                                            Ok(tx) => {
+                                                info!("✅ Redeem 成功 | condition_id={} | tx={}", condition_id, tx);
+                                                // 更新本地持仓为0
+                                                let yes_bal = pt.get_position(*yes_token);
+                                                let no_bal = pt.get_position(*no_token);
+                                                pt.update_position(*yes_token, -yes_bal);
+                                                pt.update_position(*no_token, -no_bal);
+                                                completed.push(*condition_id);
+                                            },
+                                            Err(e) => {
+                                                let err_msg = e.to_string();
+                                                if err_msg.contains("无持仓") {
+                                                    debug!("Redeem 跳过: 无持仓 | condition_id={}", condition_id);
+                                                    completed.push(*condition_id);
+                                                } else {
+                                                    // 其他错误（如未决议），保留重试
+                                                    // 仅在第一次或每5次打印警告，避免刷屏
+                                                    if i % 5 == 0 {
+                                                        warn!("⚠️ Redeem 暂未成功 (可能未决议) | condition_id={} | error={}", condition_id, err_msg);
+                                                    }
+                                                }
                                             }
                                         }
                                     }
+                                    
+                                    for c in completed {
+                                        pending_markets.remove(&c);
+                                    }
                                 }
-                                info!("🏁 上一轮市场平仓任务完成");
+                                
+                                if !pending_markets.is_empty() {
+                                    warn!("⚠️ 部分市场 Redeem 超时未完成: {:?}", pending_markets);
+                                } else {
+                                    info!("🏁 上一轮市场平仓任务全部完成");
+                                }
                             });
                         }
 
