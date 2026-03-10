@@ -555,7 +555,7 @@ async fn main() -> Result<()> {
 
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
-        let countdown_once_state = Arc::new(tokio::sync::Mutex::new(CountdownOnceState::Idle));
+        let countdown_once_state: Arc<DashMap<B256, CountdownOnceState>> = Arc::new(DashMap::new());
         // 强制平仓：记录已在本轮15秒平仓过的市场，避免重复
         let force_close_done: DashSet<B256> = DashSet::new();
 
@@ -879,8 +879,10 @@ async fn main() -> Result<()> {
                                         },
                                     }
 
-                                    let buy_price = Decimal::try_from(config.countdown_buy_price).unwrap_or(dec!(0.6));
-                                    let sell_price = Decimal::try_from(config.countdown_sell_price).unwrap_or(dec!(0.8));
+                                    let buy_min_price = dec!(0.6);
+                                    let buy_max_price = dec!(0.7);
+                                    let sell_min_price = dec!(0.8);
+                                    let sell_max_price = dec!(0.9);
                                     let target_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(5.0));
                                     let mut qty = (target_qty * dec!(100.0)).floor() / dec!(100.0);
                                     if qty < dec!(5.0) {
@@ -892,71 +894,77 @@ async fn main() -> Result<()> {
 
                                     let mut action: Option<Action> = None;
                                     {
-                                        let mut state = countdown_once_state.lock().await;
-                                        let snapshot = state.clone();
+                                        let snapshot = countdown_once_state
+                                            .get(&market_id)
+                                            .map(|v| v.clone())
+                                            .unwrap_or(CountdownOnceState::Idle);
                                         match snapshot {
                                             CountdownOnceState::Idle => {
                                                 if countdown_active {
                                                     let mut candidates: Vec<(Decimal, U256, String)> = Vec::new();
                                                     if let Some((p, _)) = yes_best_ask {
-                                                        if p <= buy_price {
+                                                        if p >= buy_min_price && p <= buy_max_price {
                                                             candidates.push((p, pair.yes_book.asset_id, "YES".to_string()));
                                                         }
                                                     }
                                                     if let Some((p, _)) = no_best_ask {
-                                                        if p <= buy_price {
+                                                        if p >= buy_min_price && p <= buy_max_price {
                                                             candidates.push((p, pair.no_book.asset_id, "NO".to_string()));
                                                         }
                                                     }
 
-                                                    if let Some((_, token_id, side)) = candidates.into_iter().max_by(|a, b| a.0.cmp(&b.0)) {
-                                                        *state = CountdownOnceState::Buying {
+                                                    if let Some((p, token_id, side)) = candidates.into_iter().max_by(|a, b| a.0.cmp(&b.0)) {
+                                                        countdown_once_state.insert(
                                                             market_id,
-                                                            token_id,
-                                                            qty,
-                                                            side: side.clone(),
-                                                        };
+                                                            CountdownOnceState::Buying {
+                                                                market_id,
+                                                                token_id,
+                                                                qty,
+                                                                side: side.clone(),
+                                                            },
+                                                        );
                                                         action = Some(Action::Buy {
                                                             market_id,
                                                             token_id,
                                                             qty,
-                                                            side,
-                                                            buy_price,
+                                                            buy_price: p,
                                                         });
                                                     }
                                                 }
                                             }
                                             CountdownOnceState::Bought {
-                                                market_id: held_market,
                                                 token_id,
                                                 qty: held_qty,
                                                 side,
+                                                ..
                                             } => {
-                                                if held_market == market_id {
-                                                    let bid = if token_id == pair.yes_book.asset_id {
-                                                        yes_best_bid
-                                                    } else if token_id == pair.no_book.asset_id {
-                                                        no_best_bid
-                                                    } else {
-                                                        None
-                                                    };
+                                                let bid = if token_id == pair.yes_book.asset_id {
+                                                    yes_best_bid
+                                                } else if token_id == pair.no_book.asset_id {
+                                                    no_best_bid
+                                                } else {
+                                                    None
+                                                };
 
-                                                    if let Some(bp) = bid {
-                                                        if bp >= sell_price {
-                                                            *state = CountdownOnceState::Selling {
-                                                                market_id: held_market,
+                                                if let Some(bp) = bid {
+                                                    if bp >= sell_min_price {
+                                                        let px = bp.min(sell_max_price);
+                                                        countdown_once_state.insert(
+                                                            market_id,
+                                                            CountdownOnceState::Selling {
+                                                                market_id,
                                                                 token_id,
                                                                 qty: held_qty,
                                                                 side: side.clone(),
-                                                            };
-                                                            action = Some(Action::Sell {
-                                                                market_id: held_market,
-                                                                token_id,
-                                                                qty: held_qty,
-                                                                side,
-                                                                sell_price,
-                                                            });
-                                                        }
+                                                            },
+                                                        );
+                                                        action = Some(Action::Sell {
+                                                            market_id,
+                                                            token_id,
+                                                            qty: held_qty,
+                                                            side,
+                                                            sell_price: px,
+                                                        });
                                                     }
                                                 }
                                             }
@@ -1007,18 +1015,19 @@ async fn main() -> Result<()> {
                                                                 profit: None,
                                                             });
 
-                                                            let mut s = state.lock().await;
-                                                            *s = CountdownOnceState::Bought {
-                                                                market_id: buy_market_id,
-                                                                token_id,
-                                                                qty,
-                                                                side,
-                                                            };
+                                                            state.insert(
+                                                                buy_market_id,
+                                                                CountdownOnceState::Bought {
+                                                                    market_id: buy_market_id,
+                                                                    token_id,
+                                                                    qty,
+                                                                    side,
+                                                                },
+                                                            );
                                                         }
                                                         Err(e) => {
                                                             warn!("❌ 倒计时策略买入下单失败: {}", e);
-                                                            let mut s = state.lock().await;
-                                                            *s = CountdownOnceState::Idle;
+                                                            state.insert(buy_market_id, CountdownOnceState::Done);
                                                         }
                                                     }
                                                 });
@@ -1064,18 +1073,19 @@ async fn main() -> Result<()> {
                                                                 profit: None,
                                                             });
 
-                                                            let mut s = state.lock().await;
-                                                            *s = CountdownOnceState::Done;
+                                                            state.insert(sell_market_id, CountdownOnceState::Done);
                                                         }
                                                         Err(e) => {
                                                             warn!("❌ 倒计时策略卖出下单失败: {}", e);
-                                                            let mut s = state.lock().await;
-                                                            *s = CountdownOnceState::Bought {
-                                                                market_id: sell_market_id,
-                                                                token_id,
-                                                                qty,
-                                                                side,
-                                                            };
+                                                            state.insert(
+                                                                sell_market_id,
+                                                                CountdownOnceState::Bought {
+                                                                    market_id: sell_market_id,
+                                                                    token_id,
+                                                                    qty,
+                                                                    side,
+                                                                },
+                                                            );
                                                         }
                                                     }
                                                 });
