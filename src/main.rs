@@ -927,6 +927,7 @@ async fn main() -> Result<()> {
                                                             market_id,
                                                             token_id,
                                                             qty,
+                                                            side,
                                                             buy_price: p,
                                                         });
                                                     }
