@@ -132,7 +132,6 @@ enum CountdownOnceState {
         qty: Decimal,
         side: String,
     },
-    Done,
 }
 
 /// 定时 Merge 任务：每 interval_minutes 分钟拉取**持仓**，仅对 YES+NO 双边都持仓的市场 **串行**执行 merge_max，
@@ -848,8 +847,6 @@ async fn main() -> Result<()> {
                                             entry_price: Decimal,
                                             side: String,
                                             sell_price: Decimal,
-                                            done_after_sell: bool,
-                                            sell_status: &'static str,
                                         },
                                     }
 
@@ -929,27 +926,6 @@ async fn main() -> Result<()> {
                                                         let sellable_qty = held_qty.min(available);
                                                         if sellable_qty <= dec!(0.01) {
                                                             countdown_once_state.remove(&market_id);
-                                                        } else if bp <= entry_price * dec!(0.9) {
-                                                            let px = bp;
-                                                            countdown_once_state.insert(
-                                                                market_id,
-                                                                CountdownOnceState::Selling {
-                                                                    market_id,
-                                                                    token_id,
-                                                                    qty: sellable_qty,
-                                                                    side: side.clone(),
-                                                                },
-                                                            );
-                                                            action = Some(Action::Sell {
-                                                                market_id,
-                                                                token_id,
-                                                                qty: sellable_qty,
-                                                                entry_price,
-                                                                side,
-                                                                sell_price: px,
-                                                                done_after_sell: true,
-                                                                sell_status: "StopLoss",
-                                                            });
                                                         } else if bp >= sell_min_price {
                                                             let px = bp.min(sell_max_price);
                                                             countdown_once_state.insert(
@@ -968,8 +944,6 @@ async fn main() -> Result<()> {
                                                                 entry_price,
                                                                 side,
                                                                 sell_price: px,
-                                                                done_after_sell: false,
-                                                                sell_status: "Sold",
                                                             });
                                                         }
                                                     }
@@ -1053,8 +1027,6 @@ async fn main() -> Result<()> {
                                                 entry_price,
                                                 side,
                                                 sell_price,
-                                                done_after_sell,
-                                                sell_status,
                                             } => {
                                                 info!(
                                                     "⏱️ 倒计时策略卖出 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
@@ -1073,11 +1045,7 @@ async fn main() -> Result<()> {
                                                     let sellable = qty.min(available);
                                                     let sell_size = adjust_order_size_for_fee(entry_price, sellable);
                                                     if sell_size <= dec!(0.01) {
-                                                        if done_after_sell {
-                                                            state.insert(sell_market_id, CountdownOnceState::Done);
-                                                        } else {
-                                                            state.remove(&sell_market_id);
-                                                        }
+                                                        state.remove(&sell_market_id);
                                                         return;
                                                     }
 
@@ -1100,15 +1068,11 @@ async fn main() -> Result<()> {
                                                                 price: price_f64,
                                                                 size: filled.to_f64().unwrap_or(0.0),
                                                                 timestamp: Utc::now().timestamp(),
-                                                                status: sell_status.to_string(),
+                                                                status: "Sold".to_string(),
                                                                 profit: None,
                                                             });
 
-                                                            if done_after_sell {
-                                                                state.insert(sell_market_id, CountdownOnceState::Done);
-                                                            } else {
-                                                                state.remove(&sell_market_id);
-                                                            }
+                                                            state.remove(&sell_market_id);
                                                         }
                                                         Err(e) => {
                                                             warn!("❌ 倒计时策略卖出下单失败: {}", e);

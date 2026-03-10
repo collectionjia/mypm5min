@@ -167,6 +167,8 @@
             background-color: #f1f1f1;
         }
         .status-pending { color: #f59e0b; }
+        .status-bought { color: #3b82f6; font-weight: bold; }
+        .status-sold { color: #8b5cf6; font-weight: bold; }
         .status-won { color: #10b981; font-weight: bold; }
         .status-lost { color: #ef4444; font-weight: bold; }
         
@@ -332,8 +334,21 @@
                 tbody.innerHTML = trades.map(trade => {
                     const date = new Date(trade.timestamp * 1000).toLocaleString();
                     let statusClass = 'status-pending';
-                    if (trade.status === 'Won') statusClass = 'status-won';
-                    if (trade.status === 'Lost') statusClass = 'status-lost';
+                    let statusText = trade.status;
+                    if (trade.status === 'Bought') {
+                        statusClass = 'status-bought';
+                        statusText = '买入';
+                    } else if (trade.status === 'Sold') {
+                        statusClass = 'status-sold';
+                        statusText = '卖出';
+                    } else if (trade.status === 'BuyPosted') {
+                        statusClass = 'status-bought';
+                        statusText = '挂买单';
+                    } else if (trade.status === 'Won') {
+                        statusClass = 'status-won';
+                    } else if (trade.status === 'Lost') {
+                        statusClass = 'status-lost';
+                    }
                     
                     return `
                         <tr>
@@ -342,7 +357,7 @@
                             <td>${trade.side}</td>
                             <td>${trade.price.toFixed(4)}</td>
                             <td>${trade.size.toFixed(2)}</td>
-                            <td class="${statusClass}">${trade.status}</td>
+                            <td class="${statusClass}">${statusText}</td>
                         </tr>
                     `;
                 }).join('');
