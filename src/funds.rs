@@ -134,7 +134,7 @@ pub async fn check_and_manage_funds(
     rpc_url: Option<&str>,
 ) -> Result<()> {
     let rpc = rpc_url.unwrap_or(RPC_URL_DEFAULT);
-    let provider = ProviderBuilder::new().on_http(rpc.parse()?);
+    let provider = ProviderBuilder::new().connect(rpc).await?;
     let usdc = IERC20::new(USDC_POLYGON, provider.clone());
 
     // 1. 查询 Proxy 余额
@@ -155,7 +155,7 @@ pub async fn check_and_manage_funds(
         if code.is_empty() {
             // EOA: 直接用 proxy_private_key 签名发送
             let signer = LocalSigner::from_str(proxy_private_key)?.with_chain_id(Some(POLYGON));
-            let wallet_provider = ProviderBuilder::new().wallet(signer).on_http(rpc.parse()?);
+            let wallet_provider = ProviderBuilder::new().wallet(signer).connect(rpc).await?;
             let usdc_wallet = IERC20::new(USDC_POLYGON, wallet_provider);
             
             let tx = usdc_wallet.transfer(target_wallet, transfer_amount).send().await?;
@@ -192,7 +192,7 @@ pub async fn check_and_manage_funds(
         // 充值：Target -> Proxy
         // 使用 target_private_key
         let signer = LocalSigner::from_str(target_private_key)?.with_chain_id(Some(POLYGON));
-        let wallet_provider = ProviderBuilder::new().wallet(signer).on_http(rpc.parse()?);
+        let wallet_provider = ProviderBuilder::new().wallet(signer).connect(rpc).await?;
         let usdc_wallet = IERC20::new(USDC_POLYGON, wallet_provider);
         
         let amount_to_deposit = U256::from(10) * U256::from(10).pow(U256::from(decimals));
