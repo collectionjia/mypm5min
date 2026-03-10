@@ -460,6 +460,31 @@
             }
         }
 
+        async function buyMarket(marketId, side) {
+            if (!confirm(`确定要买入 ${side} 吗？`)) {
+                return;
+            }
+            try {
+                const response = await fetch(`${API_BASE}/api/buy`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ market_id: marketId, side })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    alert(`下单成功：${data.order_id || ''}`);
+                } else {
+                    alert(`下单失败：${data.message || 'unknown error'}`);
+                }
+            } catch (error) {
+                console.error('Error buying:', error);
+                alert('请求失败，请检查控制台日志');
+            } finally {
+                updatePortfolio();
+                updateTrades();
+            }
+        }
+
         async function updateMarkets() {
             try {
                 const response = await fetch(`${API_BASE}/api/markets`);
@@ -501,6 +526,10 @@
                         <div class="price-row">
                             <span class="price-label">NO</span>
                             <span class="price-value no-price">${m.no_price != null ? m.no_price.toFixed(4) : '--'}</span>
+                        </div>
+                        <div style="margin-top: 0.6rem; display: flex; gap: 0.5rem;">
+                            <button class="btn" style="flex: 1; padding: 0.35rem 0.5rem;" onclick="buyMarket('${m.id}', 'YES')">买 YES</button>
+                            <button class="btn" style="flex: 1; padding: 0.35rem 0.5rem;" onclick="buyMarket('${m.id}', 'NO')">买 NO</button>
                         </div>
                         <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #eee; display: flex; justify-content: space-between; font-size: 0.85rem;">
                             <span>Sum: <b>${m.sum != null ? m.sum.toFixed(4) : '--'}</b></span>

@@ -30,6 +30,8 @@ pub struct MarketData {
     pub name: String,
     pub category: String,
     pub countdown: String,
+    pub yes_token_id: String,
+    pub no_token_id: String,
     pub yes_price: Option<f64>,
     pub no_price: Option<f64>,
     pub sum: Option<f64>,
@@ -62,6 +64,20 @@ struct RedeemResponse {
     success: bool,
     message: String,
     tx_hashes: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct BuyRequest {
+    market_id: String,
+    side: String,
+    qty: Option<f64>,
+}
+
+#[derive(Serialize)]
+struct BuyResponse {
+    success: bool,
+    message: String,
+    order_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -97,6 +113,7 @@ pub async fn start_server(
         .route("/api/control", post(control_handler))
         .route("/api/close_all", post(close_all_handler))
         .route("/api/redeem", post(redeem_handler))
+        .route("/api/buy", post(buy_handler))
         .route("/api/logs", get(logs_handler))
         .route("/api/trades", get(trades_handler))
         .route("/api/markets", get(markets_handler))
@@ -341,6 +358,142 @@ async fn redeem_handler() -> impl IntoResponse {
         message: format!("已执行 {} 笔 Merge 交易", tx_hashes.len()),
         tx_hashes,
     })
+}
+
+async fn buy_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<BuyRequest>,
+) -> impl IntoResponse {
+    let executor = match &state.executor {
+        Some(exec) => exec.clone(),
+        None => {
+            return Json(BuyResponse {
+                success: false,
+                message: "Executor not initialized".to_string(),
+                order_id: None,
+            });
+        }
+    };
+
+    let market = match state.market_data.get(&payload.market_id) {
+        Some(m) => m.clone(),
+        None => {
+            return Json(BuyResponse {
+                success: false,
+                message: format!("未找到市场: {}", payload.market_id),
+                order_id: None,
+            });
+        }
+    };
+
+    let side = payload.side.trim().to_uppercase();
+    let (token_id_str, price_f64_opt) = match side.as_str() {
+        "YES" => (market.yes_token_id, market.yes_price),
+        "NO" => (market.no_token_id, market.no_price),
+        _ => {
+            return Json(BuyResponse {
+                success: false,
+                message: "side 仅支持 YES 或 NO".to_string(),
+                order_id: None,
+            });
+        }
+    };
+
+    let price_f64 = match price_f64_opt {
+        Some(p) => p,
+        None => {
+            return Json(BuyResponse {
+                success: false,
+                message: format!("当前无 {} 价格数据，无法下单", side),
+                order_id: None,
+            });
+        }
+    };
+
+    let token_id = match polymarket_client_sdk::types::U256::from_str(&token_id_str) {
+        Ok(v) => v,
+        Err(e) => {
+            return Json(BuyResponse {
+                success: false,
+                message: format!("token_id 解析失败: {}", e),
+                order_id: None,
+            });
+        }
+    };
+
+    let price = match Decimal::try_from(price_f64) {
+        Ok(p) => p,
+        Err(e) => {
+            return Json(BuyResponse {
+                success: false,
+                message: format!("价格解析失败: {}", e),
+                order_id: None,
+            });
+        }
+    };
+
+    let qty = if let Some(q) = payload.qty {
+        match Decimal::try_from(q) {
+            Ok(d) => d,
+            Err(e) => {
+                return Json(BuyResponse {
+                    success: false,
+                    message: format!("数量解析失败: {}", e),
+                    order_id: None,
+                });
+            }
+        }
+    } else {
+        let target_qty = Config::from_env()
+            .ok()
+            .and_then(|c| Decimal::try_from(c.max_order_size_usdc).ok())
+            .unwrap_or(dec!(5));
+        let mut q = (target_qty * dec!(100)).floor() / dec!(100);
+        if q < dec!(5) {
+            q = dec!(5);
+        }
+        q
+    };
+
+    info!(
+        "🛒 Web手动买入 | market_id={} | side={} | token_id={} | price={:.4} | qty={}",
+        payload.market_id,
+        side,
+        token_id_str,
+        price_f64,
+        qty
+    );
+
+    match executor.buy_at_price(token_id, price, qty).await {
+        Ok(resp) => {
+            use crate::utils::trade_history::{add_trade, TradeRecord};
+            use chrono::Utc;
+            use rust_decimal::prelude::ToPrimitive;
+
+            add_trade(TradeRecord {
+                id: resp.order_id.clone(),
+                market_id: payload.market_id.clone(),
+                market_slug: market.name.clone(),
+                side: side.clone(),
+                price: price.to_f64().unwrap_or(0.0),
+                size: qty.to_f64().unwrap_or(0.0),
+                timestamp: Utc::now().timestamp(),
+                status: "Bought".to_string(),
+                profit: None,
+            });
+
+            Json(BuyResponse {
+                success: true,
+                message: format!("下单成功: {}", resp.order_id),
+                order_id: Some(resp.order_id),
+            })
+        }
+        Err(e) => Json(BuyResponse {
+            success: false,
+            message: format!("下单失败: {}", e),
+            order_id: None,
+        }),
+    }
 }
 
 async fn markets_handler(State(state): State<AppState>) -> impl IntoResponse {

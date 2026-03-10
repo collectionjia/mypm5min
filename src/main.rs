@@ -794,6 +794,8 @@ async fn main() -> Result<()> {
                                         name: market_display.clone(),
                                         category: market_category.clone(),
                                         countdown: format!("{:02}:{:02}", countdown_minutes, countdown_seconds),
+                                        yes_token_id: format!("{:#x}", pair.yes_book.asset_id),
+                                        no_token_id: format!("{:#x}", pair.no_book.asset_id),
                                         yes_price: yes_f64,
                                         no_price: no_f64,
                                         sum: sum_val,
