@@ -556,6 +556,7 @@ async fn main() -> Result<()> {
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
         let countdown_once_state: Arc<DashMap<B256, CountdownOnceState>> = Arc::new(DashMap::new());
+        let countdown_active_markets: Arc<DashSet<B256>> = Arc::new(DashSet::new());
         // 强制平仓：记录已在本轮15秒平仓过的市场，避免重复
         let force_close_done: DashSet<B256> = DashSet::new();
 
@@ -766,8 +767,7 @@ async fn main() -> Result<()> {
                                 };
                                 let now_countdown = Utc::now();
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
-            let countdown_active = sec_to_end <= config.countdown_window_max_sec && sec_to_end >= config.countdown_window_min_sec;
-            countdown_in_progress.store(countdown_active, Ordering::Relaxed);
+                                countdown_in_progress.store(!countdown_active_markets.is_empty(), Ordering::Relaxed);
                                 let sec_to_end_nonneg = sec_to_end.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
                                 let countdown_seconds = sec_to_end_nonneg % 60;
@@ -900,37 +900,37 @@ async fn main() -> Result<()> {
                                             .unwrap_or(CountdownOnceState::Idle);
                                         match snapshot {
                                             CountdownOnceState::Idle => {
-                                                if countdown_active {
-                                                    let mut candidates: Vec<(Decimal, U256, String)> = Vec::new();
-                                                    if let Some((p, _)) = yes_best_ask {
-                                                        if p >= buy_min_price && p <= buy_max_price {
-                                                            candidates.push((p, pair.yes_book.asset_id, "YES".to_string()));
-                                                        }
+                                                let mut candidates: Vec<(Decimal, U256, String)> = Vec::new();
+                                                if let Some((p, _)) = yes_best_ask {
+                                                    if p >= buy_min_price && p <= buy_max_price {
+                                                        candidates.push((p, pair.yes_book.asset_id, "YES".to_string()));
                                                     }
-                                                    if let Some((p, _)) = no_best_ask {
-                                                        if p >= buy_min_price && p <= buy_max_price {
-                                                            candidates.push((p, pair.no_book.asset_id, "NO".to_string()));
-                                                        }
+                                                }
+                                                if let Some((p, _)) = no_best_ask {
+                                                    if p >= buy_min_price && p <= buy_max_price {
+                                                        candidates.push((p, pair.no_book.asset_id, "NO".to_string()));
                                                     }
+                                                }
 
-                                                    if let Some((p, token_id, side)) = candidates.into_iter().max_by(|a, b| a.0.cmp(&b.0)) {
-                                                        countdown_once_state.insert(
-                                                            market_id,
-                                                            CountdownOnceState::Buying {
-                                                                market_id,
-                                                                token_id,
-                                                                qty,
-                                                                side: side.clone(),
-                                                            },
-                                                        );
-                                                        action = Some(Action::Buy {
+                                                if let Some((p, token_id, side)) = candidates.into_iter().max_by(|a, b| a.0.cmp(&b.0)) {
+                                                    countdown_active_markets.insert(market_id);
+                                                    countdown_once_state.insert(
+                                                        market_id,
+                                                        CountdownOnceState::Buying {
                                                             market_id,
                                                             token_id,
                                                             qty,
-                                                            side,
-                                                            buy_price: p,
-                                                        });
-                                                    }
+                                                            side: side.clone(),
+                                                        },
+                                                    );
+                                                    countdown_in_progress.store(true, Ordering::Relaxed);
+                                                    action = Some(Action::Buy {
+                                                        market_id,
+                                                        token_id,
+                                                        qty,
+                                                        side,
+                                                        buy_price: p,
+                                                    });
                                                 }
                                             }
                                             CountdownOnceState::Bought {
@@ -950,6 +950,7 @@ async fn main() -> Result<()> {
                                                 if let Some(bp) = bid {
                                                     if bp >= sell_min_price {
                                                         let px = bp.min(sell_max_price);
+                                                            countdown_active_markets.insert(market_id);
                                                         countdown_once_state.insert(
                                                             market_id,
                                                             CountdownOnceState::Selling {
@@ -959,6 +960,7 @@ async fn main() -> Result<()> {
                                                                 side: side.clone(),
                                                             },
                                                         );
+                                                            countdown_in_progress.store(true, Ordering::Relaxed);
                                                         action = Some(Action::Sell {
                                                             market_id,
                                                             token_id,
@@ -989,6 +991,7 @@ async fn main() -> Result<()> {
                                                 let executor_clone = executor.clone();
                                                 let pt = _risk_manager.position_tracker();
                                                 let state = countdown_once_state.clone();
+                                                let active_markets = countdown_active_markets.clone();
                                                 let market_id_str = buy_market_id.to_string();
                                                 let market_display_str = market_display.clone();
                                                 use rust_decimal::prelude::ToPrimitive;
@@ -1029,6 +1032,7 @@ async fn main() -> Result<()> {
                                                         Err(e) => {
                                                             warn!("❌ 倒计时策略买入下单失败: {}", e);
                                                             state.insert(buy_market_id, CountdownOnceState::Done);
+                                                            active_markets.remove(&buy_market_id);
                                                         }
                                                     }
                                                 });
@@ -1047,6 +1051,7 @@ async fn main() -> Result<()> {
                                                 let executor_clone = executor.clone();
                                                 let pt = _risk_manager.position_tracker();
                                                 let state = countdown_once_state.clone();
+                                                let active_markets = countdown_active_markets.clone();
                                                 let market_id_str = sell_market_id.to_string();
                                                 let market_display_str = market_display.clone();
                                                 use rust_decimal::prelude::ToPrimitive;
@@ -1075,6 +1080,7 @@ async fn main() -> Result<()> {
                                                             });
 
                                                             state.insert(sell_market_id, CountdownOnceState::Done);
+                                                            active_markets.remove(&sell_market_id);
                                                         }
                                                         Err(e) => {
                                                             warn!("❌ 倒计时策略卖出下单失败: {}", e);
@@ -1138,10 +1144,6 @@ async fn main() -> Result<()> {
                                     spread_info
                                 );
 
-                                if countdown_active {
-                                    continue;
-                                }
-                                
                                 // 保留原有的结构化日志用于调试（可选）
                                 debug!(
                                     market_id = %pair.market_id,
