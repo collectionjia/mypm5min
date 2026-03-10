@@ -138,8 +138,8 @@ pub async fn check_and_manage_funds(
     let usdc = IERC20::new(USDC_POLYGON, provider.clone());
 
     // 1. 查询 Proxy 余额
-    let balance_u256 = usdc.balanceOf(proxy_address).call().await?.0;
-    let decimals = usdc.decimals().call().await?.0;
+    let balance_u256 = usdc.balanceOf(proxy_address).call().await?;
+    let decimals = usdc.decimals().call().await?;
     let balance_decimal = Decimal::from_i128_with_scale(balance_u256.to_string().parse::<i128>()?, decimals as u32);
 
     info!("💰 当前 Proxy 余额: {} USDC", balance_decimal);
@@ -198,7 +198,7 @@ pub async fn check_and_manage_funds(
         let amount_to_deposit = U256::from(10) * U256::from(10).pow(U256::from(decimals));
         
         // 检查 Target 余额
-        let target_balance = usdc.balanceOf(target_wallet).call().await?.0;
+        let target_balance = usdc.balanceOf(target_wallet).call().await?;
         if target_balance < amount_to_deposit {
             anyhow::bail!("❌ 目标钱包余额不足，无法充值 (需 {} USDC)", Decimal::from(10));
         }
