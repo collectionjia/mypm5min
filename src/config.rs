@@ -207,9 +207,9 @@ impl Config {
                 .parse()
                 .unwrap_or(0.35),
             countdown_sell_price: env::var("COUNTDOWN_SELL_PRICE")
-                .unwrap_or_else(|_| "0.8".to_string())
+                .unwrap_or_else(|_| "0.5".to_string())
                 .parse()
-                .unwrap_or(0.8),
+                .unwrap_or(0.5),
             
             // AI 配置
             ai_api_url: env::var("AI_API_URL")

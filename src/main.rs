@@ -735,6 +735,8 @@ async fn main() -> Result<()> {
                                 // 注意：asks 最后一个为卖一价
                                 let yes_best_ask = pair.yes_book.asks.last().map(|a| (a.price, a.size));
                                 let no_best_ask = pair.no_book.asks.last().map(|a| (a.price, a.size));
+                                let yes_best_bid = pair.yes_book.bids.last().map(|b| (b.price, b.size));
+                                let no_best_bid = pair.no_book.bids.last().map(|b| (b.price, b.size));
                                 let total_ask_price = yes_best_ask.and_then(|(p, _)| no_best_ask.map(|(np, _)| p + np));
 
                                 let market_id = pair.market_id;
@@ -919,6 +921,120 @@ async fn main() -> Result<()> {
 
                                         try_buy_side(0, pair.yes_book.asset_id, "YES".to_string(), yes_trigger);
                                         try_buy_side(1, pair.no_book.asset_id, "NO".to_string(), no_trigger);
+                                    }
+                                }
+
+                                {
+                                    let sell_price_target = Decimal::try_from(config.countdown_sell_price).unwrap_or(dec!(0.5));
+
+                                    if sec_to_end > 10 {
+                                        let try_sell_side = |side_key: u8, best_bid: Option<(Decimal, Decimal)>| {
+                                            let key = (market_id, side_key);
+                                            let snapshot = countdown_once_state
+                                                .get(&key)
+                                                .map(|v| v.clone())
+                                                .unwrap_or(CountdownOnceState::Idle);
+
+                                            if let CountdownOnceState::Bought { token_id, qty, entry_price, side, .. } = snapshot {
+                                                let should_sell = best_bid
+                                                    .as_ref()
+                                                    .map(|(p, _)| *p >= sell_price_target)
+                                                    .unwrap_or(false);
+                                                if !should_sell {
+                                                    return;
+                                                }
+
+                                                let sell_size = adjust_order_size_for_fee(entry_price, qty);
+                                                if sell_size <= dec!(0.01) {
+                                                    countdown_once_state.remove(&key);
+                                                    return;
+                                                }
+
+                                                let is_live = is_running.load(Ordering::Relaxed);
+                                                if is_live {
+                                                    countdown_once_state.insert(
+                                                        key.clone(),
+                                                        CountdownOnceState::Selling {
+                                                            market_id,
+                                                            token_id,
+                                                            qty,
+                                                            side: side.clone(),
+                                                        },
+                                                    );
+
+                                                    info!(
+                                                        "⏱️ 倒计时策略卖出 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
+                                                        market_display, side, sell_price_target, sell_size
+                                                    );
+
+                                                    let executor_clone = executor.clone();
+                                                    let pt = _risk_manager.position_tracker();
+                                                    let state = countdown_once_state.clone();
+                                                    let market_id_str = market_id.to_string();
+                                                    let market_display_str = market_display.clone();
+                                                    use rust_decimal::prelude::ToPrimitive;
+                                                    let price_f64 = sell_price_target.to_f64().unwrap_or(0.0);
+
+                                                    tokio::spawn(async move {
+                                                        match executor_clone.sell_at_price(token_id, sell_price_target, sell_size).await {
+                                                            Ok(resp) => {
+                                                                info!("✅ 倒计时策略卖出下单成功 | order_id={}", resp.order_id);
+                                                                pt.update_exposure_cost(token_id, sell_price_target, -sell_size);
+                                                                pt.update_position(token_id, -sell_size);
+
+                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                use chrono::Utc;
+                                                                add_trade(TradeRecord {
+                                                                    id: resp.order_id,
+                                                                    market_id: market_id_str,
+                                                                    market_slug: market_display_str,
+                                                                    side: side.clone(),
+                                                                    price: price_f64,
+                                                                    size: sell_size.to_f64().unwrap_or(0.0),
+                                                                    timestamp: Utc::now().timestamp(),
+                                                                    status: "Sold".to_string(),
+                                                                    profit: None,
+                                                                });
+
+                                                                state.remove(&key);
+                                                            }
+                                                            Err(e) => {
+                                                                warn!("❌ 倒计时策略卖出下单失败: {}", e);
+                                                                state.insert(
+                                                                    key,
+                                                                    CountdownOnceState::Bought {
+                                                                        market_id,
+                                                                        token_id,
+                                                                        qty,
+                                                                        entry_price,
+                                                                        side,
+                                                                    },
+                                                                );
+                                                            }
+                                                        }
+                                                    });
+                                                } else {
+                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                    use chrono::Utc;
+                                                    use rust_decimal::prelude::ToPrimitive;
+                                                    add_trade(TradeRecord {
+                                                        id: format!("SIM-{}", uuid::Uuid::new_v4()),
+                                                        market_id: market_id.to_string(),
+                                                        market_slug: market_display.clone(),
+                                                        side: side.clone(),
+                                                        price: sell_price_target.to_f64().unwrap_or(0.0),
+                                                        size: sell_size.to_f64().unwrap_or(0.0),
+                                                        timestamp: Utc::now().timestamp(),
+                                                        status: "SimSold".to_string(),
+                                                        profit: None,
+                                                    });
+                                                    countdown_once_state.remove(&key);
+                                                }
+                                            }
+                                        };
+
+                                        try_sell_side(0, yes_best_bid);
+                                        try_sell_side(1, no_best_bid);
                                     }
                                 }
 
