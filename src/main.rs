@@ -576,7 +576,7 @@ async fn main() -> Result<()> {
 
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
-        let countdown_once_state: Arc<DashMap<B256, CountdownOnceState>> = Arc::new(DashMap::new());
+        let countdown_once_state: Arc<DashMap<(B256, u8), CountdownOnceState>> = Arc::new(DashMap::new());
         let force_close_last_attempt: DashMap<B256, i64> = DashMap::new();
 
         // 监控订单簿更新
@@ -801,38 +801,32 @@ async fn main() -> Result<()> {
                                 }
 
                                 {
-                                    let buy_price_target = dec!(0.30);
-                                    let target_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(5.0));
-                                    let mut qty = (target_qty * dec!(100.0)).floor() / dec!(100.0);
-                                    if qty < dec!(5.0) {
-                                        qty = dec!(5.0);
-                                    }
+                                    let buy_price_target = Decimal::try_from(config.countdown_buy_price).unwrap_or(dec!(0.35));
+                                    let qty = dec!(5.0);
+
                                     if sec_to_end > 10 {
-                                        let snapshot = countdown_once_state
-                                            .get(&market_id)
-                                            .map(|v| v.clone())
-                                            .unwrap_or(CountdownOnceState::Idle);
+                                        let yes_trigger = yes_best_ask
+                                            .as_ref()
+                                            .map(|(p, _)| *p <= buy_price_target)
+                                            .unwrap_or(false);
+                                        let no_trigger = no_best_ask
+                                            .as_ref()
+                                            .map(|(p, _)| *p <= buy_price_target)
+                                            .unwrap_or(false);
 
-                                        if matches!(snapshot, CountdownOnceState::Idle) {
-                                            let mut candidates: Vec<(Decimal, U256, String)> = Vec::new();
-                                            if let Some((p, _)) = yes_best_ask {
-                                                if p <= buy_price_target {
-                                                    candidates.push((p, pair.yes_book.asset_id, "YES".to_string()));
-                                                }
-                                            }
-                                            if let Some((p, _)) = no_best_ask {
-                                                if p <= buy_price_target {
-                                                    candidates.push((p, pair.no_book.asset_id, "NO".to_string()));
-                                                }
-                                            }
-
-                                            if let Some((p, token_id, side)) =
-                                                candidates.into_iter().max_by(|a, b| a.0.cmp(&b.0))
+                                        let try_buy_side = |side_key: u8,
+                                                            token_id: U256,
+                                                            side: String,
+                                                            should_trigger: bool| {
+                                            if should_trigger
+                                                && countdown_once_state.get(&(market_id, side_key)).is_none()
                                             {
                                                 let is_live = is_running.load(Ordering::Relaxed);
+                                                let key = (market_id, side_key);
+
                                                 if is_live {
                                                     countdown_once_state.insert(
-                                                        market_id,
+                                                        key.clone(),
                                                         CountdownOnceState::Buying {
                                                             market_id,
                                                             token_id,
@@ -843,7 +837,7 @@ async fn main() -> Result<()> {
 
                                                     info!(
                                                         "⏱️ 倒计时策略买入 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
-                                                        market_display, side, p, qty
+                                                        market_display, side, buy_price_target, qty
                                                     );
 
                                                     let executor_clone = executor.clone();
@@ -852,14 +846,13 @@ async fn main() -> Result<()> {
                                                     let market_id_str = market_id.to_string();
                                                     let market_display_str = market_display.clone();
                                                     use rust_decimal::prelude::ToPrimitive;
-                                                    let price_f64 = p.to_f64().unwrap_or(0.0);
-                                                    let buy_price = p;
+                                                    let price_f64 = buy_price_target.to_f64().unwrap_or(0.0);
 
                                                     tokio::spawn(async move {
-                                                        match executor_clone.buy_at_price(token_id, buy_price, qty).await {
+                                                        match executor_clone.buy_at_price(token_id, buy_price_target, qty).await {
                                                             Ok(resp) => {
                                                                 info!("✅ 倒计时策略买入下单成功 | order_id={}", resp.order_id);
-                                                                pt.update_exposure_cost(token_id, buy_price, qty);
+                                                                pt.update_exposure_cost(token_id, buy_price_target, qty);
                                                                 pt.update_position(token_id, qty);
 
                                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
@@ -877,19 +870,19 @@ async fn main() -> Result<()> {
                                                                 });
 
                                                                 state.insert(
-                                                                    market_id,
+                                                                    key,
                                                                     CountdownOnceState::Bought {
                                                                         market_id,
                                                                         token_id,
                                                                         qty,
-                                                                        entry_price: buy_price,
+                                                                        entry_price: buy_price_target,
                                                                         side,
                                                                     },
                                                                 );
                                                             }
                                                             Err(e) => {
                                                                 warn!("❌ 倒计时策略买入下单失败: {}", e);
-                                                                state.remove(&market_id);
+                                                                state.remove(&key);
                                                             }
                                                         }
                                                     });
@@ -903,7 +896,7 @@ async fn main() -> Result<()> {
                                                         market_id: market_id.to_string(),
                                                         market_slug: market_display.clone(),
                                                         side: side.clone(),
-                                                        price: p.to_f64().unwrap_or(0.0),
+                                                        price: buy_price_target.to_f64().unwrap_or(0.0),
                                                         size: qty.to_f64().unwrap_or(0.0),
                                                         timestamp: Utc::now().timestamp(),
                                                         status: "SimBought".to_string(),
@@ -911,18 +904,21 @@ async fn main() -> Result<()> {
                                                     });
 
                                                     countdown_once_state.insert(
-                                                        market_id,
+                                                        key,
                                                         CountdownOnceState::Bought {
                                                             market_id,
                                                             token_id,
                                                             qty,
-                                                            entry_price: p,
+                                                            entry_price: buy_price_target,
                                                             side,
                                                         },
                                                     );
                                                 }
                                             }
-                                        }
+                                        };
+
+                                        try_buy_side(0, pair.yes_book.asset_id, "YES".to_string(), yes_trigger);
+                                        try_buy_side(1, pair.no_book.asset_id, "NO".to_string(), no_trigger);
                                     }
                                 }
 
@@ -1055,31 +1051,33 @@ async fn main() -> Result<()> {
                                 .and_then(|b| b.bids.last().map(|lv| lv.price));
 
                             if !is_live {
-                                let snapshot = countdown_once_state
-                                    .get(market_id)
-                                    .map(|v| v.clone())
-                                    .unwrap_or(CountdownOnceState::Idle);
+                                for side_key in [0u8, 1u8] {
+                                    let snapshot = countdown_once_state
+                                        .get(&(*market_id, side_key))
+                                        .map(|v| v.clone())
+                                        .unwrap_or(CountdownOnceState::Idle);
 
-                                if let CountdownOnceState::Bought { token_id, qty, entry_price, side, .. } = snapshot {
-                                    let bp = if side == "YES" { yes_best_bid } else { no_best_bid }.unwrap_or(dec!(0.01));
-                                    let sell_size = adjust_order_size_for_fee(entry_price, qty);
-                                    if sell_size > dec!(0.01) {
-                                        use crate::utils::trade_history::{add_trade, TradeRecord};
-                                        use chrono::Utc;
-                                        use rust_decimal::prelude::ToPrimitive;
-                                        add_trade(TradeRecord {
-                                            id: format!("SIM-{}", uuid::Uuid::new_v4()),
-                                            market_id: market_id.to_string(),
-                                            market_slug: market_display.clone(),
-                                            side: side.clone(),
-                                            price: bp.to_f64().unwrap_or(0.0),
-                                            size: sell_size.to_f64().unwrap_or(0.0),
-                                            timestamp: Utc::now().timestamp(),
-                                            status: "SimSold".to_string(),
-                                            profit: None,
-                                        });
+                                    if let CountdownOnceState::Bought { qty, entry_price, side, .. } = snapshot {
+                                        let bp = if side == "YES" { yes_best_bid } else { no_best_bid }.unwrap_or(dec!(0.01));
+                                        let sell_size = adjust_order_size_for_fee(entry_price, qty);
+                                        if sell_size > dec!(0.01) {
+                                            use crate::utils::trade_history::{add_trade, TradeRecord};
+                                            use chrono::Utc;
+                                            use rust_decimal::prelude::ToPrimitive;
+                                            add_trade(TradeRecord {
+                                                id: format!("SIM-{}", uuid::Uuid::new_v4()),
+                                                market_id: market_id.to_string(),
+                                                market_slug: market_display.clone(),
+                                                side: side.clone(),
+                                                price: bp.to_f64().unwrap_or(0.0),
+                                                size: sell_size.to_f64().unwrap_or(0.0),
+                                                timestamp: Utc::now().timestamp(),
+                                                status: "SimSold".to_string(),
+                                                profit: None,
+                                            });
+                                        }
+                                        countdown_once_state.remove(&(*market_id, side_key));
                                     }
-                                    countdown_once_state.remove(market_id);
                                 }
                                 continue;
                             }
@@ -1134,7 +1132,8 @@ async fn main() -> Result<()> {
                                 }
                             }
 
-                            countdown_once_state.remove(market_id);
+                            countdown_once_state.remove(&(*market_id, 0u8));
+                            countdown_once_state.remove(&(*market_id, 1u8));
                         }
                     }
 
