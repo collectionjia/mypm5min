@@ -547,8 +547,8 @@
                             <button class="btn" style="flex: 1; padding: 0.35rem 0.5rem;" onclick="buyMarket('${m.id}', 'NO')">买 NO</button>
                         </div>
                         <div style="margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid #eee; display: flex; justify-content: space-between; font-size: 0.85rem;">
-                            <span>Sum: <b>${m.sum != null ? m.sum.toFixed(4) : '--'}</b></span>
-                            <span>Diff: <b>${m.diff != null ? m.diff.toFixed(4) : '--'}</b></span>
+                            <span>总计: <b>${m.sum != null ? m.sum.toFixed(4) : '--'}</b></span>
+                            <span>差额: <b>${m.diff != null ? m.diff.toFixed(4) : '--'}</b></span>
                         </div>
                         <div style="font-size: 0.8rem; color: #999; margin-top: 0.5rem; text-align: right;">
                             更新于: ${new Date(m.update_time * 1000).toLocaleTimeString()}
