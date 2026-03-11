@@ -815,9 +815,11 @@ async fn main() -> Result<()> {
                                                             token_id: U256,
                                                             side: String,
                                                             buy_price: Option<Decimal>| {
-                                            if let Some(buy_price) = buy_price
-                                                && countdown_once_state.get(&(market_id, side_key)).is_none()
-                                            {
+                                            if countdown_once_state.get(&(market_id, side_key)).is_none() {
+                                                let buy_price = match buy_price {
+                                                    Some(p) => p,
+                                                    None => return,
+                                                };
                                                 let is_live = is_running.load(Ordering::Relaxed);
                                                 let key = (market_id, side_key);
 
