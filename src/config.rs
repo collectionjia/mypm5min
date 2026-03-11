@@ -195,13 +195,13 @@ impl Config {
                 .parse()
                 .unwrap_or(5), // 默认5秒
             countdown_max_price: env::var("COUNTDOWN_MAX_PRICE")
-                .unwrap_or_else(|_| "0.99".to_string())
+                .unwrap_or_else(|_| "0.45".to_string())
                 .parse()
-                .unwrap_or(0.99), // 默认0.99
+                .unwrap_or(0.45), // 默认0.45
             countdown_min_price: env::var("COUNTDOWN_MIN_PRICE")
-                .unwrap_or_else(|_| "0.0".to_string())
+                .unwrap_or_else(|_| "0.35".to_string())
                 .parse()
-                .unwrap_or(0.0), // 默认0.0
+                .unwrap_or(0.35), // 默认0.35
             countdown_buy_price: env::var("COUNTDOWN_BUY_PRICE")
                 .unwrap_or_else(|_| "0.35".to_string())
                 .parse()
