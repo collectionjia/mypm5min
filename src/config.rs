@@ -206,6 +206,7 @@ impl Config {
                 .unwrap_or_else(|_| "0.35".to_string())
                 .parse()
                 .unwrap_or(0.35),
+                
             countdown_sell_price: env::var("COUNTDOWN_SELL_PRICE")
                 .unwrap_or_else(|_| "0.8".to_string())
                 .parse()
