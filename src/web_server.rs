@@ -464,6 +464,31 @@ async fn buy_handler(
         qty
     );
 
+    if !state.is_running.load(Ordering::Relaxed) {
+        use crate::utils::trade_history::{add_trade, TradeRecord};
+        use chrono::Utc;
+        use rust_decimal::prelude::ToPrimitive;
+        let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
+
+        add_trade(TradeRecord {
+            id: sim_order_id.clone(),
+            market_id: payload.market_id.clone(),
+            market_slug: market.name.clone(),
+            side: side.clone(),
+            price: price.to_f64().unwrap_or(0.0),
+            size: qty.to_f64().unwrap_or(0.0),
+            timestamp: Utc::now().timestamp(),
+            status: "SimBought".to_string(),
+            profit: None,
+        });
+
+        return Json(BuyResponse {
+            success: true,
+            message: format!("模拟下单成功: {}", sim_order_id),
+            order_id: Some(sim_order_id),
+        });
+    }
+
     match executor.buy_at_price(token_id, price, qty).await {
         Ok(resp) => {
             use crate::utils::trade_history::{add_trade, TradeRecord};
@@ -560,11 +585,20 @@ async fn control_handler(
     match payload.action.as_str() {
         "start" => {
             state.is_running.store(true, Ordering::Relaxed);
-            info!("▶️ Bot started via web interface");
+            info!("▶️ 已开启真实投注（web控制台）");
         }
         "stop" => {
             state.is_running.store(false, Ordering::Relaxed);
-            info!("⏸️ Bot stopped via web interface");
+            info!("🧪 已切换为模拟交易（web控制台）");
+            if let Some(exec) = state.executor.clone() {
+                tokio::spawn(async move {
+                    if let Err(e) = exec.cancel_all_orders().await {
+                        warn!(error = %e, "模拟交易切换：取消所有挂单失败");
+                    } else {
+                        info!("模拟交易切换：已取消所有挂单");
+                    }
+                });
+            }
         }
         _ => {}
     }

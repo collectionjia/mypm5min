@@ -282,10 +282,12 @@
                             <th>价格</th>
                             <th>数量</th>
                             <th>结果</th>
+                            <th>资金变化</th>
+                            <th>余额估算</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr><td colspan="6" style="text-align:center">暂无交易记录</td></tr>
+                        <tr><td colspan="8" style="text-align:center">暂无交易记录</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -297,6 +299,24 @@
         const API_BASE = window.location.origin;
         let isRunning = false;
         let lastTradeCount = -1;
+        let initialUsdcBalance = null;
+        let currentUsdcBalance = null;
+
+        function toNumber(v) {
+            const n = Number(v);
+            return Number.isFinite(n) ? n : null;
+        }
+
+        function formatSignedMoney(v) {
+            if (!Number.isFinite(v)) return '--';
+            const abs = Math.abs(v).toFixed(2);
+            return v >= 0 ? `+${abs}` : `-${abs}`;
+        }
+
+        function formatMoney(v) {
+            if (!Number.isFinite(v)) return '--';
+            return v.toFixed(2);
+        }
 
         async function updateStatus() {
             try {
@@ -327,8 +347,27 @@
                 const tbody = document.querySelector('#trades-table tbody');
                 
                 if (trades.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center">暂无交易记录</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center">暂无交易记录</td></tr>';
                     return;
+                }
+
+                const ordered = [...trades].reverse();
+                let cumulativeCashflow = 0;
+                const cashflowById = new Map();
+                for (const t of ordered) {
+                    const price = toNumber(t.price);
+                    const size = toNumber(t.size);
+                    let cashflow = 0;
+                    if (price != null && size != null) {
+                        const amount = price * size;
+                        if (t.status === 'Bought' || t.status === 'SimBought') {
+                            cashflow = -amount;
+                        } else if (t.status === 'Sold' || t.status === 'SimSold') {
+                            cashflow = amount;
+                        }
+                    }
+                    cumulativeCashflow += cashflow;
+                    cashflowById.set(t.id, { cashflow, cumulativeCashflow });
                 }
 
                 tbody.innerHTML = trades.map(trade => {
@@ -341,6 +380,12 @@
                     } else if (trade.status === 'Sold') {
                         statusClass = 'status-sold';
                         statusText = '卖出';
+                    } else if (trade.status === 'SimBought') {
+                        statusClass = 'status-bought';
+                        statusText = '模拟买入';
+                    } else if (trade.status === 'SimSold') {
+                        statusClass = 'status-sold';
+                        statusText = '模拟卖出';
                     } else if (trade.status === 'BuyPosted') {
                         statusClass = 'status-bought';
                         statusText = '挂买单';
@@ -349,15 +394,26 @@
                     } else if (trade.status === 'Lost') {
                         statusClass = 'status-lost';
                     }
+
+                    const price = toNumber(trade.price);
+                    const size = toNumber(trade.size);
+                    const flow = cashflowById.get(trade.id) || { cashflow: 0, cumulativeCashflow: 0 };
+                    const cashflow = flow.cashflow;
+                    const estBalance = initialUsdcBalance != null ? initialUsdcBalance + flow.cumulativeCashflow : null;
+                    const estBalanceText = initialUsdcBalance != null
+                        ? formatMoney(estBalance)
+                        : `Δ${formatSignedMoney(flow.cumulativeCashflow)}`;
                     
                     return `
                         <tr>
                             <td>${date}</td>
                             <td>${trade.market_slug}</td>
                             <td>${trade.side}</td>
-                            <td>${trade.price.toFixed(4)}</td>
-                            <td>${trade.size.toFixed(2)}</td>
+                            <td>${price != null ? price.toFixed(4) : '--'}</td>
+                            <td>${size != null ? size.toFixed(2) : '--'}</td>
                             <td class="${statusClass}">${statusText}</td>
+                            <td>${formatSignedMoney(cashflow)}</td>
+                            <td>${estBalanceText}</td>
                         </tr>
                     `;
                 }).join('');
@@ -371,15 +427,15 @@
             const btnEl = document.getElementById('toggleBtn');
             
             if (isRunning) {
-                statusEl.innerText = '🟢 运行中';
+                statusEl.innerText = '🟢 真实投注已开启';
                 statusEl.className = 'status running';
-                btnEl.innerText = '停止 Bot';
+                btnEl.innerText = '切换为模拟';
                 btnEl.className = 'btn-stop';
                 btnEl.disabled = false;
             } else {
-                statusEl.innerText = '🔴 已停止';
+                statusEl.innerText = '🧪 模拟交易';
                 statusEl.className = 'status stopped';
-                btnEl.innerText = '启动 Bot';
+                btnEl.innerText = '开启真实投注';
                 btnEl.className = 'btn-start';
                 btnEl.disabled = false;
             }
@@ -569,7 +625,16 @@
                 const balanceElem = document.getElementById('usdc-balance');
                 if (balanceElem) {
                     if (data.balance) {
-                        balanceElem.textContent = parseFloat(data.balance).toFixed(2);
+                        const b = toNumber(data.balance);
+                        if (b != null) {
+                            currentUsdcBalance = b;
+                            if (initialUsdcBalance == null) {
+                                initialUsdcBalance = b;
+                            }
+                            balanceElem.textContent = b.toFixed(2);
+                        } else {
+                            balanceElem.textContent = '---';
+                        }
                     } else if (data.error) {
                         balanceElem.textContent = 'Error';
                         console.error('Portfolio Error:', data.error);

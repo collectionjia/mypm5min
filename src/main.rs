@@ -5,13 +5,12 @@ mod risk;
 mod trading;
 mod utils;
 mod web_server;
-mod spot;
 
 use poly_5min_bot::merge;
 use poly_5min_bot::positions::{get_positions, Position};
 
 use anyhow::Result;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use futures::StreamExt;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -28,7 +27,6 @@ use crate::market::{MarketDiscoverer, MarketInfo, MarketScheduler};
 use crate::monitor::OrderBookMonitor;
 use crate::risk::positions::PositionTracker;
 use crate::risk::{PositionBalancer, RiskManager};
-use crate::spot::{SpotOracle, SpotTrend};
 use crate::trading::TradingExecutor;
 
 /// 从持仓中筛出 **YES 和 NO 都持仓** 的 condition_id，仅这些市场才能 merge；单边持仓直接跳过。
@@ -114,30 +112,6 @@ fn adjust_order_size_for_fee(entry_price: Decimal, size: Decimal) -> Decimal {
 
 #[derive(Clone)]
 enum CountdownOnceState {
-    Idle,
-    Buying {
-        market_id: B256,
-        token_id: U256,
-        qty: Decimal,
-        side: String,
-    },
-    Bought {
-        market_id: B256,
-        token_id: U256,
-        qty: Decimal,
-        entry_price: Decimal,
-        side: String,
-    },
-    Selling {
-        market_id: B256,
-        token_id: U256,
-        qty: Decimal,
-        side: String,
-    },
-}
-
-#[derive(Clone)]
-enum BondOnceState {
     Idle,
     Buying {
         market_id: B256,
@@ -394,7 +368,7 @@ async fn main() -> Result<()> {
     info!("✅ 所有组件初始化完成，认证验证通过");
 
     // 启动 Web 控制服务器
-    let is_running = Arc::new(AtomicBool::new(false)); // 默认为停止状态，等待网页启动
+    let is_running = Arc::new(AtomicBool::new(false));
     let market_data = Arc::new(DashMap::new());
     let is_running_server = is_running.clone();
     let market_data_server = market_data.clone();
@@ -404,13 +378,7 @@ async fn main() -> Result<()> {
     });
 
     info!("🌐 Web控制台已启动: http://localhost:3000");
-    info!("⏸️ 等待在Web控制台点击启动...");
-
-    // 等待启动信号
-    while !is_running.load(Ordering::Relaxed) {
-        sleep(Duration::from_millis(100)).await;
-    }
-    info!("▶️ Bot已启动运行！");
+    info!("🧪 默认模拟交易：在 Web 控制台可切换真实投注开关");
 
     // 启动时自动检查并领取所有已决议市场的奖励（防止重启后无法领取）
     {
@@ -533,16 +501,6 @@ async fn main() -> Result<()> {
         info!("定时 Merge 未启用（MERGE_INTERVAL_MINUTES=0），如需启用请在 .env 中设置 MERGE_INTERVAL_MINUTES 为正数，例如 5 或 15");
     }
 
-    let active_symbols: Arc<DashSet<String>> = Arc::new(DashSet::new());
-    let spot_oracle: Arc<SpotOracle> = Arc::new(SpotOracle::new());
-    {
-        let oracle = spot_oracle.clone();
-        let symbols = active_symbols.clone();
-        tokio::spawn(async move {
-            oracle.run(symbols).await;
-        });
-    }
-
     // 主循环已启用，开始监控和交易
     #[allow(unreachable_code)]
     loop {
@@ -559,13 +517,6 @@ async fn main() -> Result<()> {
         if markets.is_empty() {
             warn!("未找到任何市场，跳过当前窗口");
             continue;
-        }
-
-        active_symbols.clear();
-        for m in &markets {
-            if !m.crypto_symbol.is_empty() {
-                active_symbols.insert(m.crypto_symbol.to_uppercase());
-            }
         }
 
         // 新一轮开始：重置风险敞口，使本轮从 0 敞口重新累计
@@ -626,7 +577,6 @@ async fn main() -> Result<()> {
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
         let countdown_once_state: Arc<DashMap<B256, CountdownOnceState>> = Arc::new(DashMap::new());
-        let bond_once_state: Arc<DashMap<B256, BondOnceState>> = Arc::new(DashMap::new());
         let force_close_last_attempt: DashMap<B256, i64> = DashMap::new();
 
         // 监控订单簿更新
@@ -778,22 +728,6 @@ async fn main() -> Result<()> {
             tokio::select! {
                 // 处理订单簿更新
                 book_result = stream.next() => {
-                    // 检查 Web 控制台停止信号
-                    if !is_running.load(Ordering::Relaxed) {
-                        info!("⏸️ 收到停止信号，Bot 已暂停运行...");
-                        // 取消所有挂单
-                        if let Err(e) = executor.cancel_all_orders().await {
-                            warn!("暂停时取消挂单失败: {}", e);
-                        }
-                        // 等待重新启动
-                        while !is_running.load(Ordering::Relaxed) {
-                            sleep(Duration::from_millis(500)).await;
-                        }
-                        info!("▶️ Bot 已恢复运行！");
-                        // 重新初始化某些状态可能需要（视情况而定），这里简单继续循环
-                        // continue; // 在 select! 中 continue 会跳过本次处理，但我们需要重新进入 loop
-                    }
-
                     match book_result {
                         Some(Ok(book)) => {
                             // 然后处理订单簿更新（book会被move）
@@ -836,28 +770,11 @@ async fn main() -> Result<()> {
                                 };
                                 let now_countdown = Utc::now();
                                 let sec_to_end = (window_end - now_countdown).num_seconds();
-                                let entry_window_active = sec_to_end <= 30 && sec_to_end > 10;
-                                let strategy_window_active = sec_to_end <= 30 && sec_to_end >= 0;
-                                let stop_window_active = sec_to_end <= 5 && sec_to_end >= 0;
-                                countdown_in_progress.store(strategy_window_active, Ordering::Relaxed);
+                                let force_close_window_active = sec_to_end <= 10 && sec_to_end >= 0;
+                                countdown_in_progress.store(force_close_window_active, Ordering::Relaxed);
                                 let sec_to_end_nonneg = sec_to_end.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
                                 let countdown_seconds = sec_to_end_nonneg % 60;
-                                let spot_symbol = market_symbol.to_uppercase();
-                                let spot_trend = if !spot_symbol.is_empty() {
-                                    spot_oracle.trend(&spot_symbol)
-                                } else {
-                                    None
-                                };
-
-                                // 计算订单总量（Ask + Bid）
-                                let yes_ask_vol: Decimal = pair.yes_book.asks.iter().map(|o| o.size).sum();
-                                let yes_bid_vol: Decimal = pair.yes_book.bids.iter().map(|o| o.size).sum();
-                                let yes_total_vol = yes_ask_vol + yes_bid_vol;
-
-                                let no_ask_vol: Decimal = pair.no_book.asks.iter().map(|o| o.size).sum();
-                                let no_bid_vol: Decimal = pair.no_book.bids.iter().map(|o| o.size).sum();
-                                let no_total_vol = no_ask_vol + no_bid_vol;
 
                                 // 更新 Web 控制台数据
                                 {
@@ -884,527 +801,127 @@ async fn main() -> Result<()> {
                                 }
 
                                 {
-                                    enum Action {
-                                    BuyTail {
-                                            market_id: B256,
-                                            token_id: U256,
-                                            qty: Decimal,
-                                            side: String,
-                                            buy_price: Decimal,
-                                        },
-                                    SellTail {
-                                        market_id: B256,
-                                        token_id: U256,
-                                        qty: Decimal,
-                                        entry_price: Decimal,
-                                        side: String,
-                                        sell_price: Decimal,
-                                    },
-                                    BuyBond {
-                                        market_id: B256,
-                                        token_id: U256,
-                                        qty: Decimal,
-                                        side: String,
-                                        buy_price: Decimal,
-                                    },
-                                    SellBond {
-                                            market_id: B256,
-                                            token_id: U256,
-                                            qty: Decimal,
-                                            entry_price: Decimal,
-                                            side: String,
-                                            sell_price: Decimal,
-                                        },
-                                    }
-
-                                let tail_buy_min_price = dec!(0.90);
-                                let tail_buy_max_price = dec!(0.97);
-                                let bond_buy_min_price = dec!(0.95);
-                                let bond_buy_max_price = dec!(0.99);
+                                    let buy_price_target = dec!(0.30);
                                     let target_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(5.0));
                                     let mut qty = (target_qty * dec!(100.0)).floor() / dec!(100.0);
                                     if qty < dec!(5.0) {
                                         qty = dec!(5.0);
                                     }
+                                    if sec_to_end > 10 {
+                                        let snapshot = countdown_once_state
+                                            .get(&market_id)
+                                            .map(|v| v.clone())
+                                            .unwrap_or(CountdownOnceState::Idle);
 
-                                    let yes_best_bid = pair.yes_book.bids.last().map(|b| b.price);
-                                    let no_best_bid = pair.no_book.bids.last().map(|b| b.price);
-
-                                    let mut action: Option<Action> = None;
-                                let tail_buy_active = entry_window_active;
-                                let bond_buy_active = sec_to_end > 5 && sec_to_end >= 0;
-
-                                let bond_snapshot = bond_once_state
-                                    .get(&market_id)
-                                    .map(|v| v.clone())
-                                    .unwrap_or(BondOnceState::Idle);
-                                match bond_snapshot {
-                                    BondOnceState::Bought {
-                                        token_id,
-                                        qty: held_qty,
-                                        entry_price,
-                                        side,
-                                        ..
-                                    } => {
-                                        let bid = if token_id == pair.yes_book.asset_id {
-                                            yes_best_bid
-                                        } else if token_id == pair.no_book.asset_id {
-                                            no_best_bid
-                                        } else {
-                                            None
-                                        };
-
-                                        if let Some(bp) = bid {
-                                            let pt_snapshot = _risk_manager.position_tracker();
-                                            let available = pt_snapshot.get_position(token_id);
-                                            let sellable_qty = held_qty.min(available);
-                                            if sellable_qty <= dec!(0.01) {
-                                                bond_once_state.remove(&market_id);
-                                            } else if stop_window_active || bp >= dec!(0.99) {
-                                                bond_once_state.insert(
-                                                    market_id,
-                                                    BondOnceState::Selling {
-                                                        market_id,
-                                                        token_id,
-                                                        qty: sellable_qty,
-                                                        side: side.clone(),
-                                                    },
-                                                );
-                                                action = Some(Action::SellBond {
-                                                    market_id,
-                                                    token_id,
-                                                    qty: sellable_qty,
-                                                    entry_price,
-                                                    side,
-                                                    sell_price: bp,
-                                                });
+                                        if matches!(snapshot, CountdownOnceState::Idle) {
+                                            let mut candidates: Vec<(Decimal, U256, String)> = Vec::new();
+                                            if let Some((p, _)) = yes_best_ask {
+                                                if p <= buy_price_target {
+                                                    candidates.push((p, pair.yes_book.asset_id, "YES".to_string()));
+                                                }
                                             }
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                            if let Some((p, _)) = no_best_ask {
+                                                if p <= buy_price_target {
+                                                    candidates.push((p, pair.no_book.asset_id, "NO".to_string()));
+                                                }
+                                            }
 
-                                if action.is_none() {
-                                    let snapshot = countdown_once_state
-                                        .get(&market_id)
-                                        .map(|v| v.clone())
-                                        .unwrap_or(CountdownOnceState::Idle);
-                                    match snapshot {
-                                        CountdownOnceState::Bought {
-                                            token_id,
-                                            qty: held_qty,
-                                            entry_price,
-                                            side,
-                                            ..
-                                        } => {
-                                            let bid = if token_id == pair.yes_book.asset_id {
-                                                yes_best_bid
-                                            } else if token_id == pair.no_book.asset_id {
-                                                no_best_bid
-                                            } else {
-                                                None
-                                            };
-
-                                            if let Some(bp) = bid {
-                                                let pt_snapshot = _risk_manager.position_tracker();
-                                                let available = pt_snapshot.get_position(token_id);
-                                                let sellable_qty = held_qty.min(available);
-                                                if sellable_qty <= dec!(0.01) {
-                                                    countdown_once_state.remove(&market_id);
-                                                } else {
-                                                    let take_profit_price = (if entry_price <= dec!(0.93) {
-                                                        entry_price + dec!(0.04)
-                                                    } else {
-                                                        entry_price + dec!(0.03)
-                                                    })
-                                                    .min(dec!(0.98));
-
-                                                    let reversal = match spot_trend {
-                                                        Some(SpotTrend::Up) => side == "NO",
-                                                        Some(SpotTrend::Down) => side == "YES",
-                                                        _ => false,
-                                                    };
-
-                                                    if stop_window_active || reversal || bp >= take_profit_price {
-                                                        countdown_once_state.insert(
-                                                            market_id,
-                                                            CountdownOnceState::Selling {
-                                                                market_id,
-                                                                token_id,
-                                                                qty: sellable_qty,
-                                                                side: side.clone(),
-                                                            },
-                                                        );
-                                                        action = Some(Action::SellTail {
+                                            if let Some((p, token_id, side)) =
+                                                candidates.into_iter().max_by(|a, b| a.0.cmp(&b.0))
+                                            {
+                                                let is_live = is_running.load(Ordering::Relaxed);
+                                                if is_live {
+                                                    countdown_once_state.insert(
+                                                        market_id,
+                                                        CountdownOnceState::Buying {
                                                             market_id,
                                                             token_id,
-                                                            qty: sellable_qty,
-                                                            entry_price,
-                                                            side,
-                                                            sell_price: bp,
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-
-                                if action.is_none()
-                                    && tail_buy_active
-                                    && !bond_once_state.contains_key(&market_id)
-                                {
-                                    let snapshot = countdown_once_state
-                                        .get(&market_id)
-                                        .map(|v| v.clone())
-                                        .unwrap_or(CountdownOnceState::Idle);
-                                    if matches!(snapshot, CountdownOnceState::Idle) {
-                                        match spot_trend {
-                                            Some(SpotTrend::Up) => {
-                                                if let Some((p, _)) = yes_best_ask {
-                                                    if p >= tail_buy_min_price && p <= tail_buy_max_price {
-                                                        countdown_once_state.insert(
-                                                            market_id,
-                                                            CountdownOnceState::Buying {
-                                                                market_id,
-                                                                token_id: pair.yes_book.asset_id,
-                                                                qty,
-                                                                side: "YES".to_string(),
-                                                            },
-                                                        );
-                                                        action = Some(Action::BuyTail {
-                                                            market_id,
-                                                            token_id: pair.yes_book.asset_id,
                                                             qty,
-                                                            side: "YES".to_string(),
-                                                            buy_price: p,
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                            Some(SpotTrend::Down) => {
-                                                if let Some((p, _)) = no_best_ask {
-                                                    if p >= tail_buy_min_price && p <= tail_buy_max_price {
-                                                        countdown_once_state.insert(
-                                                            market_id,
-                                                            CountdownOnceState::Buying {
-                                                                market_id,
-                                                                token_id: pair.no_book.asset_id,
-                                                                qty,
-                                                                side: "NO".to_string(),
-                                                            },
-                                                        );
-                                                        action = Some(Action::BuyTail {
-                                                            market_id,
-                                                            token_id: pair.no_book.asset_id,
-                                                            qty,
-                                                            side: "NO".to_string(),
-                                                            buy_price: p,
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-
-                                if action.is_none()
-                                    && bond_buy_active
-                                    && !countdown_once_state.contains_key(&market_id)
-                                {
-                                    let bond_snapshot = bond_once_state
-                                        .get(&market_id)
-                                        .map(|v| v.clone())
-                                        .unwrap_or(BondOnceState::Idle);
-                                    if matches!(bond_snapshot, BondOnceState::Idle) {
-                                        let mut candidates: Vec<(Decimal, U256, String)> = Vec::new();
-                                        if let Some((p, _)) = yes_best_ask {
-                                            if p >= bond_buy_min_price && p <= bond_buy_max_price {
-                                                candidates.push((p, pair.yes_book.asset_id, "YES".to_string()));
-                                            }
-                                        }
-                                        if let Some((p, _)) = no_best_ask {
-                                            if p >= bond_buy_min_price && p <= bond_buy_max_price {
-                                                candidates.push((p, pair.no_book.asset_id, "NO".to_string()));
-                                            }
-                                        }
-                                        if let Some((p, token_id, side)) =
-                                            candidates.into_iter().max_by(|a, b| a.0.cmp(&b.0))
-                                        {
-                                            bond_once_state.insert(
-                                                market_id,
-                                                BondOnceState::Buying {
-                                                    market_id,
-                                                    token_id,
-                                                    qty,
-                                                    side: side.clone(),
-                                                },
-                                            );
-                                            action = Some(Action::BuyBond {
-                                                market_id,
-                                                token_id,
-                                                qty,
-                                                side,
-                                                buy_price: p,
-                                            });
-                                        }
-                                    }
-                                }
-
-                                    if let Some(action) = action {
-                                        match action {
-                                        Action::BuyTail {
-                                                market_id: buy_market_id,
-                                                token_id,
-                                                qty,
-                                                side,
-                                                buy_price,
-                                            } => {
-                                                info!(
-                                                "⏱️ 尾盘扫单买入 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
-                                                    market_display, side, buy_price, qty
-                                                );
-                                                let executor_clone = executor.clone();
-                                                let pt = _risk_manager.position_tracker();
-                                                let state = countdown_once_state.clone();
-                                                let market_id_str = buy_market_id.to_string();
-                                                let market_display_str = market_display.clone();
-                                                use rust_decimal::prelude::ToPrimitive;
-                                                let price_f64 = buy_price.to_f64().unwrap_or(0.0);
-
-                                                tokio::spawn(async move {
-                                                    match executor_clone.buy_at_price(token_id, buy_price, qty).await {
-                                                        Ok(resp) => {
-                                                        info!("✅ 尾盘扫单买入下单成功 | order_id={}", resp.order_id);
-                                                            pt.update_exposure_cost(token_id, buy_price, qty);
-                                                            pt.update_position(token_id, qty);
-
-                                                            use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                            use chrono::Utc;
-                                                            add_trade(TradeRecord {
-                                                                id: resp.order_id,
-                                                                market_id: market_id_str,
-                                                                market_slug: market_display_str,
-                                                                side: side.clone(),
-                                                                price: price_f64,
-                                                                size: qty.to_f64().unwrap_or(0.0),
-                                                                timestamp: Utc::now().timestamp(),
-                                                                status: "Bought".to_string(),
-                                                                profit: None,
-                                                            });
-
-                                                            state.insert(
-                                                                buy_market_id,
-                                                                CountdownOnceState::Bought {
-                                                                    market_id: buy_market_id,
-                                                                    token_id,
-                                                                    qty,
-                                                                    entry_price: buy_price,
-                                                                    side,
-                                                                },
-                                                            );
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("❌ 倒计时策略买入下单失败: {}", e);
-                                                            state.remove(&buy_market_id);
-                                                        }
-                                                    }
-                                                });
-                                            }
-                                        Action::SellTail {
-                                                market_id: sell_market_id,
-                                                token_id,
-                                                qty,
-                                                entry_price,
-                                                side,
-                                                sell_price,
-                                            } => {
-                                                info!(
-                                                "⏱️ 尾盘扫单卖出 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
-                                                    market_display, side, sell_price, qty
-                                                );
-                                                let executor_clone = executor.clone();
-                                                let pt = _risk_manager.position_tracker();
-                                                let state = countdown_once_state.clone();
-                                                let market_id_str = sell_market_id.to_string();
-                                                let market_display_str = market_display.clone();
-                                                use rust_decimal::prelude::ToPrimitive;
-                                                let price_f64 = sell_price.to_f64().unwrap_or(0.0);
-
-                                                tokio::spawn(async move {
-                                                    let available = pt.get_position(token_id);
-                                                    let sellable = qty.min(available);
-                                                    let sell_size = adjust_order_size_for_fee(entry_price, sellable);
-                                                    if sell_size <= dec!(0.01) {
-                                                        state.remove(&sell_market_id);
-                                                        return;
-                                                    }
-
-                                                    match executor_clone.sell_at_price(token_id, sell_price, sell_size).await {
-                                                        Ok(resp) => {
-                                                        info!("✅ 尾盘扫单卖出下单成功 | order_id={}", resp.order_id);
-                                                            pt.update_exposure_cost(token_id, sell_price, -sell_size);
-                                                            pt.update_position(token_id, -sell_size);
-
-                                                            use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                            use chrono::Utc;
-                                                            add_trade(TradeRecord {
-                                                                id: resp.order_id,
-                                                                market_id: market_id_str,
-                                                                market_slug: market_display_str,
-                                                                side,
-                                                                price: price_f64,
-                                                                size: sell_size.to_f64().unwrap_or(0.0),
-                                                                timestamp: Utc::now().timestamp(),
-                                                                status: "Sold".to_string(),
-                                                                profit: None,
-                                                            });
-
-                                                            state.remove(&sell_market_id);
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("❌ 尾盘扫单卖出下单失败: {}", e);
-                                                            state.insert(
-                                                                sell_market_id,
-                                                                CountdownOnceState::Bought {
-                                                                    market_id: sell_market_id,
-                                                                    token_id,
-                                                                    qty,
-                                                                    entry_price,
-                                                                    side,
-                                                                },
-                                                            );
-                                                        }
-                                                    }
-                                                });
-                                            }
-                                        Action::BuyBond {
-                                            market_id: buy_market_id,
-                                            token_id,
-                                            qty,
-                                            side,
-                                            buy_price,
-                                        } => {
-                                            info!(
-                                                "💵 债券策略买入 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
-                                                market_display, side, buy_price, qty
-                                            );
-                                            let executor_clone = executor.clone();
-                                            let pt = _risk_manager.position_tracker();
-                                            let state = bond_once_state.clone();
-                                            let market_id_str = buy_market_id.to_string();
-                                            let market_display_str = market_display.clone();
-                                            use rust_decimal::prelude::ToPrimitive;
-                                            let price_f64 = buy_price.to_f64().unwrap_or(0.0);
-
-                                            tokio::spawn(async move {
-                                                match executor_clone.buy_at_price(token_id, buy_price, qty).await {
-                                                    Ok(resp) => {
-                                                        info!("✅ 债券策略买入下单成功 | order_id={}", resp.order_id);
-                                                        pt.update_exposure_cost(token_id, buy_price, qty);
-                                                        pt.update_position(token_id, qty);
-
-                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                        use chrono::Utc;
-                                                        add_trade(TradeRecord {
-                                                            id: resp.order_id,
-                                                            market_id: market_id_str,
-                                                            market_slug: market_display_str,
                                                             side: side.clone(),
-                                                            price: price_f64,
-                                                            size: qty.to_f64().unwrap_or(0.0),
-                                                            timestamp: Utc::now().timestamp(),
-                                                            status: "Bought".to_string(),
-                                                            profit: None,
-                                                        });
+                                                        },
+                                                    );
 
-                                                        state.insert(
-                                                            buy_market_id,
-                                                            BondOnceState::Bought {
-                                                                market_id: buy_market_id,
-                                                                token_id,
-                                                                qty,
-                                                                entry_price: buy_price,
-                                                                side,
-                                                            },
-                                                        );
-                                                    }
-                                                    Err(e) => {
-                                                        warn!("❌ 债券策略买入下单失败: {}", e);
-                                                        state.remove(&buy_market_id);
-                                                    }
-                                                }
-                                            });
-                                        }
-                                        Action::SellBond {
-                                            market_id: sell_market_id,
-                                            token_id,
-                                            qty,
-                                            entry_price,
-                                            side,
-                                            sell_price,
-                                        } => {
-                                            info!(
-                                                "💵 债券策略卖出 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
-                                                market_display, side, sell_price, qty
-                                            );
-                                            let executor_clone = executor.clone();
-                                            let pt = _risk_manager.position_tracker();
-                                            let state = bond_once_state.clone();
-                                            let market_id_str = sell_market_id.to_string();
-                                            let market_display_str = market_display.clone();
-                                            use rust_decimal::prelude::ToPrimitive;
-                                            let price_f64 = sell_price.to_f64().unwrap_or(0.0);
+                                                    info!(
+                                                        "⏱️ 倒计时策略买入 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
+                                                        market_display, side, p, qty
+                                                    );
 
-                                            tokio::spawn(async move {
-                                                let available = pt.get_position(token_id);
-                                                let sellable = qty.min(available);
-                                                let sell_size = adjust_order_size_for_fee(entry_price, sellable);
-                                                if sell_size <= dec!(0.01) {
-                                                    state.remove(&sell_market_id);
-                                                    return;
-                                                }
+                                                    let executor_clone = executor.clone();
+                                                    let pt = _risk_manager.position_tracker();
+                                                    let state = countdown_once_state.clone();
+                                                    let market_id_str = market_id.to_string();
+                                                    let market_display_str = market_display.clone();
+                                                    use rust_decimal::prelude::ToPrimitive;
+                                                    let price_f64 = p.to_f64().unwrap_or(0.0);
+                                                    let buy_price = p;
 
-                                                match executor_clone.sell_at_price(token_id, sell_price, sell_size).await {
-                                                    Ok(resp) => {
-                                                        info!("✅ 债券策略卖出下单成功 | order_id={}", resp.order_id);
-                                                        pt.update_exposure_cost(token_id, sell_price, -sell_size);
-                                                        pt.update_position(token_id, -sell_size);
+                                                    tokio::spawn(async move {
+                                                        match executor_clone.buy_at_price(token_id, buy_price, qty).await {
+                                                            Ok(resp) => {
+                                                                info!("✅ 倒计时策略买入下单成功 | order_id={}", resp.order_id);
+                                                                pt.update_exposure_cost(token_id, buy_price, qty);
+                                                                pt.update_position(token_id, qty);
 
-                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                        use chrono::Utc;
-                                                        add_trade(TradeRecord {
-                                                            id: resp.order_id,
-                                                            market_id: market_id_str,
-                                                            market_slug: market_display_str,
+                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                use chrono::Utc;
+                                                                add_trade(TradeRecord {
+                                                                    id: resp.order_id,
+                                                                    market_id: market_id_str,
+                                                                    market_slug: market_display_str,
+                                                                    side: side.clone(),
+                                                                    price: price_f64,
+                                                                    size: qty.to_f64().unwrap_or(0.0),
+                                                                    timestamp: Utc::now().timestamp(),
+                                                                    status: "Bought".to_string(),
+                                                                    profit: None,
+                                                                });
+
+                                                                state.insert(
+                                                                    market_id,
+                                                                    CountdownOnceState::Bought {
+                                                                        market_id,
+                                                                        token_id,
+                                                                        qty,
+                                                                        entry_price: buy_price,
+                                                                        side,
+                                                                    },
+                                                                );
+                                                            }
+                                                            Err(e) => {
+                                                                warn!("❌ 倒计时策略买入下单失败: {}", e);
+                                                                state.remove(&market_id);
+                                                            }
+                                                        }
+                                                    });
+                                                } else {
+                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                    use chrono::Utc;
+                                                    use rust_decimal::prelude::ToPrimitive;
+                                                    let order_id = format!("SIM-{}", uuid::Uuid::new_v4());
+                                                    add_trade(TradeRecord {
+                                                        id: order_id,
+                                                        market_id: market_id.to_string(),
+                                                        market_slug: market_display.clone(),
+                                                        side: side.clone(),
+                                                        price: p.to_f64().unwrap_or(0.0),
+                                                        size: qty.to_f64().unwrap_or(0.0),
+                                                        timestamp: Utc::now().timestamp(),
+                                                        status: "SimBought".to_string(),
+                                                        profit: None,
+                                                    });
+
+                                                    countdown_once_state.insert(
+                                                        market_id,
+                                                        CountdownOnceState::Bought {
+                                                            market_id,
+                                                            token_id,
+                                                            qty,
+                                                            entry_price: p,
                                                             side,
-                                                            price: price_f64,
-                                                            size: sell_size.to_f64().unwrap_or(0.0),
-                                                            timestamp: Utc::now().timestamp(),
-                                                            status: "Sold".to_string(),
-                                                            profit: None,
-                                                        });
-
-                                                        state.remove(&sell_market_id);
-                                                    }
-                                                    Err(e) => {
-                                                        warn!("❌ 债券策略卖出下单失败: {}", e);
-                                                        state.insert(
-                                                            sell_market_id,
-                                                            BondOnceState::Bought {
-                                                                market_id: sell_market_id,
-                                                                token_id,
-                                                                qty,
-                                                                entry_price,
-                                                                side,
-                                                            },
-                                                        );
-                                                    }
+                                                        },
+                                                    );
                                                 }
-                                            });
-                                        }
+                                            }
                                         }
                                     }
                                 }
@@ -1493,18 +1010,21 @@ async fn main() -> Result<()> {
                 _ = sleep(Duration::from_secs(1)) => {
                     let now = Utc::now();
                     let sec_to_end = (window_end - now).num_seconds();
-                    countdown_in_progress.store(sec_to_end <= 30 && sec_to_end >= 0, Ordering::Relaxed);
-                    let force_close_active = sec_to_end <= 5 && sec_to_end >= 0;
+                    countdown_in_progress.store(sec_to_end <= 10 && sec_to_end >= 0, Ordering::Relaxed);
+                    let force_close_active = sec_to_end <= 10 && sec_to_end >= 0;
                     if force_close_active {
+                        let is_live = is_running.load(Ordering::Relaxed);
                         if !force_close_cancel_done {
                             force_close_cancel_done = true;
-                            let exec_cancel = executor.clone();
-                            tokio::spawn(async move {
-                                match exec_cancel.cancel_all_orders().await {
-                                    Ok(_) => info!("🧯 尾盘强制平仓：已取消所有挂单"),
-                                    Err(e) => warn!(error = %e, "🧯 尾盘强制平仓：取消所有挂单失败"),
-                                }
-                            });
+                            if is_live {
+                                let exec_cancel = executor.clone();
+                                tokio::spawn(async move {
+                                    match exec_cancel.cancel_all_orders().await {
+                                        Ok(_) => info!("🧯 倒计时10秒强制平仓：已取消所有挂单"),
+                                        Err(e) => warn!(error = %e, "🧯 倒计时10秒强制平仓：取消所有挂单失败"),
+                                    }
+                                });
+                            }
                         }
 
                         let now_ts = now.timestamp();
@@ -1517,9 +1037,6 @@ async fn main() -> Result<()> {
                                 continue;
                             }
                             force_close_last_attempt.insert(*market_id, now_ts);
-
-                            countdown_once_state.remove(market_id);
-                            bond_once_state.remove(market_id);
 
                             let market_info = market_map.get(market_id);
                             let market_title = market_info.map(|m| m.title.as_str()).unwrap_or("未知市场");
@@ -1537,87 +1054,87 @@ async fn main() -> Result<()> {
                                 .get_book(*no_token)
                                 .and_then(|b| b.bids.last().map(|lv| lv.price));
 
+                            if !is_live {
+                                let snapshot = countdown_once_state
+                                    .get(market_id)
+                                    .map(|v| v.clone())
+                                    .unwrap_or(CountdownOnceState::Idle);
+
+                                if let CountdownOnceState::Bought { token_id, qty, entry_price, side, .. } = snapshot {
+                                    let bp = if side == "YES" { yes_best_bid } else { no_best_bid }.unwrap_or(dec!(0.01));
+                                    let sell_size = adjust_order_size_for_fee(entry_price, qty);
+                                    if sell_size > dec!(0.01) {
+                                        use crate::utils::trade_history::{add_trade, TradeRecord};
+                                        use chrono::Utc;
+                                        use rust_decimal::prelude::ToPrimitive;
+                                        add_trade(TradeRecord {
+                                            id: format!("SIM-{}", uuid::Uuid::new_v4()),
+                                            market_id: market_id.to_string(),
+                                            market_slug: market_display.clone(),
+                                            side: side.clone(),
+                                            price: bp.to_f64().unwrap_or(0.0),
+                                            size: sell_size.to_f64().unwrap_or(0.0),
+                                            timestamp: Utc::now().timestamp(),
+                                            status: "SimSold".to_string(),
+                                            profit: None,
+                                        });
+                                    }
+                                    countdown_once_state.remove(market_id);
+                                }
+                                continue;
+                            }
+
                             let pt = _risk_manager.position_tracker();
                             let yes_pos = pt.get_position(*yes_token);
                             let no_pos = pt.get_position(*no_token);
 
                             if yes_pos > dec!(0.01) {
-                                if let Some(bp) = yes_best_bid {
-                                    let size = (yes_pos * dec!(100)).floor() / dec!(100);
-                                    if size > dec!(0.0) {
-                                        info!(
-                                            "🧯 尾盘强制平仓 | 市场:{} | 卖出 YES {} 份 | 价格:{:.4}",
-                                            market_display, size, bp
-                                        );
-                                        let exec = executor.clone();
-                                        let token = *yes_token;
-                                        let market_disp = market_display.clone();
-                                        let ptc = _risk_manager.position_tracker();
-                                        tokio::spawn(async move {
-                                            match exec.sell_at_price(token, bp, size).await {
-                                                Ok(_) => {
-                                                    ptc.update_exposure_cost(token, bp, -size);
-                                                    ptc.update_position(token, -size);
-                                                    info!(
-                                                        "✅ 强制平仓成功 | 市场:{} | YES 卖出 {} 份",
-                                                        market_disp, size
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    warn!(
-                                                        "❌ 强制平仓失败 | 市场:{} | YES | {}",
-                                                        market_disp, e
-                                                    );
-                                                }
+                                let size = (yes_pos * dec!(100)).floor() / dec!(100);
+                                if size > dec!(0.0) {
+                                    let exec = executor.clone();
+                                    let token = *yes_token;
+                                    let market_disp = market_display.clone();
+                                    let ptc = _risk_manager.position_tracker();
+                                    let sell_price = dec!(0.01);
+                                    tokio::spawn(async move {
+                                        match exec.sell_at_price(token, sell_price, size).await {
+                                            Ok(_) => {
+                                                ptc.update_exposure_cost(token, sell_price, -size);
+                                                ptc.update_position(token, -size);
+                                                info!("✅ 强制平仓成功 | 市场:{} | YES 卖出 {} 份", market_disp, size);
                                             }
-                                        });
-                                    }
-                                } else {
-                                    debug!(
-                                        "⏸️ 无买盘，跳过 YES 强制平仓 | 市场:{}",
-                                        market_display
-                                    );
+                                            Err(e) => {
+                                                warn!("❌ 强制平仓失败 | 市场:{} | YES | {}", market_disp, e);
+                                            }
+                                        }
+                                    });
                                 }
                             }
 
                             if no_pos > dec!(0.01) {
-                                if let Some(bp) = no_best_bid {
-                                    let size = (no_pos * dec!(100)).floor() / dec!(100);
-                                    if size > dec!(0.0) {
-                                        info!(
-                                            "🧯 尾盘强制平仓 | 市场:{} | 卖出 NO {} 份 | 价格:{:.4}",
-                                            market_display, size, bp
-                                        );
-                                        let exec = executor.clone();
-                                        let token = *no_token;
-                                        let market_disp = market_display.clone();
-                                        let ptc = _risk_manager.position_tracker();
-                                        tokio::spawn(async move {
-                                            match exec.sell_at_price(token, bp, size).await {
-                                                Ok(_) => {
-                                                    ptc.update_exposure_cost(token, bp, -size);
-                                                    ptc.update_position(token, -size);
-                                                    info!(
-                                                        "✅ 强制平仓成功 | 市场:{} | NO 卖出 {} 份",
-                                                        market_disp, size
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    warn!(
-                                                        "❌ 强制平仓失败 | 市场:{} | NO | {}",
-                                                        market_disp, e
-                                                    );
-                                                }
+                                let size = (no_pos * dec!(100)).floor() / dec!(100);
+                                if size > dec!(0.0) {
+                                    let exec = executor.clone();
+                                    let token = *no_token;
+                                    let market_disp = market_display.clone();
+                                    let ptc = _risk_manager.position_tracker();
+                                    let sell_price = dec!(0.01);
+                                    tokio::spawn(async move {
+                                        match exec.sell_at_price(token, sell_price, size).await {
+                                            Ok(_) => {
+                                                ptc.update_exposure_cost(token, sell_price, -size);
+                                                ptc.update_position(token, -size);
+                                                info!("✅ 强制平仓成功 | 市场:{} | NO 卖出 {} 份", market_disp, size);
                                             }
-                                        });
-                                    }
-                                } else {
-                                    debug!(
-                                        "⏸️ 无买盘，跳过 NO 强制平仓 | 市场:{}",
-                                        market_display
-                                    );
+                                            Err(e) => {
+                                                warn!("❌ 强制平仓失败 | 市场:{} | NO | {}", market_disp, e);
+                                            }
+                                        }
+                                    });
                                 }
                             }
+
+                            countdown_once_state.remove(market_id);
                         }
                     }
 
