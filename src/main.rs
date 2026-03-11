@@ -629,10 +629,16 @@ async fn main() -> Result<()> {
                     }
                 });
             }
+            // 收尾检查：距窗口结束 <= N 分钟时执行一次收尾（不跳出，继续监控直到窗口结束由下方「新窗口检测」自然切换）
+            // 使用秒级精度，5分钟窗口下 num_minutes() 截断可能导致漏检
             if config.wind_down_before_window_end_minutes > 0 && !wind_down_done {
                 let now = Utc::now();
                 let seconds_until_end = (window_end - now).num_seconds();
-                if seconds_until_end <= 10 && seconds_until_end >= 0 {
+                let threshold_seconds = config.wind_down_before_window_end_minutes as i64 * 60;
+                
+                // 如果时间到了，或者已经过期（比如窗口已经结束），都应该触发收尾
+                // 注意：如果窗口已经结束(seconds_until_end <= 0)，也应该执行收尾
+                if seconds_until_end <= threshold_seconds {
                     info!("🛑 触发收尾 | 距窗口结束 {} 秒", seconds_until_end);
                     wind_down_done = true;
                     wind_down_in_progress.store(true, Ordering::Relaxed);
@@ -660,6 +666,10 @@ async fn main() -> Result<()> {
                         } else {
                             info!("✅ 收尾：已取消所有挂单");
                         }
+
+                        // 取消后等 10 秒再 Merge，避免取消前刚成交的订单尚未上链更新持仓
+                        const DELAY_AFTER_CANCEL: Duration = Duration::from_secs(10);
+                        sleep(DELAY_AFTER_CANCEL).await;
 
                         // 2. Merge 双边持仓（每完成一个市场后等 30 秒再合并下一个）并更新敞口
                         let position_tracker = risk_manager_wd.position_tracker();
@@ -791,35 +801,26 @@ async fn main() -> Result<()> {
                                 }
 
                                 {
-                                    let buy_price_min = Decimal::try_from(config.countdown_min_price).unwrap_or(dec!(0.35));
-                                    let buy_price_max = Decimal::try_from(config.countdown_max_price).unwrap_or(dec!(0.45));
+                                    let buy_price_target = Decimal::try_from(config.countdown_buy_price).unwrap_or(dec!(0.35));
                                     let qty = dec!(5.0);
 
                                     if sec_to_end > 10 {
-                                        let select_buy_price = |best_ask: &Option<(Decimal, Decimal)>| -> Option<Decimal> {
-                                            best_ask.as_ref().and_then(|(p, _)| {
-                                                if *p > buy_price_max {
-                                                    None
-                                                } else if *p < buy_price_min {
-                                                    Some(buy_price_min)
-                                                } else {
-                                                    Some(*p)
-                                                }
-                                            })
-                                        };
-
-                                        let yes_buy_price = select_buy_price(&yes_best_ask);
-                                        let no_buy_price = select_buy_price(&no_best_ask);
+                                        let yes_trigger = yes_best_ask
+                                            .as_ref()
+                                            .map(|(p, _)| *p <= buy_price_target)
+                                            .unwrap_or(false);
+                                        let no_trigger = no_best_ask
+                                            .as_ref()
+                                            .map(|(p, _)| *p <= buy_price_target)
+                                            .unwrap_or(false);
 
                                         let try_buy_side = |side_key: u8,
                                                             token_id: U256,
                                                             side: String,
-                                                            buy_price: Option<Decimal>| {
-                                            if countdown_once_state.get(&(market_id, side_key)).is_none() {
-                                                let buy_price = match buy_price {
-                                                    Some(p) => p,
-                                                    None => return,
-                                                };
+                                                            should_trigger: bool| {
+                                            if should_trigger
+                                                && countdown_once_state.get(&(market_id, side_key)).is_none()
+                                            {
                                                 let is_live = is_running.load(Ordering::Relaxed);
                                                 let key = (market_id, side_key);
 
@@ -836,7 +837,7 @@ async fn main() -> Result<()> {
 
                                                     info!(
                                                         "⏱️ 倒计时策略买入 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
-                                                        market_display, side, buy_price, qty
+                                                        market_display, side, buy_price_target, qty
                                                     );
 
                                                     let executor_clone = executor.clone();
@@ -845,13 +846,13 @@ async fn main() -> Result<()> {
                                                     let market_id_str = market_id.to_string();
                                                     let market_display_str = market_display.clone();
                                                     use rust_decimal::prelude::ToPrimitive;
-                                                    let price_f64 = buy_price.to_f64().unwrap_or(0.0);
+                                                    let price_f64 = buy_price_target.to_f64().unwrap_or(0.0);
 
                                                     tokio::spawn(async move {
-                                                        match executor_clone.buy_at_price(token_id, buy_price, qty).await {
+                                                        match executor_clone.buy_at_price(token_id, buy_price_target, qty).await {
                                                             Ok(resp) => {
                                                                 info!("✅ 倒计时策略买入下单成功 | order_id={}", resp.order_id);
-                                                                pt.update_exposure_cost(token_id, buy_price, qty);
+                                                                pt.update_exposure_cost(token_id, buy_price_target, qty);
                                                                 pt.update_position(token_id, qty);
 
                                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
@@ -874,7 +875,7 @@ async fn main() -> Result<()> {
                                                                         market_id,
                                                                         token_id,
                                                                         qty,
-                                                                        entry_price: buy_price,
+                                                                        entry_price: buy_price_target,
                                                                         side,
                                                                     },
                                                                 );
@@ -895,7 +896,7 @@ async fn main() -> Result<()> {
                                                         market_id: market_id.to_string(),
                                                         market_slug: market_display.clone(),
                                                         side: side.clone(),
-                                                        price: buy_price.to_f64().unwrap_or(0.0),
+                                                        price: buy_price_target.to_f64().unwrap_or(0.0),
                                                         size: qty.to_f64().unwrap_or(0.0),
                                                         timestamp: Utc::now().timestamp(),
                                                         status: "SimBought".to_string(),
@@ -908,7 +909,7 @@ async fn main() -> Result<()> {
                                                             market_id,
                                                             token_id,
                                                             qty,
-                                                            entry_price: buy_price,
+                                                            entry_price: buy_price_target,
                                                             side,
                                                         },
                                                     );
@@ -916,8 +917,8 @@ async fn main() -> Result<()> {
                                             }
                                         };
 
-                                        try_buy_side(0, pair.yes_book.asset_id, "YES".to_string(), yes_buy_price);
-                                        try_buy_side(1, pair.no_book.asset_id, "NO".to_string(), no_buy_price);
+                                        try_buy_side(0, pair.yes_book.asset_id, "YES".to_string(), yes_trigger);
+                                        try_buy_side(1, pair.no_book.asset_id, "NO".to_string(), no_trigger);
                                     }
                                 }
 
