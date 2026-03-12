@@ -811,6 +811,7 @@ async fn main() -> Result<()> {
                                     let buy_min_price = dec!(0.8);
                                     let buy_max_price = dec!(0.98);
                                     let take_profit_multiplier = dec!(1.05);
+                                    let stop_loss_multiplier = dec!(0.8);
 
                                     if sec_to_end > 15 {
                                         let yes_state = countdown_once_state
@@ -1072,6 +1073,8 @@ async fn main() -> Result<()> {
                                                 if let Some(bp) = best_bid {
                                                     if bp >= entry_price * take_profit_multiplier {
                                                         try_sell(0, token_id, side, entry_price, qty, bp);
+                                                    } else if bp <= entry_price * stop_loss_multiplier {
+                                                        try_sell(0, token_id, side, entry_price, qty, bp);
                                                     }
                                                 }
                                             }
@@ -1081,6 +1084,8 @@ async fn main() -> Result<()> {
                                                 let best_bid = no_best_bid.as_ref().map(|(p, _)| *p);
                                                 if let Some(bp) = best_bid {
                                                     if bp >= entry_price * take_profit_multiplier {
+                                                        try_sell(1, token_id, side, entry_price, qty, bp);
+                                                    } else if bp <= entry_price * stop_loss_multiplier {
                                                         try_sell(1, token_id, side, entry_price, qty, bp);
                                                     }
                                                 }
