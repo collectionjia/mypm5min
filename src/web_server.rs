@@ -421,7 +421,7 @@ async fn buy_handler(
         }
     };
 
-    let price = match Decimal::try_from(price_f64) {
+    let price = match Decimal::try_from(price_f64).map(|p| p.round_dp(2)) {
         Ok(p) => p,
         Err(e) => {
             return Json(BuyResponse {

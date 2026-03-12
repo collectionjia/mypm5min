@@ -107,6 +107,7 @@ impl TradingExecutor {
         price: Decimal,
         size: Decimal,
     ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
+        let price = price.round_dp(2);
         let signer = LocalSigner::from_str(&self.private_key)?
             .with_chain_id(Some(POLYGON));
         let order = self
@@ -139,6 +140,7 @@ impl TradingExecutor {
         price: Decimal,
         size: Decimal,
     ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
+        let price = price.round_dp(2);
         let signer = LocalSigner::from_str(&self.private_key)?
             .with_chain_id(Some(POLYGON));
         let order = self
