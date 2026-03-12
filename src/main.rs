@@ -1009,6 +1009,8 @@ async fn main() -> Result<()> {
                                                         let priv_key = config.private_key.clone();
                                                         let pt = _risk_manager.position_tracker();
                                                         let state = countdown_once_state.clone();
+                                                        let market_slug = market_display.clone();
+                                                        let sell_countdown = Some(countdown_str.clone());
                                                         tokio::spawn(async move {
                                                             let merge_snapshot = get_positions()
                                                                 .await
@@ -1031,6 +1033,23 @@ async fn main() -> Result<()> {
                                                                             "💰 Merge 已扣减敞口 | condition_id={:#x} | 数量:{}",
                                                                             market_id, merge_amt
                                                                         );
+
+                                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                        use chrono::Utc;
+                                                                        use rust_decimal::prelude::ToPrimitive;
+                                                                        add_trade(TradeRecord {
+                                                                            id: tx.clone(),
+                                                                            market_id: market_id.to_string(),
+                                                                            market_slug: market_slug.clone(),
+                                                                            side: "MERGE".to_string(),
+                                                                            price: 1.0,
+                                                                            size: merge_amt.to_f64().unwrap_or(0.0),
+                                                                            timestamp: Utc::now().timestamp(),
+                                                                            status: "Sold".to_string(),
+                                                                            profit: None,
+                                                                            buy_countdown: None,
+                                                                            sell_countdown: sell_countdown.clone(),
+                                                                        });
                                                                     }
 
                                                                     state.remove(&(market_id, 0u8));
