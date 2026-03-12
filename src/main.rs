@@ -806,7 +806,10 @@ async fn main() -> Result<()> {
 
                                 {
                                     let qty = dec!(5.0);
-                                    let buy_trigger_secs: i64 = 60;
+                                    let buy_trigger_upper_secs: i64 = 60;
+                                    let buy_trigger_lower_secs: i64 = 50;
+                                    let buy_min_price = dec!(0.8);
+                                    let buy_max_price = dec!(0.98);
                                     let take_profit_multiplier = dec!(1.05);
 
                                     if sec_to_end > 15 {
@@ -942,14 +945,21 @@ async fn main() -> Result<()> {
 
                                         if is_yes_idle && is_no_idle {
                                             let attempted = countdown_2min_done.get(&market_id).map(|v| *v).unwrap_or(false);
-                                            if !attempted && sec_to_end_nonneg <= buy_trigger_secs {
+                                            if !attempted
+                                                && sec_to_end_nonneg <= buy_trigger_upper_secs
+                                                && sec_to_end_nonneg >= buy_trigger_lower_secs
+                                            {
                                                 let yes_price = yes_best_ask.as_ref().map(|(p, _)| *p);
                                                 let no_price = no_best_ask.as_ref().map(|(p, _)| *p);
                                                 if let (Some(yp), Some(np)) = (yes_price, no_price) {
                                                     if yp >= np {
-                                                        try_buy(0, pair.yes_book.asset_id, "YES".to_string(), yp);
+                                                        if yp >= buy_min_price && yp <= buy_max_price {
+                                                            try_buy(0, pair.yes_book.asset_id, "YES".to_string(), yp);
+                                                        }
                                                     } else {
-                                                        try_buy(1, pair.no_book.asset_id, "NO".to_string(), np);
+                                                        if np >= buy_min_price && np <= buy_max_price {
+                                                            try_buy(1, pair.no_book.asset_id, "NO".to_string(), np);
+                                                        }
                                                     }
                                                 }
                                             }
