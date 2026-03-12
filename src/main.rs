@@ -812,6 +812,7 @@ async fn main() -> Result<()> {
                                     if sec_to_end > 15 {
                                         let min_profit = dec!(0.1);
                                         let max_total_cost = dec!(1.0) - min_profit;
+                                        let profit_ok_limits = first_leg_price + second_leg_price <= max_total_cost;
 
                                         let yes_state = countdown_once_state
                                             .get(&(market_id, 0u8))
@@ -943,21 +944,19 @@ async fn main() -> Result<()> {
                                         }
 
                                         if is_yes_bought && is_no_idle {
-                                            let profit_ok = matches!(&yes_state, CountdownOnceState::Bought { entry_price, .. } if *entry_price + second_leg_price <= max_total_cost);
                                             let no_trigger = no_best_ask
                                                 .as_ref()
                                                 .map(|(p, _)| *p <= second_leg_price)
                                                 .unwrap_or(false);
-                                            if profit_ok && no_trigger {
+                                            if profit_ok_limits && no_trigger {
                                                 try_buy(1, pair.no_book.asset_id, "NO".to_string(), second_leg_price);
                                             }
                                         } else if is_no_bought && is_yes_idle {
-                                            let profit_ok = matches!(&no_state, CountdownOnceState::Bought { entry_price, .. } if *entry_price + second_leg_price <= max_total_cost);
                                             let yes_trigger = yes_best_ask
                                                 .as_ref()
                                                 .map(|(p, _)| *p <= second_leg_price)
                                                 .unwrap_or(false);
-                                            if profit_ok && yes_trigger {
+                                            if profit_ok_limits && yes_trigger {
                                                 try_buy(0, pair.yes_book.asset_id, "YES".to_string(), second_leg_price);
                                             }
                                         }
@@ -971,6 +970,7 @@ async fn main() -> Result<()> {
                                         let second_leg_price = Decimal::from_str(&format!("{:.4}", config.countdown_sell_price)).unwrap_or(dec!(0.6));
                                         let min_profit = dec!(0.1);
                                         let max_total_cost = dec!(1.0) - min_profit;
+                                        let profit_ok_limits = first_leg_price + second_leg_price <= max_total_cost;
 
                                         let yes_snapshot = countdown_once_state
                                             .get(&(market_id, 0u8))
@@ -981,15 +981,10 @@ async fn main() -> Result<()> {
                                             .map(|v| v.clone())
                                             .unwrap_or(CountdownOnceState::Idle);
 
-                                        let profit_ok = match (&yes_snapshot, &no_snapshot) {
-                                            (
-                                                CountdownOnceState::Bought { entry_price: yes_entry, .. },
-                                                CountdownOnceState::Bought { entry_price: no_entry, .. },
-                                            ) => *yes_entry + *no_entry <= max_total_cost,
-                                            _ => false,
-                                        };
+                                        let both_bought = matches!(yes_snapshot, CountdownOnceState::Bought { .. })
+                                            && matches!(no_snapshot, CountdownOnceState::Bought { .. });
 
-                                        if profit_ok {
+                                        if both_bought && profit_ok_limits {
                                             let now_ts = Utc::now().timestamp();
                                             let last_ts = countdown_merge_last_attempt
                                                 .get(&market_id)
