@@ -14,6 +14,10 @@ pub struct TradeRecord {
     pub timestamp: i64,      // Unix timestamp
     pub status: String,      // "Pending", "Won", "Lost"
     pub profit: Option<f64>, // 盈亏金额
+    #[serde(default)]
+    pub buy_countdown: Option<String>,
+    #[serde(default)]
+    pub sell_countdown: Option<String>,
 }
 
 lazy_static! {

@@ -245,30 +245,10 @@
                 <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
                 <button id="closeAllBtn" onclick="closeAllPositions()" class="btn-close-all">一键平仓</button>
                 <button id="redeemBtn" onclick="redeemRewards()" class="btn-redeem" style="display: none;">领取奖励</button>
-                <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
-            </div>
-
-            <div id="portfolio-container">
-                <h3>资产组合</h3>
-                <div style="margin-bottom: 1rem; font-size: 1.1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #f0f0f0;">
+                <div style="margin-top: 0.75rem; font-size: 1.0rem; padding-top: 0.5rem; border-top: 1px solid #f0f0f0;">
                     <strong>USDC 余额:</strong> <span id="usdc-balance" style="color: #10b981; font-weight: bold;">加载中...</span>
                 </div>
-                <div style="overflow-x: auto;">
-                    <table id="positions-table">
-                        <thead>
-                            <tr>
-                                <th>Token ID</th>
-                                <th>市场</th>
-                                <th>数量</th>
-                                <th>现价</th>
-                                <th>价值</th>
-                            </tr>
-                        </thead>
-                        <tbody id="positions-body">
-                            <tr><td colspan="5" style="text-align:center">暂无持仓</td></tr>
-                        </tbody>
-                    </table>
-                </div>
+                <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
             </div>
 
             <div id="trades-container">
@@ -282,12 +262,14 @@
                             <th>价格</th>
                             <th>数量</th>
                             <th>结果</th>
+                            <th>下单倒计时</th>
+                            <th>卖出倒计时</th>
                             <th>资金变化</th>
                             <th>余额估算</th>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr><td colspan="8" style="text-align:center">暂无交易记录</td></tr>
+                        <tr><td colspan="10" style="text-align:center">暂无交易记录</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -298,7 +280,6 @@
         // 使用当前页面访问的 host 作为 API base，这样无论是 localhost 还是 IP 访问都能正常工作
         const API_BASE = window.location.origin;
         let isRunning = false;
-        let didAutoStart = false;
         let lastTradeCount = -1;
         let initialUsdcBalance = null;
         let currentUsdcBalance = null;
@@ -325,10 +306,6 @@
                 const data = await response.json();
                 isRunning = data.running;
                 render();
-                if (!isRunning && !didAutoStart) {
-                    didAutoStart = true;
-                    await toggleBot();
-                }
             } catch (error) {
                 console.error('Error fetching status:', error);
                 document.getElementById('statusText').innerText = '连接失败';
@@ -352,7 +329,7 @@
                 const tbody = document.querySelector('#trades-table tbody');
                 
                 if (trades.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center">暂无交易记录</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center">暂无交易记录</td></tr>';
                     return;
                 }
 
@@ -408,6 +385,9 @@
                     const estBalanceText = initialUsdcBalance != null
                         ? formatMoney(estBalance)
                         : `Δ${formatSignedMoney(flow.cumulativeCashflow)}`;
+
+                    const buyCountdown = trade.buy_countdown || '--';
+                    const sellCountdown = trade.sell_countdown || '--';
                     
                     return `
                         <tr>
@@ -417,6 +397,8 @@
                             <td>${price != null ? price.toFixed(4) : '--'}</td>
                             <td>${size != null ? size.toFixed(2) : '--'}</td>
                             <td class="${statusClass}">${statusText}</td>
+                            <td>${buyCountdown}</td>
+                            <td>${sellCountdown}</td>
                             <td>${formatSignedMoney(cashflow)}</td>
                             <td>${estBalanceText}</td>
                         </tr>

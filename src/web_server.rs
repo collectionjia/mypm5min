@@ -469,6 +469,7 @@ async fn buy_handler(
         use chrono::Utc;
         use rust_decimal::prelude::ToPrimitive;
         let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
+        let buy_countdown = Some(market.countdown.clone());
 
         add_trade(TradeRecord {
             id: sim_order_id.clone(),
@@ -480,6 +481,8 @@ async fn buy_handler(
             timestamp: Utc::now().timestamp(),
             status: "SimBought".to_string(),
             profit: None,
+            buy_countdown,
+            sell_countdown: None,
         });
 
         return Json(BuyResponse {
@@ -494,6 +497,7 @@ async fn buy_handler(
             use crate::utils::trade_history::{add_trade, TradeRecord};
             use chrono::Utc;
             use rust_decimal::prelude::ToPrimitive;
+            let buy_countdown = Some(market.countdown.clone());
 
             add_trade(TradeRecord {
                 id: resp.order_id.clone(),
@@ -505,6 +509,8 @@ async fn buy_handler(
                 timestamp: Utc::now().timestamp(),
                 status: "Bought".to_string(),
                 profit: None,
+                buy_countdown,
+                sell_countdown: None,
             });
 
             Json(BuyResponse {

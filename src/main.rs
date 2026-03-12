@@ -778,6 +778,7 @@ async fn main() -> Result<()> {
                                 let sec_to_end_nonneg = sec_to_end.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
                                 let countdown_seconds = sec_to_end_nonneg % 60;
+                                let countdown_str = format!("{:02}:{:02}", countdown_minutes, countdown_seconds);
 
                                 // 更新 Web 控制台数据
                                 {
@@ -804,9 +805,8 @@ async fn main() -> Result<()> {
                                 }
 
                                 {
-                                    use std::str::FromStr;
-                                    let first_leg_price = Decimal::from_str(&format!("{:.4}", config.countdown_buy_price)).unwrap_or(dec!(0.3));
-                                    let second_leg_price = Decimal::from_str(&format!("{:.4}", config.countdown_sell_price)).unwrap_or(dec!(0.6));
+                                    let first_leg_price = dec!(0.3);
+                                    let second_leg_price = dec!(0.6);
                                     let qty = dec!(5.0);
 
                                     if sec_to_end > 15 {
@@ -825,11 +825,17 @@ async fn main() -> Result<()> {
 
                                         let is_yes_idle = matches!(yes_state, CountdownOnceState::Idle);
                                         let is_no_idle = matches!(no_state, CountdownOnceState::Idle);
-                                        let is_yes_bought = matches!(yes_state, CountdownOnceState::Bought { .. });
-                                        let is_no_bought = matches!(no_state, CountdownOnceState::Bought { .. });
+                                        let yes_started = matches!(yes_state, CountdownOnceState::Bought { .. } | CountdownOnceState::Buying { .. });
+                                        let no_started = matches!(no_state, CountdownOnceState::Bought { .. } | CountdownOnceState::Buying { .. });
 
                                         let try_buy = |side_key: u8, token_id: U256, side: String, limit_price: Decimal| {
-                                            if countdown_once_state.get(&(market_id, side_key)).is_some() {
+                                            if let Some(existing) = countdown_once_state.get(&(market_id, side_key)) {
+                                                debug!(
+                                                    market_id = %market_id,
+                                                    side_key = side_key,
+                                                    existing = ?existing.value(),
+                                                    "⏭️ 倒计时策略跳过买入：已有状态"
+                                                );
                                                 return;
                                             }
                                             let is_live = is_running.load(Ordering::Relaxed);
@@ -855,6 +861,7 @@ async fn main() -> Result<()> {
                                                 let state = countdown_once_state.clone();
                                                 let market_id_str = market_id.to_string();
                                                 let market_display_str = market_display.clone();
+                                                let buy_countdown = Some(countdown_str.clone());
                                                 use rust_decimal::prelude::ToPrimitive;
                                                 let price_f64 = limit_price.to_f64().unwrap_or(0.0);
 
@@ -877,6 +884,8 @@ async fn main() -> Result<()> {
                                                                 timestamp: Utc::now().timestamp(),
                                                                 status: "Bought".to_string(),
                                                                 profit: None,
+                                                                buy_countdown,
+                                                                sell_countdown: None,
                                                             });
 
                                                             state.insert(
@@ -900,6 +909,7 @@ async fn main() -> Result<()> {
                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
                                                 use chrono::Utc;
                                                 use rust_decimal::prelude::ToPrimitive;
+                                                let buy_countdown = Some(countdown_str.clone());
                                                 let order_id = format!("SIM-{}", uuid::Uuid::new_v4());
                                                 add_trade(TradeRecord {
                                                     id: order_id,
@@ -911,6 +921,8 @@ async fn main() -> Result<()> {
                                                     timestamp: Utc::now().timestamp(),
                                                     status: "SimBought".to_string(),
                                                     profit: None,
+                                                    buy_countdown,
+                                                    sell_countdown: None,
                                                 });
 
                                                 countdown_once_state.insert(
@@ -943,7 +955,7 @@ async fn main() -> Result<()> {
                                             }
                                         }
 
-                                        if is_yes_bought && is_no_idle {
+                                        if yes_started && is_no_idle {
                                             let no_trigger = no_best_ask
                                                 .as_ref()
                                                 .map(|(p, _)| *p <= second_leg_price)
@@ -951,7 +963,7 @@ async fn main() -> Result<()> {
                                             if profit_ok_limits && no_trigger {
                                                 try_buy(1, pair.no_book.asset_id, "NO".to_string(), second_leg_price);
                                             }
-                                        } else if is_no_bought && is_yes_idle {
+                                        } else if no_started && is_yes_idle {
                                             let yes_trigger = yes_best_ask
                                                 .as_ref()
                                                 .map(|(p, _)| *p <= second_leg_price)
@@ -965,9 +977,8 @@ async fn main() -> Result<()> {
 
                                 {
                                     if sec_to_end > 15 {
-                                        use std::str::FromStr;
-                                        let first_leg_price = Decimal::from_str(&format!("{:.4}", config.countdown_buy_price)).unwrap_or(dec!(0.3));
-                                        let second_leg_price = Decimal::from_str(&format!("{:.4}", config.countdown_sell_price)).unwrap_or(dec!(0.6));
+                                        let first_leg_price = dec!(0.3);
+                                        let second_leg_price = dec!(0.6);
                                         let min_profit = dec!(0.1);
                                         let max_total_cost = dec!(1.0) - min_profit;
                                         let profit_ok_limits = first_leg_price + second_leg_price <= max_total_cost;
@@ -1130,6 +1141,8 @@ async fn main() -> Result<()> {
                     countdown_in_progress.store(sec_to_end <= 15 && sec_to_end >= 0, Ordering::Relaxed);
                     let force_close_active = sec_to_end <= 15 && sec_to_end >= 0;
                     if force_close_active {
+                        let sec_to_end_nonneg = sec_to_end.max(0);
+                        let sell_countdown = Some(format!("{:02}:{:02}", sec_to_end_nonneg / 60, sec_to_end_nonneg % 60));
                         let is_live = is_running.load(Ordering::Relaxed);
                         if !force_close_cancel_done {
                             force_close_cancel_done = true;
@@ -1212,6 +1225,8 @@ async fn main() -> Result<()> {
                                                 timestamp: Utc::now().timestamp(),
                                                 status: "SimSold".to_string(),
                                                 profit: None,
+                                                buy_countdown: None,
+                                                sell_countdown: sell_countdown.clone(),
                                             });
                                         }
                                         countdown_once_state.remove(&(*market_id, side_key));
@@ -1232,12 +1247,30 @@ async fn main() -> Result<()> {
                                     let market_disp = market_display.clone();
                                     let ptc = _risk_manager.position_tracker();
                                     let sell_price = dec!(0.01);
+                                    let market_id_str = market_id.to_string();
+                                    let sell_cd = sell_countdown.clone();
                                     tokio::spawn(async move {
                                         match exec.sell_at_price(token, sell_price, size).await {
-                                            Ok(_) => {
+                                            Ok(resp) => {
                                                 ptc.update_exposure_cost(token, sell_price, -size);
                                                 ptc.update_position(token, -size);
                                                 info!("✅ 强制平仓成功 | 市场:{} | YES 卖出 {} 份", market_disp, size);
+                                                use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                use chrono::Utc;
+                                                use rust_decimal::prelude::ToPrimitive;
+                                                add_trade(TradeRecord {
+                                                    id: resp.order_id,
+                                                    market_id: market_id_str,
+                                                    market_slug: market_disp,
+                                                    side: "YES".to_string(),
+                                                    price: sell_price.to_f64().unwrap_or(0.0),
+                                                    size: size.to_f64().unwrap_or(0.0),
+                                                    timestamp: Utc::now().timestamp(),
+                                                    status: "Sold".to_string(),
+                                                    profit: None,
+                                                    buy_countdown: None,
+                                                    sell_countdown: sell_cd,
+                                                });
                                             }
                                             Err(e) => {
                                                 warn!("❌ 强制平仓失败 | 市场:{} | YES | {}", market_disp, e);
@@ -1255,12 +1288,30 @@ async fn main() -> Result<()> {
                                     let market_disp = market_display.clone();
                                     let ptc = _risk_manager.position_tracker();
                                     let sell_price = dec!(0.01);
+                                    let market_id_str = market_id.to_string();
+                                    let sell_cd = sell_countdown.clone();
                                     tokio::spawn(async move {
                                         match exec.sell_at_price(token, sell_price, size).await {
-                                            Ok(_) => {
+                                            Ok(resp) => {
                                                 ptc.update_exposure_cost(token, sell_price, -size);
                                                 ptc.update_position(token, -size);
                                                 info!("✅ 强制平仓成功 | 市场:{} | NO 卖出 {} 份", market_disp, size);
+                                                use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                use chrono::Utc;
+                                                use rust_decimal::prelude::ToPrimitive;
+                                                add_trade(TradeRecord {
+                                                    id: resp.order_id,
+                                                    market_id: market_id_str,
+                                                    market_slug: market_disp,
+                                                    side: "NO".to_string(),
+                                                    price: sell_price.to_f64().unwrap_or(0.0),
+                                                    size: size.to_f64().unwrap_or(0.0),
+                                                    timestamp: Utc::now().timestamp(),
+                                                    status: "Sold".to_string(),
+                                                    profit: None,
+                                                    buy_countdown: None,
+                                                    sell_countdown: sell_cd,
+                                                });
                                             }
                                             Err(e) => {
                                                 warn!("❌ 强制平仓失败 | 市场:{} | NO | {}", market_disp, e);
