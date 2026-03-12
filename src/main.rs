@@ -110,7 +110,7 @@ fn adjust_order_size_for_fee(entry_price: Decimal, size: Decimal) -> Decimal {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum CountdownOnceState {
     Idle,
     Buying {
