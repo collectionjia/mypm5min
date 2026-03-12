@@ -806,7 +806,7 @@ async fn main() -> Result<()> {
 
                                 {
                                     let qty = dec!(5.0);
-                                    let buy_trigger_secs: i64 = 120;
+                                    let buy_trigger_secs: i64 = 60;
                                     let take_profit_multiplier = dec!(1.05);
 
                                     if sec_to_end > 15 {
