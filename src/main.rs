@@ -811,7 +811,7 @@ async fn main() -> Result<()> {
                                     let buy_min_price = dec!(0.8);
                                     let buy_max_price = dec!(0.98);
                                     let take_profit_multiplier = dec!(1.05);
-                                    let stop_loss_multiplier = dec!(0.8);
+                                    let stop_loss_multiplier = dec!(0.9);
 
                                     if sec_to_end > 15 {
                                         let yes_state = countdown_once_state
@@ -1178,24 +1178,29 @@ async fn main() -> Result<()> {
                 _ = sleep(Duration::from_secs(1)) => {
                     let now = Utc::now();
                     let sec_to_end = (window_end - now).num_seconds();
-                    countdown_in_progress.store(sec_to_end <= 15 && sec_to_end >= 0, Ordering::Relaxed);
-                    let force_close_active = sec_to_end <= 15 && sec_to_end >= 0;
+                    let cancel_window_active = sec_to_end <= 15 && sec_to_end >= 0;
+                    countdown_in_progress.store(cancel_window_active, Ordering::Relaxed);
+
+                    let force_close_active = sec_to_end <= 5 && sec_to_end >= 0;
+
+                    if cancel_window_active && !force_close_cancel_done {
+                        force_close_cancel_done = true;
+                        let is_live = is_running.load(Ordering::Relaxed);
+                        if is_live {
+                            let exec_cancel = executor.clone();
+                            tokio::spawn(async move {
+                                match exec_cancel.cancel_all_orders().await {
+                                    Ok(_) => info!("🧯 倒计时15秒强制平仓：已取消所有挂单"),
+                                    Err(e) => warn!(error = %e, "🧯 倒计时15秒强制平仓：取消所有挂单失败"),
+                                }
+                            });
+                        }
+                    }
+
                     if force_close_active {
                         let sec_to_end_nonneg = sec_to_end.max(0);
                         let sell_countdown = Some(format!("{:02}:{:02}", sec_to_end_nonneg / 60, sec_to_end_nonneg % 60));
                         let is_live = is_running.load(Ordering::Relaxed);
-                        if !force_close_cancel_done {
-                            force_close_cancel_done = true;
-                            if is_live {
-                                let exec_cancel = executor.clone();
-                                tokio::spawn(async move {
-                                    match exec_cancel.cancel_all_orders().await {
-                                        Ok(_) => info!("🧯 倒计时15秒强制平仓：已取消所有挂单"),
-                                        Err(e) => warn!(error = %e, "🧯 倒计时15秒强制平仓：取消所有挂单失败"),
-                                    }
-                                });
-                            }
-                        }
 
                         let now_ts = now.timestamp();
                         for (market_id, (yes_token, no_token)) in &market_token_map {
@@ -1294,7 +1299,7 @@ async fn main() -> Result<()> {
                                             Ok(resp) => {
                                                 ptc.update_exposure_cost(token, sell_price, -size);
                                                 ptc.update_position(token, -size);
-                                                info!("✅ 强制平仓成功 | 市场:{} | YES 卖出 {} 份", market_disp, size);
+                                                info!("✅ 倒计时5秒强制平仓成功 | 市场:{} | YES 卖出 {} 份", market_disp, size);
                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
                                                 use chrono::Utc;
                                                 use rust_decimal::prelude::ToPrimitive;
@@ -1313,7 +1318,7 @@ async fn main() -> Result<()> {
                                                 });
                                             }
                                             Err(e) => {
-                                                warn!("❌ 强制平仓失败 | 市场:{} | YES | {}", market_disp, e);
+                                                warn!("❌ 倒计时5秒强制平仓失败 | 市场:{} | YES | {}", market_disp, e);
                                             }
                                         }
                                     });
@@ -1335,7 +1340,7 @@ async fn main() -> Result<()> {
                                             Ok(resp) => {
                                                 ptc.update_exposure_cost(token, sell_price, -size);
                                                 ptc.update_position(token, -size);
-                                                info!("✅ 强制平仓成功 | 市场:{} | NO 卖出 {} 份", market_disp, size);
+                                                info!("✅ 倒计时5秒强制平仓成功 | 市场:{} | NO 卖出 {} 份", market_disp, size);
                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
                                                 use chrono::Utc;
                                                 use rust_decimal::prelude::ToPrimitive;
@@ -1354,7 +1359,7 @@ async fn main() -> Result<()> {
                                                 });
                                             }
                                             Err(e) => {
-                                                warn!("❌ 强制平仓失败 | 市场:{} | NO | {}", market_disp, e);
+                                                warn!("❌ 倒计时5秒强制平仓失败 | 市场:{} | NO | {}", market_disp, e);
                                             }
                                         }
                                     });
@@ -1365,7 +1370,7 @@ async fn main() -> Result<()> {
                             countdown_once_state.remove(&(*market_id, 1u8));
                         }
                     }
-                    else if sec_to_end <= 60 && sec_to_end > 15 {
+                    else if sec_to_end <= 60 && sec_to_end > 5 {
                         let sec_to_end_nonneg = sec_to_end.max(0);
                         let sell_countdown = Some(format!("{:02}:{:02}", sec_to_end_nonneg / 60, sec_to_end_nonneg % 60));
                         let is_live = is_running.load(Ordering::Relaxed);
