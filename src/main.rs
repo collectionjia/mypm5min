@@ -803,7 +803,7 @@ async fn main() -> Result<()> {
                                 }
 
                                 {
-                                    let buy_price_target = Decimal::try_from(config.countdown_buy_price).unwrap_or(dec!(0.35));
+                                    let buy_price_target = Decimal::try_from(config.countdown_buy_price).unwrap_or(dec!(0.45));
                                     let qty = dec!(5.0);
 
                                     if sec_to_end > 10 {
@@ -925,9 +925,7 @@ async fn main() -> Result<()> {
                                 }
 
                                 {
-                                    let sell_price_target = Decimal::try_from(config.countdown_sell_price).unwrap_or(dec!(0.5));
-
-                                    if sec_to_end > 10 {
+                                    if sec_to_end <= 240 && sec_to_end > 10 {
                                         let yes_snapshot = countdown_once_state
                                             .get(&(market_id, 0u8))
                                             .map(|v| v.clone())
@@ -936,32 +934,27 @@ async fn main() -> Result<()> {
                                             .get(&(market_id, 1u8))
                                             .map(|v| v.clone())
                                             .unwrap_or(CountdownOnceState::Idle);
-                                        let both_bought = matches!(yes_snapshot, CountdownOnceState::Bought { .. })
-                                            && matches!(no_snapshot, CountdownOnceState::Bought { .. });
 
-                                        if !both_bought {
-                                            let try_sell_side = |side_key: u8, best_bid: Option<(Decimal, Decimal)>| {
-                                                let key = (market_id, side_key);
-                                                let snapshot = countdown_once_state
-                                                    .get(&key)
-                                                    .map(|v| v.clone())
-                                                    .unwrap_or(CountdownOnceState::Idle);
+                                        let yes_bought = matches!(yes_snapshot, CountdownOnceState::Bought { .. });
+                                        let no_bought = matches!(no_snapshot, CountdownOnceState::Bought { .. });
+                                        let both_bought = yes_bought && no_bought;
 
-                                                if let CountdownOnceState::Bought { token_id, qty, entry_price, side, .. } = snapshot {
-                                                    let should_sell = best_bid
-                                                        .as_ref()
-                                                        .map(|(p, _)| *p >= sell_price_target)
-                                                        .unwrap_or(false);
-                                                    if !should_sell {
-                                                        return;
-                                                    }
+                                        if !both_bought && (yes_bought ^ no_bought) {
+                                            let (side_key, best_bid) = if yes_bought {
+                                                (0u8, yes_best_bid)
+                                            } else {
+                                                (1u8, no_best_bid)
+                                            };
+                                            let key = (market_id, side_key);
+                                            let snapshot = countdown_once_state
+                                                .get(&key)
+                                                .map(|v| v.clone())
+                                                .unwrap_or(CountdownOnceState::Idle);
 
-                                                    let sell_size = adjust_order_size_for_fee(entry_price, qty);
-                                                    if sell_size <= dec!(0.01) {
-                                                        countdown_once_state.remove(&key);
-                                                        return;
-                                                    }
-
+                                            if let CountdownOnceState::Bought { token_id, qty, entry_price, side, .. } = snapshot {
+                                                let sell_price = best_bid.map(|(p, _)| p).unwrap_or(dec!(0.01));
+                                                let sell_size = adjust_order_size_for_fee(entry_price, qty);
+                                                if sell_size > dec!(0.01) {
                                                     let is_live = is_running.load(Ordering::Relaxed);
                                                     if is_live {
                                                         countdown_once_state.insert(
@@ -976,7 +969,7 @@ async fn main() -> Result<()> {
 
                                                         info!(
                                                             "⏱️ 倒计时策略卖出 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
-                                                            market_display, side, sell_price_target, sell_size
+                                                            market_display, side, sell_price, sell_size
                                                         );
 
                                                         let executor_clone = executor.clone();
@@ -985,13 +978,13 @@ async fn main() -> Result<()> {
                                                         let market_id_str = market_id.to_string();
                                                         let market_display_str = market_display.clone();
                                                         use rust_decimal::prelude::ToPrimitive;
-                                                        let price_f64 = sell_price_target.to_f64().unwrap_or(0.0);
+                                                        let price_f64 = sell_price.to_f64().unwrap_or(0.0);
 
                                                         tokio::spawn(async move {
-                                                            match executor_clone.sell_at_price(token_id, sell_price_target, sell_size).await {
+                                                            match executor_clone.sell_at_price(token_id, sell_price, sell_size).await {
                                                                 Ok(resp) => {
                                                                     info!("✅ 倒计时策略卖出下单成功 | order_id={}", resp.order_id);
-                                                                    pt.update_exposure_cost(token_id, sell_price_target, -sell_size);
+                                                                    pt.update_exposure_cost(token_id, sell_price, -sell_size);
                                                                     pt.update_position(token_id, -sell_size);
 
                                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
@@ -1008,7 +1001,7 @@ async fn main() -> Result<()> {
                                                                         profit: None,
                                                                     });
 
-                                                                    state.remove(&key);
+                                                                    state.insert(key, CountdownOnceState::Idle);
                                                                 }
                                                                 Err(e) => {
                                                                     warn!("❌ 倒计时策略卖出下单失败: {}", e);
@@ -1034,19 +1027,16 @@ async fn main() -> Result<()> {
                                                             market_id: market_id.to_string(),
                                                             market_slug: market_display.clone(),
                                                             side: side.clone(),
-                                                            price: sell_price_target.to_f64().unwrap_or(0.0),
+                                                            price: sell_price.to_f64().unwrap_or(0.0),
                                                             size: sell_size.to_f64().unwrap_or(0.0),
                                                             timestamp: Utc::now().timestamp(),
                                                             status: "SimSold".to_string(),
                                                             profit: None,
                                                         });
-                                                        countdown_once_state.remove(&key);
+                                                        countdown_once_state.insert(key, CountdownOnceState::Idle);
                                                     }
                                                 }
-                                            };
-
-                                            try_sell_side(0, yes_best_bid);
-                                            try_sell_side(1, no_best_bid);
+                                            }
                                         }
                                     }
                                 }

@@ -203,9 +203,9 @@ impl Config {
                 .parse()
                 .unwrap_or(0.0), // 默认0.0
             countdown_buy_price: env::var("COUNTDOWN_BUY_PRICE")
-                .unwrap_or_else(|_| "0.35".to_string())
+                .unwrap_or_else(|_| "0.45".to_string())
                 .parse()
-                .unwrap_or(0.35),
+                .unwrap_or(0.45),
             countdown_sell_price: env::var("COUNTDOWN_SELL_PRICE")
                 .unwrap_or_else(|_| "0.5".to_string())
                 .parse()

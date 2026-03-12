@@ -298,6 +298,7 @@
         // 使用当前页面访问的 host 作为 API base，这样无论是 localhost 还是 IP 访问都能正常工作
         const API_BASE = window.location.origin;
         let isRunning = false;
+        let didAutoStart = false;
         let lastTradeCount = -1;
         let initialUsdcBalance = null;
         let currentUsdcBalance = null;
@@ -324,6 +325,10 @@
                 const data = await response.json();
                 isRunning = data.running;
                 render();
+                if (!isRunning && !didAutoStart) {
+                    didAutoStart = true;
+                    await toggleBot();
+                }
             } catch (error) {
                 console.error('Error fetching status:', error);
                 document.getElementById('statusText').innerText = '连接失败';
