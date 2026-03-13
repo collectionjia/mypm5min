@@ -806,14 +806,14 @@ async fn main() -> Result<()> {
 
                                 {
                                     let qty = dec!(5.0);
-                                    let buy_trigger_upper_secs: i64 = 60;
-                                    let buy_trigger_lower_secs: i64 = 50;
+                                    let buy_trigger_upper_secs: i64 = 7;
+                                    let buy_trigger_lower_secs: i64 = 6;
                                     let buy_min_price = dec!(0.8);
                                     let buy_max_price = dec!(0.98);
                                     let take_profit_multiplier = dec!(1.05);
                                     let stop_loss_multiplier = dec!(0.9);
 
-                                    if sec_to_end > 15 {
+                                    if sec_to_end > 5 {
                                         let yes_state = countdown_once_state
                                             .get(&(market_id, 0u8))
                                             .map(|v| v.clone())
