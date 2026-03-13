@@ -240,14 +240,14 @@
         <!-- Bottom Section: Control & Trades -->
         <div class="bottom-section">
             <div class="control-panel">
-                <h1>Bot 控制台</h1>
+                <div style="margin-top: 0.75rem; font-size: 2.0rem; padding-top: 0.5rem; border-top: 1px solid #f0f0f0;">
+                    <strong>USDC 余额:</strong> <span id="usdc-balance" style="color: #10b981; font-weight: bold;">加载中...</span>
+                </div>
                 <div id="statusText" class="status stopped">检查中...</div>
                 <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
                 <button id="closeAllBtn" onclick="closeAllPositions()" class="btn-close-all">一键平仓</button>
                 <button id="redeemBtn" onclick="redeemRewards()" class="btn-redeem" style="display: none;">领取奖励</button>
-                <div style="margin-top: 0.75rem; font-size: 1.0rem; padding-top: 0.5rem; border-top: 1px solid #f0f0f0;">
-                    <strong>USDC 余额:</strong> <span id="usdc-balance" style="color: #10b981; font-weight: bold;">加载中...</span>
-                </div>
+                
                 <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
             </div>
 
