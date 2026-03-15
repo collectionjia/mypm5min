@@ -144,12 +144,15 @@ impl MarketDiscoverer {
 }
 
 fn extract_price_to_beat(s: &str) -> Option<f64> {
-    let bytes = s.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        if b != b'$' {
-            continue;
+    fn parse_number_from(s: &str) -> Option<f64> {
+        let bytes = s.as_bytes();
+        let mut j = 0usize;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
         }
-        let mut j = i + 1;
+        if j < bytes.len() && bytes[j] == b'$' {
+            j += 1;
+        }
         while j < bytes.len() && bytes[j].is_ascii_whitespace() {
             j += 1;
         }
@@ -163,15 +166,63 @@ fn extract_price_to_beat(s: &str) -> Option<f64> {
             }
         }
         if start == j {
+            return None;
+        }
+        let raw = &s[start..j];
+        let cleaned: String = raw.chars().filter(|&c| c != ',').collect();
+        cleaned.parse::<f64>().ok()
+    }
+
+    let lower = s.to_ascii_lowercase();
+    for kw in ["above", "below", "over", "under"] {
+        let mut from = 0usize;
+        while let Some(pos) = lower[from..].find(kw) {
+            let start = from + pos + kw.len();
+            if let Some(v) = parse_number_from(&s[start..]) {
+                if v.is_finite() && v >= 1000.0 {
+                    return Some(v);
+                }
+            }
+            from = start;
+        }
+    }
+
+    if let Some(v) = s
+        .split('$')
+        .skip(1)
+        .find_map(|tail| parse_number_from(tail))
+    {
+        if v.is_finite() && v >= 1000.0 {
+            return Some(v);
+        }
+    }
+
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !(bytes[i].is_ascii_digit()) {
+            i += 1;
             continue;
+        }
+        let start = i;
+        let mut j = i;
+        while j < bytes.len() {
+            let c = bytes[j];
+            if c.is_ascii_digit() || c == b',' || c == b'.' {
+                j += 1;
+            } else {
+                break;
+            }
         }
         let raw = &s[start..j];
         let cleaned: String = raw.chars().filter(|&c| c != ',').collect();
         if let Ok(v) = cleaned.parse::<f64>() {
-            if v.is_finite() && v > 0.0 {
+            if v.is_finite() && v >= 1000.0 {
                 return Some(v);
             }
         }
+        i = j;
     }
+
     None
 }
