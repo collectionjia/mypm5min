@@ -14,6 +14,7 @@ pub struct MarketInfo {
     pub yes_token_id: U256,
     pub no_token_id: U256,
     pub title: String,
+    pub price_to_beat: Option<f64>,
     pub end_date: DateTime<Utc>,
     pub crypto_symbol: String,
 }
@@ -126,14 +127,51 @@ impl MarketDiscoverer {
         // 获取endDate
         let end_date = market.end_date?;
 
+        let title = market.question.unwrap_or_default();
+        let price_to_beat = extract_price_to_beat(&title);
+
         Some(MarketInfo {
             market_id,
             slug: slug.clone(),
             yes_token_id,
             no_token_id,
-            title: market.question.unwrap_or_default(),
+            title,
+            price_to_beat,
             end_date,
             crypto_symbol,
         })
     }
+}
+
+fn extract_price_to_beat(s: &str) -> Option<f64> {
+    let bytes = s.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b != b'$' {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        let start = j;
+        while j < bytes.len() {
+            let c = bytes[j];
+            if c.is_ascii_digit() || c == b',' || c == b'.' {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if start == j {
+            continue;
+        }
+        let raw = &s[start..j];
+        let cleaned: String = raw.chars().filter(|&c| c != ',').collect();
+        if let Ok(v) = cleaned.parse::<f64>() {
+            if v.is_finite() && v > 0.0 {
+                return Some(v);
+            }
+        }
+    }
+    None
 }

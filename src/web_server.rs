@@ -10,6 +10,7 @@ use std::sync::{
     Arc,
 };
 use dashmap::DashMap;
+use tokio::sync::RwLock;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn, error};
@@ -34,6 +35,7 @@ pub struct MarketData {
     pub no_token_id: String,
     pub yes_price: Option<f64>,
     pub no_price: Option<f64>,
+    pub price_to_beat: Option<f64>,
     pub sum: Option<f64>,
     pub diff: Option<f64>,
     pub update_time: i64,
@@ -45,6 +47,22 @@ pub struct AppState {
     pub is_running: Arc<AtomicBool>,
     pub market_data: Arc<DashMap<String, MarketData>>,
     pub executor: Option<Arc<TradingExecutor>>,
+    pub countdown_settings: Arc<RwLock<CountdownSettings>>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct CountdownSettings {
+    pub side: String,
+    pub multiplier: f64,
+}
+
+impl Default for CountdownSettings {
+    fn default() -> Self {
+        Self {
+            side: "YES".to_string(),
+            multiplier: 2.0,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -104,13 +122,15 @@ pub async fn start_server(
     is_running: Arc<AtomicBool>,
     market_data: Arc<DashMap<String, MarketData>>,
     executor: Option<Arc<TradingExecutor>>,
+    countdown_settings: Arc<RwLock<CountdownSettings>>,
 ) {
-    let state = AppState { is_running, market_data, executor };
+    let state = AppState { is_running, market_data, executor, countdown_settings };
 
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/api/status", get(status_handler))
         .route("/api/control", post(control_handler))
+        .route("/api/countdown_settings", get(get_countdown_settings_handler).post(set_countdown_settings_handler))
         .route("/api/close_all", post(close_all_handler))
         .route("/api/redeem", post(redeem_handler))
         .route("/api/buy", post(buy_handler))
@@ -135,6 +155,28 @@ async fn index_handler() -> Html<&'static str> {
 async fn status_handler(State(state): State<AppState>) -> impl IntoResponse {
     let running = state.is_running.load(Ordering::Relaxed);
     Json(StatusResponse { running })
+}
+
+async fn get_countdown_settings_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let settings = state.countdown_settings.read().await.clone();
+    Json(settings)
+}
+
+async fn set_countdown_settings_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<CountdownSettings>,
+) -> impl IntoResponse {
+    let side = payload.side.trim().to_uppercase();
+    let side = if side == "YES" || side == "NO" { side } else { "YES".to_string() };
+    let multiplier = if payload.multiplier.is_finite() && payload.multiplier >= 1.0 {
+        payload.multiplier
+    } else {
+        2.0
+    };
+
+    let updated = CountdownSettings { side, multiplier };
+    *state.countdown_settings.write().await = updated.clone();
+    Json(updated)
 }
 
 async fn portfolio_handler() -> Json<PortfolioResponse> {

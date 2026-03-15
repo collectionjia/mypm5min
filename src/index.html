@@ -248,6 +248,31 @@
                 <button id="closeAllBtn" onclick="closeAllPositions()" class="btn-close-all">一键平仓</button>
                 <button id="redeemBtn" onclick="redeemRewards()" class="btn-redeem" style="display: none;">领取奖励</button>
                 
+                <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #f0f0f0; text-align: left;">
+                    <div style="font-weight: bold; margin-bottom: 0.5rem;">倒计时策略</div>
+
+                    <div style="margin-bottom: 0.5rem;">
+                        <div style="margin-bottom: 0.25rem; color: #666; font-size: 0.9rem;">买入方向</div>
+                        <label style="margin-right: 0.75rem;">
+                            <input type="radio" name="countdownSide" value="YES" checked onchange="saveCountdownSettings()">
+                            YES
+                        </label>
+                        <label>
+                            <input type="radio" name="countdownSide" value="NO" onchange="saveCountdownSettings()">
+                            NO
+                        </label>
+                    </div>
+
+                    <div style="margin-bottom: 0.5rem;">
+                        <div style="margin-bottom: 0.25rem; color: #666; font-size: 0.9rem;">倍投（步进 0.5）</div>
+                        <input id="martingaleMultiplier" type="number" min="1" step="0.5" value="2"
+                               style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box;"
+                               onchange="saveCountdownSettings()" oninput="renderMartingalePreview()">
+                    </div>
+
+                    <div id="martingalePreview" style="color: #666; font-size: 0.85rem; line-height: 1.4;"></div>
+                </div>
+
                 <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
             </div>
 
@@ -310,6 +335,64 @@
                 console.error('Error fetching status:', error);
                 document.getElementById('statusText').innerText = '连接失败';
                 document.getElementById('statusText').className = 'status stopped';
+            }
+        }
+
+        function getSelectedCountdownSide() {
+            const el = document.querySelector('input[name="countdownSide"]:checked');
+            return el ? el.value : 'YES';
+        }
+
+        function getMartingaleMultiplier() {
+            const v = toNumber(document.getElementById('martingaleMultiplier').value);
+            if (v == null || v < 1) return 2;
+            return v;
+        }
+
+        function renderMartingalePreview() {
+            const multiplier = getMartingaleMultiplier();
+            const base = 5;
+            const seq = [];
+            let cur = base;
+            for (let i = 0; i < 8; i++) {
+                seq.push(cur);
+                cur = cur * multiplier;
+            }
+            const txt = `示例：${seq.map(x => formatMoney(x).replace(/\.00$/, '')).join('、')}…`;
+            document.getElementById('martingalePreview').innerText = txt;
+        }
+
+        async function loadCountdownSettings() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/countdown_settings`);
+                const s = await resp.json();
+                if (s && (s.side === 'YES' || s.side === 'NO')) {
+                    const radio = document.querySelector('input[name="countdownSide"][value="' + s.side + '"]');
+                    if (radio) radio.checked = true;
+                }
+                if (s && typeof s.multiplier === 'number' && Number.isFinite(s.multiplier) && s.multiplier >= 1) {
+                    document.getElementById('martingaleMultiplier').value = String(s.multiplier);
+                }
+            } catch (e) {
+                console.error('Error loading countdown settings:', e);
+            } finally {
+                renderMartingalePreview();
+            }
+        }
+
+        async function saveCountdownSettings() {
+            renderMartingalePreview();
+            try {
+                await fetch(`${API_BASE}/api/countdown_settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        side: getSelectedCountdownSide(),
+                        multiplier: getMartingaleMultiplier(),
+                    }),
+                });
+            } catch (e) {
+                console.error('Error saving countdown settings:', e);
             }
         }
 
@@ -577,6 +660,9 @@
                             <div class="market-name">${m.name}</div>
                             <div class="countdown">⏳ ${m.countdown}</div>
                         </div>
+                        <div style="margin-bottom: 0.6rem; color: #666; font-size: 0.95rem;">
+                            Price to beat: <b>${m.price_to_beat != null ? Math.round(m.price_to_beat).toLocaleString() : '--'}</b>
+                        </div>
                         <div class="price-row">
                             <span class="price-label">YES</span>
                             <span class="price-value yes-price">${m.yes_price != null ? m.yes_price.toFixed(4) : '--'}</span>
@@ -659,6 +745,7 @@
         }
 
         // Initial load
+        loadCountdownSettings();
         updateStatus();
         updateTrades();
         updateMarkets();
