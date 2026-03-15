@@ -778,6 +778,8 @@ async fn main() -> Result<()> {
                                 let force_close_window_active = sec_to_end <= 15 && sec_to_end >= 0;
                                 countdown_in_progress.store(force_close_window_active, Ordering::Relaxed);
                                 let sec_to_end_nonneg = sec_to_end.max(0);
+                                let sec_since_start = now_countdown.timestamp() - current_window_timestamp;
+                                let sec_since_start_nonneg = sec_since_start.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
                                 let countdown_seconds = sec_to_end_nonneg % 60;
                                 let countdown_str = format!("{:02}:{:02}", countdown_minutes, countdown_seconds);
@@ -809,12 +811,9 @@ async fn main() -> Result<()> {
 
                                 {
                                     let base_qty = dec!(5.0);
-                                    let buy_trigger_upper_secs: i64 = 7;
-                                    let buy_trigger_lower_secs: i64 = 6;
-                                    let buy_min_price = dec!(0.8);
-                                    let buy_max_price = dec!(0.98);
+                                    let buy_trigger_max_secs_from_start: i64 = 2;
 
-                                    if sec_to_end > 5 {
+                                    if sec_since_start_nonneg <= buy_trigger_max_secs_from_start {
                                         let yes_state = countdown_once_state
                                             .get(&(market_id, 0u8))
                                             .map(|v| v.clone())
@@ -946,8 +945,6 @@ async fn main() -> Result<()> {
                                         if is_yes_idle && is_no_idle {
                                             let attempted = countdown_2min_done.get(&market_id).map(|v| *v).unwrap_or(false);
                                             if !attempted
-                                                && sec_to_end_nonneg <= buy_trigger_upper_secs
-                                                && sec_to_end_nonneg >= buy_trigger_lower_secs
                                             {
                                                 let settings = countdown_settings.read().await.clone();
                                                 let desired_side = settings.side.trim().to_uppercase();
@@ -967,20 +964,11 @@ async fn main() -> Result<()> {
                                                     qty = max_qty;
                                                 }
 
+                                                let limit_price = dec!(0.5);
                                                 if desired_side == "NO" {
-                                                    let no_price = no_best_ask.as_ref().map(|(p, _)| *p);
-                                                    if let Some(np) = no_price {
-                                                        if np >= buy_min_price && np <= buy_max_price {
-                                                            try_buy(1, pair.no_book.asset_id, "NO".to_string(), np, qty);
-                                                        }
-                                                    }
+                                                    try_buy(1, pair.no_book.asset_id, "NO".to_string(), limit_price, qty);
                                                 } else {
-                                                    let yes_price = yes_best_ask.as_ref().map(|(p, _)| *p);
-                                                    if let Some(yp) = yes_price {
-                                                        if yp >= buy_min_price && yp <= buy_max_price {
-                                                            try_buy(0, pair.yes_book.asset_id, "YES".to_string(), yp, qty);
-                                                        }
-                                                    }
+                                                    try_buy(0, pair.yes_book.asset_id, "YES".to_string(), limit_price, qty);
                                                 }
                                             }
                                         }
