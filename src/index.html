@@ -365,12 +365,15 @@
         function getSimOutcome(trade) {
             const m = latestMarketMap.get(trade.market_id);
             if (!m) return null;
+            const yp = m.yes_price;
+            const np = m.no_price;
+            if (yp == null || np == null) return null;
             if (trade.side === 'YES') {
-                if (m.yes_price != null && m.yes_price >= 0.99) return 'win';
-                if (m.yes_price != null && m.yes_price <= 0.01) return 'lose';
+                if (yp >= 0.99 && np <= 0.01) return 'win';
+                if (yp <= 0.01 && np >= 0.99) return 'lose';
             } else if (trade.side === 'NO') {
-                if (m.no_price != null && m.no_price >= 0.99) return 'win';
-                if (m.no_price != null && m.no_price <= 0.01) return 'lose';
+                if (np >= 0.99 && yp <= 0.01) return 'win';
+                if (np <= 0.01 && yp >= 0.99) return 'lose';
             }
             return null;
         }
@@ -475,6 +478,9 @@
                     } else if (trade.status === 'SimSkipped') {
                         statusClass = 'status-pending';
                         statusText = '跳过';
+                    } else if (trade.status === 'SimPosted' || trade.status === 'BuyPosted') {
+                        statusClass = 'status-pending';
+                        statusText = '挂单中';
                     }
 
                     const price = toNumber(trade.price);

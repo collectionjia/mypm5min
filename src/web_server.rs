@@ -604,22 +604,22 @@ async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
         }
 
         if let Some(market) = state.market_data.get(&trade.market_id) {
-            // YES方向
+            let yes_price = market.yes_price;
+            let no_price = market.no_price;
+
             if trade.side == "YES" {
-                if let Some(yes_price) = market.yes_price {
-                    if yes_price >= 0.99 {
+                if let (Some(yp), Some(np)) = (yes_price, no_price) {
+                    if yp >= 0.99 {
                         trade.status = "Won".to_string();
-                    } else if yes_price <= 0.01 {
+                    } else if yp <= 0.01 {
                         trade.status = "Lost".to_string();
                     }
                 }
-            } 
-            // NO方向
-            else if trade.side == "NO" {
-                if let Some(no_price) = market.no_price {
-                    if no_price >= 0.99 {
+            } else if trade.side == "NO" {
+                if let (Some(yp), Some(np)) = (yes_price, no_price) {
+                    if np >= 0.99 {
                         trade.status = "Won".to_string();
-                    } else if no_price <= 0.01 {
+                    } else if np <= 0.01 {
                         trade.status = "Lost".to_string();
                     }
                 }
