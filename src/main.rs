@@ -818,7 +818,8 @@ async fn main() -> Result<()> {
 
                                 {
                                     let is_live = is_running.load(Ordering::Relaxed);
-                                    let entry_trigger_secs_to_end: i64 = 60;
+                                    let entry_trigger_secs_to_end_max: i64 = 60;
+                                    let entry_trigger_secs_to_end_min: i64 = 40;
                                     let total_price_cap = dec!(0.95);
                                     let first_leg_min_price = dec!(0.60);
                                     let second_leg_fixed_price = dec!(0.05);
@@ -862,7 +863,9 @@ async fn main() -> Result<()> {
                                             let yes_ask = yes_best_ask.map(|(p, _)| p.round_dp(2));
                                             let no_ask = no_best_ask.map(|(p, _)| p.round_dp(2));
 
-                                            if sec_to_end_nonneg <= entry_trigger_secs_to_end {
+                                            if sec_to_end_nonneg <= entry_trigger_secs_to_end_max
+                                                && sec_to_end_nonneg >= entry_trigger_secs_to_end_min
+                                            {
                                                 let (side_key, token_id, side_name, limit_price) = match (yes_ask, no_ask) {
                                                     (Some(yp), Some(np)) => {
                                                         if yp >= np {
@@ -979,7 +982,7 @@ async fn main() -> Result<()> {
                                                 let qty = if qty > max_qty { max_qty } else { qty };
 
                                                 info!(
-                                                    "⏱️ 倒计时策略入场买入 | 市场:{} | 倒数<=60s | {} 价格更高 | 价格:{:.4} | 份额:{:.2}",
+                                                    "⏱️ 倒计时策略入场买入 | 市场:{} | 倒数60~40s | {} 价格更高 | 价格:{:.4} | 份额:{:.2}",
                                                     market_display, side_name, limit_price, qty
                                                 );
 
