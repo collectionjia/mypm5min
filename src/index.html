@@ -243,6 +243,9 @@
                 <div style="margin-top: 0.75rem; font-size: 2.0rem; padding-top: 0.5rem; border-top: 1px solid #f0f0f0;">
                     <strong>USDC 余额:</strong> <span id="usdc-balance" style="color: #10b981; font-weight: bold;">加载中...</span>
                 </div>
+                <div style="margin-top: 0.5rem; font-size: 1.2rem;">
+                    <strong>模拟余额:</strong> <span id="sim-balance" style="color: #3b82f6; font-weight: bold;">50.00</span>
+                </div>
                 <div id="statusText" class="status stopped">检查中...</div>
                 <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
                 <button id="closeAllBtn" onclick="closeAllPositions()" class="btn-close-all">一键平仓</button>
@@ -308,6 +311,10 @@
         let lastTradeCount = -1;
         let initialUsdcBalance = null;
         let currentUsdcBalance = null;
+        let latestMarketMap = new Map();
+        const SIM_BALANCE_KEY = 'pm_sim_balance_v1';
+        const SIM_APPLIED_BUYS_KEY = 'pm_sim_applied_buys_v1';
+        const SIM_APPLIED_SETTLES_KEY = 'pm_sim_applied_settles_v1';
 
         function toNumber(v) {
             const n = Number(v);
@@ -323,6 +330,91 @@
         function formatMoney(v) {
             if (!Number.isFinite(v)) return '--';
             return v.toFixed(2);
+        }
+
+        function getJsonArray(key) {
+            try {
+                const raw = localStorage.getItem(key);
+                if (!raw) return [];
+                const v = JSON.parse(raw);
+                return Array.isArray(v) ? v : [];
+            } catch {
+                return [];
+            }
+        }
+
+        function setJsonArray(key, arr) {
+            try {
+                localStorage.setItem(key, JSON.stringify(arr));
+            } catch {
+            }
+        }
+
+        function getSimBalance() {
+            const raw = localStorage.getItem(SIM_BALANCE_KEY);
+            const v = toNumber(raw);
+            return v == null ? 50 : v;
+        }
+
+        function setSimBalance(v) {
+            if (!Number.isFinite(v)) return;
+            localStorage.setItem(SIM_BALANCE_KEY, String(v));
+            const el = document.getElementById('sim-balance');
+            if (el) el.textContent = v.toFixed(2);
+        }
+
+        function initSimBalance() {
+            const raw = localStorage.getItem(SIM_BALANCE_KEY);
+            if (toNumber(raw) == null) {
+                localStorage.setItem(SIM_BALANCE_KEY, '50');
+            }
+            setSimBalance(getSimBalance());
+        }
+
+        function getSimOutcome(trade) {
+            const m = latestMarketMap.get(trade.market_id);
+            if (!m) return null;
+            if (trade.side === 'YES') {
+                if (m.yes_price != null && m.yes_price >= 0.99) return 'win';
+                if (m.yes_price != null && m.yes_price <= 0.01) return 'lose';
+            } else if (trade.side === 'NO') {
+                if (m.no_price != null && m.no_price >= 0.99) return 'win';
+                if (m.no_price != null && m.no_price <= 0.01) return 'lose';
+            }
+            return null;
+        }
+
+        function applySimBalance(trades) {
+            const appliedBuys = new Set(getJsonArray(SIM_APPLIED_BUYS_KEY));
+            const appliedSettles = new Set(getJsonArray(SIM_APPLIED_SETTLES_KEY));
+
+            let bal = getSimBalance();
+            const ordered = [...trades].reverse();
+
+            for (const t of ordered) {
+                if (t.status !== 'SimBought') continue;
+                if (!appliedBuys.has(t.id)) {
+                    const price = toNumber(t.price);
+                    const size = toNumber(t.size);
+                    if (price != null && size != null) {
+                        bal -= price * size;
+                    }
+                    appliedBuys.add(t.id);
+                }
+
+                const outcome = getSimOutcome(t);
+                if (outcome && !appliedSettles.has(t.id)) {
+                    const size = toNumber(t.size);
+                    if (outcome === 'win' && size != null) {
+                        bal += size;
+                    }
+                    appliedSettles.add(t.id);
+                }
+            }
+
+            setJsonArray(SIM_APPLIED_BUYS_KEY, Array.from(appliedBuys));
+            setJsonArray(SIM_APPLIED_SETTLES_KEY, Array.from(appliedSettles));
+            setSimBalance(bal);
         }
 
         async function updateStatus() {
@@ -409,6 +501,8 @@
                     lastTradeCount = trades.length;
                 }
 
+                applySimBalance(trades);
+
                 const tbody = document.querySelector('#trades-table tbody');
                 
                 if (trades.length === 0) {
@@ -448,6 +542,14 @@
                     } else if (trade.status === 'SimBought') {
                         statusClass = 'status-bought';
                         statusText = '模拟买入';
+                        const outcome = getSimOutcome(trade);
+                        if (outcome === 'win') {
+                            statusClass = 'status-won';
+                            statusText = '模拟赢';
+                        } else if (outcome === 'lose') {
+                            statusClass = 'status-lost';
+                            statusText = '模拟输';
+                        }
                     } else if (trade.status === 'SimSold') {
                         statusClass = 'status-sold';
                         statusText = '模拟卖出';
@@ -631,6 +733,7 @@
                 const response = await fetch(`${API_BASE}/api/markets`);
                 const markets = await response.json();
                 const grid = document.getElementById('markets-grid');
+                latestMarketMap = new Map(markets.map(m => [m.id, m]));
                 
                 if (markets.length === 0) {
                     grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; color: #666; padding: 2rem;">暂无活跃市场数据</div>';
@@ -746,9 +849,10 @@
 
         // Initial load
         loadCountdownSettings();
+        initSimBalance();
         updateStatus();
-        updateTrades();
         updateMarkets();
+        updateTrades();
         updatePortfolio();
         
         // Auto refresh status every 2 seconds
