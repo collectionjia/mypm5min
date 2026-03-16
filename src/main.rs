@@ -785,8 +785,8 @@ async fn main() -> Result<()> {
                                 let force_close_window_active = sec_to_end <= 15 && sec_to_end >= 0;
                                 countdown_in_progress.store(force_close_window_active, Ordering::Relaxed);
                                 let sec_to_end_nonneg = sec_to_end.max(0);
-                                let sec_since_start = now_countdown.timestamp() - current_window_timestamp;
-                                let sec_since_start_nonneg = sec_since_start.max(0);
+                                let _sec_since_start = now_countdown.timestamp() - current_window_timestamp;
+                                let _sec_since_start_nonneg = _sec_since_start.max(0);
                                 let countdown_minutes = sec_to_end_nonneg / 60;
                                 let countdown_seconds = sec_to_end_nonneg % 60;
                                 let countdown_str = format!("{:02}:{:02}", countdown_minutes, countdown_seconds);
@@ -1006,7 +1006,7 @@ async fn main() -> Result<()> {
                                                     let order_id = format!("SIM-{}", uuid::Uuid::new_v4());
                                                     let buy_countdown = Some(countdown_str.clone());
                                                     add_trade(TradeRecord {
-                                                        id: order_id,
+                                                        id: order_id.clone(),
                                                         market_id: market_id.to_string(),
                                                         market_slug: market_display.clone(),
                                                         side: side_name,
