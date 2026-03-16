@@ -257,7 +257,10 @@
 
             <div id="trades-container">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
-                    <h3 style="margin: 0;">交易统计</h3>
+                    <div style="display:flex; flex-direction: column; gap: 0.25rem;">
+                        <h3 style="margin: 0;">交易统计</h3>
+                        <div id="trades-summary" style="color: #666; font-size: 0.85rem;">总:0 | 赢:0</div>
+                    </div>
                     <button class="btn" style="width: auto; margin-bottom: 0; padding: 0.2rem 0.45rem; font-size: 0.85rem;" onclick="clearTrades()">清空</button>
                 </div>
                 <table id="trades-table">
@@ -438,6 +441,17 @@
                 }
 
                 applySimBalance(trades);
+
+                const summaryEl = document.getElementById('trades-summary');
+                if (summaryEl) {
+                    const total = trades.filter(t => t.status === 'Won' || t.status === 'Lost').length;
+                    const won = trades.filter(t => t.status === 'Won').length;
+                    const lost = trades.filter(t => t.status === 'Lost').length;
+                    const skipped = trades.filter(t => t.status === 'SimSkipped').length;
+                    const posted = trades.filter(t => t.status === 'SimPosted' || t.status === 'BuyPosted').length;
+                    const ongoing = trades.length - won - lost - skipped - posted;
+                    summaryEl.textContent = `总:${total} | 赢:${won} | 输:${lost} | 跳过:${skipped} | 挂单中:${posted} | 进行中:${ongoing}`;
+                }
 
                 const tbody = document.querySelector('#trades-table tbody');
                 
