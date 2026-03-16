@@ -11,7 +11,6 @@ use poly_5min_bot::positions::{get_positions, Position};
 
 use anyhow::Result;
 use dashmap::DashMap;
-use std::sync::atomic::AtomicU32;
 use futures::StreamExt;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -579,9 +578,7 @@ async fn main() -> Result<()> {
 
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
-        let countdown_once_state: Arc<DashMap<(B256, u8), CountdownOnceState>> = Arc::new(DashMap::new());
-        let countdown_2min_done: DashMap<B256, bool> = DashMap::new();
-        let martingale_step: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+        let strategy_state: DashMap<B256, u8> = DashMap::new();
 
         // 监控订单簿更新
         loop {
@@ -810,169 +807,194 @@ async fn main() -> Result<()> {
                                 }
 
                                 {
-                                    let base_qty = dec!(5.0);
-                                    let buy_trigger_max_secs_from_start: i64 = 2;
+                                    let state = strategy_state.get(&market_id).map(|v| *v).unwrap_or(0);
+                                    let is_live = is_running.load(Ordering::Relaxed);
+                                    let second_leg_limit_price = dec!(0.05);
+                                    let entry_trigger_secs_to_end: i64 = 60;
 
-                                    if sec_since_start_nonneg <= buy_trigger_max_secs_from_start {
-                                        let yes_state = countdown_once_state
-                                            .get(&(market_id, 0u8))
-                                            .map(|v| v.clone())
-                                            .unwrap_or(CountdownOnceState::Idle);
-                                        let no_state = countdown_once_state
-                                            .get(&(market_id, 1u8))
-                                            .map(|v| v.clone())
-                                            .unwrap_or(CountdownOnceState::Idle);
+                                    if sec_to_end > 0 {
+                                        if state == 0 {
+                                            let yes_ask = yes_best_ask.map(|(p, _)| p.round_dp(2));
+                                            let no_ask = no_best_ask.map(|(p, _)| p.round_dp(2));
 
-                                        let is_yes_idle = matches!(yes_state, CountdownOnceState::Idle);
-                                        let is_no_idle = matches!(no_state, CountdownOnceState::Idle);
+                                            if sec_to_end_nonneg <= entry_trigger_secs_to_end {
+                                                let (yp, np) = match (yes_ask, no_ask) {
+                                                    (Some(yp), Some(np)) => (yp, np),
+                                                    _ => {
+                                                        continue;
+                                                    }
+                                                };
 
-                                        let try_buy = |side_key: u8, token_id: U256, side: String, limit_price: Decimal, qty: Decimal| {
-                                            let attempted = countdown_2min_done.get(&market_id).map(|v| *v).unwrap_or(false);
-                                            if attempted {
-                                                return;
-                                            }
-                                            if let Some(existing) = countdown_once_state.get(&(market_id, side_key)) {
-                                                debug!(
-                                                    market_id = %market_id,
-                                                    side_key = side_key,
-                                                    existing = ?existing.value(),
-                                                    "⏭️ 倒计时策略跳过买入：已有状态"
-                                                );
-                                                return;
-                                            }
-                                            let is_live = is_running.load(Ordering::Relaxed);
-                                            let key = (market_id, side_key);
-                                            if is_live {
-                                                countdown_2min_done.insert(market_id, true);
-                                                countdown_once_state.insert(
-                                                    key.clone(),
-                                                    CountdownOnceState::Buying {
-                                                        market_id,
-                                                        token_id,
-                                                        qty,
-                                                        side: side.clone(),
-                                                    },
-                                                );
+                                                let (side_key, token_id, side_name, limit_price) = if yp >= np {
+                                                    (0u8, pair.yes_book.asset_id, "YES".to_string(), yp)
+                                                } else {
+                                                    (1u8, pair.no_book.asset_id, "NO".to_string(), np)
+                                                };
+
+                                                let qty = dec!(5.0);
+                                                let max_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(100.0));
+                                                let qty = if qty > max_qty { max_qty } else { qty };
 
                                                 info!(
-                                                    "⏱️ 倒计时策略买入 | 市场:{} | 方向:{} | 价格:{:.4} | 份额:{:.2}",
-                                                    market_display, side, limit_price, qty
+                                                    "⏱️ 倒计时策略入场买入 | 市场:{} | 倒数<=90s | {} 价格更高 | 价格:{:.4} | 份额:{:.2}",
+                                                    market_display, side_name, limit_price, qty
                                                 );
 
-                                                let executor_clone = executor.clone();
+                                                if is_live {
+                                                    let executor_clone = executor.clone();
+                                                    let pt = _risk_manager.position_tracker();
+                                                    let market_id_str = market_id.to_string();
+                                                    let market_display_str = market_display.clone();
+                                                    let buy_countdown = Some(countdown_str.clone());
+                                                    use rust_decimal::prelude::ToPrimitive;
+                                                    let price_f64 = limit_price.to_f64().unwrap_or(0.0);
+                                                    tokio::spawn(async move {
+                                                        match executor_clone.buy_at_price(token_id, limit_price, qty).await {
+                                                            Ok(resp) => {
+                                                                pt.update_exposure_cost(token_id, limit_price, qty);
+                                                                pt.update_position(token_id, qty);
+                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                use chrono::Utc;
+                                                                add_trade(TradeRecord {
+                                                                    id: resp.order_id.clone(),
+                                                                    market_id: market_id_str,
+                                                                    market_slug: market_display_str,
+                                                                    side: side_name,
+                                                                    price: price_f64,
+                                                                    size: qty.to_f64().unwrap_or(0.0),
+                                                                    timestamp: Utc::now().timestamp(),
+                                                                    status: "Bought".to_string(),
+                                                                    profit: None,
+                                                                    buy_countdown,
+                                                                    sell_countdown: None,
+                                                                });
+                                                            }
+                                                            Err(e) => {
+                                                                warn!("❌ 倒计时策略第一腿下单失败: {}", e);
+                                                            }
+                                                        }
+                                                    });
+                                                } else {
+                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                    use chrono::Utc;
+                                                    use rust_decimal::prelude::ToPrimitive;
+                                                    let order_id = format!("SIM-{}", uuid::Uuid::new_v4());
+                                                    let buy_countdown = Some(countdown_str.clone());
+                                                    add_trade(TradeRecord {
+                                                        id: order_id,
+                                                        market_id: market_id.to_string(),
+                                                        market_slug: market_display.clone(),
+                                                        side: side_name,
+                                                        price: limit_price.to_f64().unwrap_or(0.0),
+                                                        size: qty.to_f64().unwrap_or(0.0),
+                                                        timestamp: Utc::now().timestamp(),
+                                                        status: "SimBought".to_string(),
+                                                        profit: None,
+                                                        buy_countdown,
+                                                        sell_countdown: None,
+                                                    });
+                                                }
+
+                                                strategy_state.insert(market_id, if side_key == 0 { 1 } else { 2 });
+                                            }
+                                        } else if state == 1 || state == 2 {
+                                            let qty2 = dec!(5.0);
+                                            let max_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(100.0));
+                                            let qty2 = if qty2 > max_qty { max_qty } else { qty2 };
+
+                                            info!(
+                                                "⏱️ 倒计时策略第二腿下单 | 市场:{} | YES+NO 各挂一次0.05 | 份额:{:.2}",
+                                                market_display, qty2
+                                            );
+
+                                            if is_live {
+                                                let exec = executor.clone();
                                                 let pt = _risk_manager.position_tracker();
-                                                let state = countdown_once_state.clone();
+                                                let yes_token_id = pair.yes_book.asset_id;
+                                                let no_token_id = pair.no_book.asset_id;
                                                 let market_id_str = market_id.to_string();
                                                 let market_display_str = market_display.clone();
                                                 let buy_countdown = Some(countdown_str.clone());
                                                 use rust_decimal::prelude::ToPrimitive;
-                                                let price_f64 = limit_price.to_f64().unwrap_or(0.0);
-
+                                                let price_f64 = second_leg_limit_price.to_f64().unwrap_or(0.0);
                                                 tokio::spawn(async move {
-                                                    match executor_clone.buy_at_price(token_id, limit_price, qty).await {
-                                                        Ok(resp) => {
-                                                            info!("✅ 倒计时策略买入下单成功 | order_id={}", resp.order_id);
-                                                            pt.update_exposure_cost(token_id, limit_price, qty);
-                                                            pt.update_position(token_id, qty);
+                                                    let yes = exec.buy_at_price(yes_token_id, second_leg_limit_price, qty2);
+                                                    let no = exec.buy_at_price(no_token_id, second_leg_limit_price, qty2);
+                                                    let (yes_res, no_res) = tokio::join!(yes, no);
 
-                                                            use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                            use chrono::Utc;
-                                                            add_trade(TradeRecord {
-                                                                id: resp.order_id,
-                                                                market_id: market_id_str,
-                                                                market_slug: market_display_str,
-                                                                side: side.clone(),
-                                                                price: price_f64,
-                                                                size: qty.to_f64().unwrap_or(0.0),
-                                                                timestamp: Utc::now().timestamp(),
-                                                                status: "Bought".to_string(),
-                                                                profit: None,
-                                                                buy_countdown,
-                                                                sell_countdown: None,
-                                                            });
+                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                    use chrono::Utc;
 
-                                                            state.insert(
-                                                                key,
-                                                                CountdownOnceState::Bought {
-                                                                    market_id,
-                                                                    token_id,
-                                                                    qty,
-                                                                    entry_price: limit_price,
-                                                                    side,
-                                                                },
-                                                            );
-                                                        }
-                                                        Err(e) => {
-                                                            warn!("❌ 倒计时策略买入下单失败: {}", e);
-                                                            state.remove(&key);
-                                                        }
+                                                    if let Ok(resp) = yes_res {
+                                                        pt.update_exposure_cost(yes_token_id, second_leg_limit_price, qty2);
+                                                        pt.update_position(yes_token_id, qty2);
+                                                        add_trade(TradeRecord {
+                                                            id: resp.order_id.clone(),
+                                                            market_id: market_id_str.clone(),
+                                                            market_slug: market_display_str.clone(),
+                                                            side: "YES".to_string(),
+                                                            price: price_f64,
+                                                            size: qty2.to_f64().unwrap_or(0.0),
+                                                            timestamp: Utc::now().timestamp(),
+                                                            status: "Bought".to_string(),
+                                                            profit: None,
+                                                            buy_countdown: buy_countdown.clone(),
+                                                            sell_countdown: None,
+                                                        });
+                                                    }
+                                                    if let Ok(resp) = no_res {
+                                                        pt.update_exposure_cost(no_token_id, second_leg_limit_price, qty2);
+                                                        pt.update_position(no_token_id, qty2);
+                                                        add_trade(TradeRecord {
+                                                            id: resp.order_id.clone(),
+                                                            market_id: market_id_str.clone(),
+                                                            market_slug: market_display_str.clone(),
+                                                            side: "NO".to_string(),
+                                                            price: price_f64,
+                                                            size: qty2.to_f64().unwrap_or(0.0),
+                                                            timestamp: Utc::now().timestamp(),
+                                                            status: "Bought".to_string(),
+                                                            profit: None,
+                                                            buy_countdown: buy_countdown.clone(),
+                                                            sell_countdown: None,
+                                                        });
                                                     }
                                                 });
                                             } else {
-                                                countdown_2min_done.insert(market_id, true);
                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
                                                 use chrono::Utc;
                                                 use rust_decimal::prelude::ToPrimitive;
                                                 let buy_countdown = Some(countdown_str.clone());
-                                                let order_id = format!("SIM-{}", uuid::Uuid::new_v4());
                                                 add_trade(TradeRecord {
-                                                    id: order_id,
+                                                    id: format!("SIM-{}", uuid::Uuid::new_v4()),
                                                     market_id: market_id.to_string(),
                                                     market_slug: market_display.clone(),
-                                                    side: side.clone(),
-                                                    price: limit_price.to_f64().unwrap_or(0.0),
-                                                    size: qty.to_f64().unwrap_or(0.0),
+                                                    side: "YES".to_string(),
+                                                    price: second_leg_limit_price.to_f64().unwrap_or(0.0),
+                                                    size: qty2.to_f64().unwrap_or(0.0),
+                                                    timestamp: Utc::now().timestamp(),
+                                                    status: "SimBought".to_string(),
+                                                    profit: None,
+                                                    buy_countdown: buy_countdown.clone(),
+                                                    sell_countdown: None,
+                                                });
+                                                add_trade(TradeRecord {
+                                                    id: format!("SIM-{}", uuid::Uuid::new_v4()),
+                                                    market_id: market_id.to_string(),
+                                                    market_slug: market_display.clone(),
+                                                    side: "NO".to_string(),
+                                                    price: second_leg_limit_price.to_f64().unwrap_or(0.0),
+                                                    size: qty2.to_f64().unwrap_or(0.0),
                                                     timestamp: Utc::now().timestamp(),
                                                     status: "SimBought".to_string(),
                                                     profit: None,
                                                     buy_countdown,
                                                     sell_countdown: None,
                                                 });
-
-                                                countdown_once_state.insert(
-                                                    key,
-                                                    CountdownOnceState::Bought {
-                                                        market_id,
-                                                        token_id,
-                                                        qty,
-                                                        entry_price: limit_price,
-                                                        side,
-                                                    },
-                                                );
                                             }
-                                        };
 
-                                        if is_yes_idle && is_no_idle {
-                                            let attempted = countdown_2min_done.get(&market_id).map(|v| *v).unwrap_or(false);
-                                            if !attempted
-                                            {
-                                                let settings = countdown_settings.read().await.clone();
-                                                let desired_side = settings.side.trim().to_uppercase();
-                                                let multiplier = Decimal::try_from(settings.multiplier).unwrap_or(dec!(2.0));
-                                                let current_step = martingale_step.load(Ordering::Relaxed);
-                                                let mut qty = base_qty;
-                                                for _ in 0..current_step {
-                                                    qty *= multiplier;
-                                                }
-
-                                                let step_size = dec!(0.5);
-                                                qty = (qty / step_size).floor() * step_size;
-                                                qty = (qty * dec!(100.0)).floor() / dec!(100.0);
-
-                                                let max_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(100.0));
-                                                if qty > max_qty {
-                                                    qty = max_qty;
-                                                }
-
-                                                let limit_price = dec!(0.5);
-                                                if desired_side == "NO" {
-                                                    try_buy(1, pair.no_book.asset_id, "NO".to_string(), limit_price, qty);
-                                                } else {
-                                                    try_buy(0, pair.yes_book.asset_id, "YES".to_string(), limit_price, qty);
-                                                }
-                                            }
+                                            strategy_state.insert(market_id, 3);
                                         }
-
                                     }
                                 }
 
