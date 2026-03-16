@@ -603,26 +603,23 @@ async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
             continue;
         }
 
-        if let Some(market) = state.market_data.get(&trade.market_id) {
-            let yes_price = market.yes_price;
-            let no_price = market.no_price;
+        let (yes_price, no_price) = state
+            .market_data
+            .get(&trade.market_id)
+            .map(|m| (m.yes_price, m.no_price))
+            .unwrap_or((None, None));
 
-            if trade.side == "YES" {
-                if let (Some(yp), Some(np)) = (yes_price, no_price) {
-                    if yp >= 0.99 {
-                        trade.status = "Won".to_string();
-                    } else if yp <= 0.01 {
-                        trade.status = "Lost".to_string();
-                    }
-                }
-            } else if trade.side == "NO" {
-                if let (Some(yp), Some(np)) = (yes_price, no_price) {
-                    if np >= 0.99 {
-                        trade.status = "Won".to_string();
-                    } else if np <= 0.01 {
-                        trade.status = "Lost".to_string();
-                    }
-                }
+        if trade.side == "YES" {
+            if yes_price.is_none() || yes_price.unwrap_or(0.0) > 0.99 {
+                trade.status = "Won".to_string();
+            } else if yes_price.unwrap_or(1.0) < 0.01 {
+                trade.status = "Lost".to_string();
+            }
+        } else if trade.side == "NO" {
+            if no_price.is_none() || no_price.unwrap_or(0.0) > 0.99 {
+                trade.status = "Won".to_string();
+            } else if no_price.unwrap_or(1.0) < 0.01 {
+                trade.status = "Lost".to_string();
             }
         }
     }

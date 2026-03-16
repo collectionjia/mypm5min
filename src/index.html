@@ -367,10 +367,21 @@
 
         function getSimOutcome(trade) {
             const m = latestMarketMap.get(trade.market_id);
-            if (!m) return null;
+            if (!m) return 'win';
             const yp = m.yes_price;
             const np = m.no_price;
-            if (yp == null || np == null) return null;
+            if (trade.side === 'YES') {
+                if (yp == null) return 'win';
+                if (yp > 0.99) return 'win';
+                if (yp < 0.01) return 'lose';
+                return null;
+            }
+            if (trade.side === 'NO') {
+                if (np == null) return 'win';
+                if (np > 0.99) return 'win';
+                if (np < 0.01) return 'lose';
+                return null;
+            }
             if (trade.side === 'YES') {
                 if (yp >= 0.99 && np <= 0.01) return 'win';
                 if (yp <= 0.01 && np >= 0.99) return 'lose';
