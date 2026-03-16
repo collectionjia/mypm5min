@@ -879,6 +879,16 @@ async fn main() -> Result<()> {
                                                 };
 
                                                 if limit_price < first_leg_min_price {
+                                                    strategy_state.insert(market_id, 4);
+                                                    first_leg_price_map.remove(&market_id);
+                                                    let keys: Vec<String> = sim_open_orders
+                                                        .iter()
+                                                        .filter(|e| e.value().market_id == market_id)
+                                                        .map(|e| e.key().clone())
+                                                        .collect();
+                                                    for k in keys {
+                                                        sim_open_orders.remove(&k);
+                                                    }
                                                     if !is_live {
                                                         use crate::utils::trade_history::{add_trade, TradeRecord};
                                                         use chrono::Utc;
@@ -896,12 +906,21 @@ async fn main() -> Result<()> {
                                                             buy_countdown: Some(countdown_str.clone()),
                                                             sell_countdown: Some("价格过低".to_string()),
                                                         });
-                                                        strategy_state.insert(market_id, 4);
                                                     }
                                                     continue;
                                                 }
 
                                                 if limit_price >= total_price_cap {
+                                                    strategy_state.insert(market_id, 4);
+                                                    first_leg_price_map.remove(&market_id);
+                                                    let keys: Vec<String> = sim_open_orders
+                                                        .iter()
+                                                        .filter(|e| e.value().market_id == market_id)
+                                                        .map(|e| e.key().clone())
+                                                        .collect();
+                                                    for k in keys {
+                                                        sim_open_orders.remove(&k);
+                                                    }
                                                     if !is_live {
                                                         use crate::utils::trade_history::{add_trade, TradeRecord};
                                                         use chrono::Utc;
@@ -919,12 +938,21 @@ async fn main() -> Result<()> {
                                                             buy_countdown: Some(countdown_str.clone()),
                                                             sell_countdown: Some("价格过高".to_string()),
                                                         });
-                                                        strategy_state.insert(market_id, 4);
                                                     }
                                                     continue;
                                                 }
                                                 let second_leg_candidate = (total_price_cap - limit_price).round_dp(2);
                                                 if second_leg_candidate < second_leg_fixed_price {
+                                                    strategy_state.insert(market_id, 4);
+                                                    first_leg_price_map.remove(&market_id);
+                                                    let keys: Vec<String> = sim_open_orders
+                                                        .iter()
+                                                        .filter(|e| e.value().market_id == market_id)
+                                                        .map(|e| e.key().clone())
+                                                        .collect();
+                                                    for k in keys {
+                                                        sim_open_orders.remove(&k);
+                                                    }
                                                     if !is_live {
                                                         use crate::utils::trade_history::{add_trade, TradeRecord};
                                                         use chrono::Utc;
@@ -942,7 +970,6 @@ async fn main() -> Result<()> {
                                                             buy_countdown: Some(countdown_str.clone()),
                                                             sell_countdown: Some(format!("总价>0.95(P2:{:.2})", second_leg_candidate.to_f64().unwrap_or(0.0))),
                                                         });
-                                                        strategy_state.insert(market_id, 4);
                                                     }
                                                     continue;
                                                 }
