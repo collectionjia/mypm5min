@@ -245,7 +245,7 @@
                 </div>
                 <div style="margin-top: 0.5rem; font-size: 1.2rem;">
                     <strong>模拟余额:</strong> <span id="sim-balance" style="color: #3b82f6; font-weight: bold;">100.00</span>
-                    <button class="btn" style="margin-left: 0.5rem; padding: 0.2rem 0.45rem; font-size: 0.85rem;" onclick="editSimBalance()">修改</button>
+                    <button class="btn" style="width: auto; margin-bottom: 0; margin-left: 0.5rem; padding: 0.2rem 0.45rem; font-size: 0.85rem;" onclick="editSimBalance()">修改</button>
                 </div>
                 <div id="statusText" class="status stopped">检查中...</div>
                 <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
@@ -258,7 +258,7 @@
             <div id="trades-container">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
                     <h3 style="margin: 0;">交易统计</h3>
-                    <button class="btn" style="padding: 0.2rem 0.45rem; font-size: 0.85rem;" onclick="clearTrades()">清空</button>
+                    <button class="btn" style="width: auto; margin-bottom: 0; padding: 0.2rem 0.45rem; font-size: 0.85rem;" onclick="clearTrades()">清空</button>
                 </div>
                 <table id="trades-table">
                     <thead>
@@ -465,37 +465,16 @@
                 tbody.innerHTML = trades.map(trade => {
                     const date = new Date(trade.timestamp * 1000).toLocaleString();
                     let statusClass = 'status-pending';
-                    let statusText = trade.status;
-                    if (trade.status === 'Bought') {
-                        statusClass = 'status-bought';
-                        statusText = '买入';
-                    } else if (trade.status === 'Sold') {
-                        statusClass = 'status-sold';
-                        statusText = '卖出';
-                    } else if (trade.status === 'SimBought') {
-                        statusClass = 'status-bought';
-                        statusText = '模拟买入';
-                        const outcome = getSimOutcome(trade);
-                        if (outcome === 'win') {
-                            statusClass = 'status-won';
-                            statusText = '模拟赢';
-                        } else if (outcome === 'lose') {
-                            statusClass = 'status-lost';
-                            statusText = '模拟输';
-                        }
-                    } else if (trade.status === 'SimSold') {
-                        statusClass = 'status-sold';
-                        statusText = '模拟卖出';
-                    } else if (trade.status === 'SimSkipped') {
-                        statusClass = 'status-pending';
-                        statusText = '模拟跳过';
-                    } else if (trade.status === 'BuyPosted') {
-                        statusClass = 'status-bought';
-                        statusText = '挂买单';
-                    } else if (trade.status === 'Won') {
+                    let statusText = '进行中';
+                    if (trade.status === 'Won') {
                         statusClass = 'status-won';
+                        statusText = '赢';
                     } else if (trade.status === 'Lost') {
                         statusClass = 'status-lost';
+                        statusText = '输';
+                    } else if (trade.status === 'SimSkipped') {
+                        statusClass = 'status-pending';
+                        statusText = '跳过';
                     }
 
                     const price = toNumber(trade.price);

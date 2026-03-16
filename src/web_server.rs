@@ -595,8 +595,11 @@ async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
     
     // 更新交易状态（基于最新市场价格）
     for trade in &mut trades {
-        // 如果状态不是 Pending，则跳过
-        if trade.status != "Pending" {
+        if trade.status == "Won"
+            || trade.status == "Lost"
+            || trade.status == "SimSkipped"
+            || trade.status == "SimPosted"
+        {
             continue;
         }
 

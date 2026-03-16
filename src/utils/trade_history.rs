@@ -47,3 +47,14 @@ pub fn clear_trades() {
         history.clear();
     }
 }
+
+pub fn update_trade_status(id: &str, status: &str) {
+    if let Ok(mut history) = TRADE_HISTORY.lock() {
+        for rec in history.iter_mut() {
+            if rec.id == id {
+                rec.status = status.to_string();
+                break;
+            }
+        }
+    }
+}
