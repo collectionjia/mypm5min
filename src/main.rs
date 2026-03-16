@@ -836,10 +836,48 @@ async fn main() -> Result<()> {
                                                 };
 
                                                 if limit_price >= total_price_cap {
+                                                    if !is_live {
+                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                        use chrono::Utc;
+                                                        use rust_decimal::prelude::ToPrimitive;
+                                                        add_trade(TradeRecord {
+                                                            id: format!("SIM-{}", uuid::Uuid::new_v4()),
+                                                            market_id: market_id.to_string(),
+                                                            market_slug: market_display.clone(),
+                                                            side: side_name,
+                                                            price: limit_price.to_f64().unwrap_or(0.0),
+                                                            size: 0.0,
+                                                            timestamp: Utc::now().timestamp(),
+                                                            status: "SimSkipped".to_string(),
+                                                            profit: None,
+                                                            buy_countdown: Some(countdown_str.clone()),
+                                                            sell_countdown: Some("价格过高".to_string()),
+                                                        });
+                                                        strategy_state.insert(market_id, 4);
+                                                    }
                                                     continue;
                                                 }
                                                 let second_leg_candidate = (total_price_cap - limit_price).round_dp(2);
                                                 if second_leg_candidate < second_leg_min_price {
+                                                    if !is_live {
+                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                        use chrono::Utc;
+                                                        use rust_decimal::prelude::ToPrimitive;
+                                                        add_trade(TradeRecord {
+                                                            id: format!("SIM-{}", uuid::Uuid::new_v4()),
+                                                            market_id: market_id.to_string(),
+                                                            market_slug: market_display.clone(),
+                                                            side: side_name,
+                                                            price: limit_price.to_f64().unwrap_or(0.0),
+                                                            size: 0.0,
+                                                            timestamp: Utc::now().timestamp(),
+                                                            status: "SimSkipped".to_string(),
+                                                            profit: None,
+                                                            buy_countdown: Some(countdown_str.clone()),
+                                                            sell_countdown: Some(format!("P2过小:{:.2}", second_leg_candidate.to_f64().unwrap_or(0.0))),
+                                                        });
+                                                        strategy_state.insert(market_id, 4);
+                                                    }
                                                     continue;
                                                 }
 

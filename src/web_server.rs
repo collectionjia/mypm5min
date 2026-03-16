@@ -136,6 +136,7 @@ pub async fn start_server(
         .route("/api/buy", post(buy_handler))
         .route("/api/logs", get(logs_handler))
         .route("/api/trades", get(trades_handler))
+        .route("/api/trades/clear", post(clear_trades_handler))
         .route("/api/markets", get(markets_handler))
         .route("/api/portfolio", get(portfolio_handler))
         .layer(CorsLayer::permissive())
@@ -624,6 +625,12 @@ async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
     }
     
     Json(trades)
+}
+
+async fn clear_trades_handler() -> impl IntoResponse {
+    use crate::utils::trade_history;
+    trade_history::clear_trades();
+    Json(serde_json::json!({ "success": true }))
 }
 
 async fn control_handler(

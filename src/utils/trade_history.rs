@@ -41,3 +41,9 @@ pub fn get_trades() -> Vec<TradeRecord> {
         Vec::new()
     }
 }
+
+pub fn clear_trades() {
+    if let Ok(mut history) = TRADE_HISTORY.lock() {
+        history.clear();
+    }
+}
