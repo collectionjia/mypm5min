@@ -245,6 +245,7 @@
                 </div>
                 <div style="margin-top: 0.5rem; font-size: 1.2rem;">
                     <strong>模拟余额:</strong> <span id="sim-balance" style="color: #3b82f6; font-weight: bold;">100.00</span>
+                    <button class="btn" style="margin-left: 0.5rem; padding: 0.2rem 0.45rem; font-size: 0.85rem;" onclick="editSimBalance()">修改</button>
                 </div>
                 <div id="statusText" class="status stopped">检查中...</div>
                 <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
@@ -257,7 +258,7 @@
             <div id="trades-container">
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
                     <h3 style="margin: 0;">交易统计</h3>
-                    <button class="btn" style="padding: 0.35rem 0.6rem;" onclick="clearTrades()">清空</button>
+                    <button class="btn" style="padding: 0.2rem 0.45rem; font-size: 0.85rem;" onclick="clearTrades()">清空</button>
                 </div>
                 <table id="trades-table">
                     <thead>
@@ -339,6 +340,18 @@
             localStorage.setItem(SIM_BALANCE_KEY, String(v));
             const el = document.getElementById('sim-balance');
             if (el) el.textContent = v.toFixed(2);
+        }
+
+        function editSimBalance() {
+            const cur = getSimBalance();
+            const input = prompt('请输入新的模拟余额（数字）', String(cur));
+            if (input == null) return;
+            const v = toNumber(input);
+            if (v == null) {
+                alert('输入无效，请输入数字');
+                return;
+            }
+            setSimBalance(v);
         }
 
         function initSimBalance() {

@@ -812,7 +812,7 @@ async fn main() -> Result<()> {
                                     let is_live = is_running.load(Ordering::Relaxed);
                                     let entry_trigger_secs_to_end: i64 = 60;
                                     let total_price_cap = dec!(0.90);
-                                    let second_leg_min_price = dec!(0.06);
+                                    let second_leg_fixed_price = dec!(0.05);
 
                                     if sec_to_end > 0 {
                                         if state == 0 {
@@ -858,7 +858,7 @@ async fn main() -> Result<()> {
                                                     continue;
                                                 }
                                                 let second_leg_candidate = (total_price_cap - limit_price).round_dp(2);
-                                                if second_leg_candidate < second_leg_min_price {
+                                                if second_leg_candidate < second_leg_fixed_price {
                                                     if !is_live {
                                                         use crate::utils::trade_history::{add_trade, TradeRecord};
                                                         use chrono::Utc;
@@ -874,7 +874,7 @@ async fn main() -> Result<()> {
                                                             status: "SimSkipped".to_string(),
                                                             profit: None,
                                                             buy_countdown: Some(countdown_str.clone()),
-                                                            sell_countdown: Some(format!("P2过小:{:.2}", second_leg_candidate.to_f64().unwrap_or(0.0))),
+                                                            sell_countdown: Some(format!("总价>0.90(P2:{:.2})", second_leg_candidate.to_f64().unwrap_or(0.0))),
                                                         });
                                                         strategy_state.insert(market_id, 4);
                                                     }
@@ -957,18 +957,8 @@ async fn main() -> Result<()> {
                                                 }
                                             }
                                         } else if state == 1 || state == 2 {
-                                            let first_leg_price = match first_leg_price_map.get(&market_id).map(|v| *v) {
-                                                Some(p) => p,
-                                                None => {
-                                                    strategy_state.insert(market_id, 0u8);
-                                                    continue;
-                                                }
-                                            };
-
-                                            let mut second_leg_limit_price = (total_price_cap - first_leg_price).round_dp(2);
-                                            if second_leg_limit_price < second_leg_min_price {
+                                            if first_leg_price_map.get(&market_id).is_none() {
                                                 strategy_state.insert(market_id, 0u8);
-                                                first_leg_price_map.remove(&market_id);
                                                 continue;
                                             }
 
@@ -976,17 +966,21 @@ async fn main() -> Result<()> {
                                             let max_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(100.0));
                                             let qty2 = if qty2 > max_qty { max_qty } else { qty2 };
 
+                                            let (second_leg_token_id, second_leg_side) = if state == 1 {
+                                                (pair.no_book.asset_id, "NO".to_string())
+                                            } else {
+                                                (pair.yes_book.asset_id, "YES".to_string())
+                                            };
+
                                             info!(
-                                                "⏱️ 倒计时策略第二腿下单 | 市场:{} | YES+NO 各挂一次 | 价格:{:.4} | 份额:{:.2}",
-                                                market_display, second_leg_limit_price, qty2
+                                                "⏱️ 倒计时策略第二腿下单 | 市场:{} | {} 挂0.05 | 份额:{:.2}",
+                                                market_display, second_leg_side, qty2
                                             );
 
                                             if is_live {
                                                 strategy_state.insert(market_id, 10);
                                                 let exec = executor.clone();
                                                 let pt = _risk_manager.position_tracker();
-                                                let yes_token_id = pair.yes_book.asset_id;
-                                                let no_token_id = pair.no_book.asset_id;
                                                 let state_map = strategy_state.clone();
                                                 let price_map = first_leg_price_map.clone();
                                                 let market_id_key = market_id;
@@ -994,25 +988,23 @@ async fn main() -> Result<()> {
                                                 let market_display_str = market_display.clone();
                                                 let buy_countdown = Some(countdown_str.clone());
                                                 use rust_decimal::prelude::ToPrimitive;
-                                                let price_f64 = second_leg_limit_price.to_f64().unwrap_or(0.0);
+                                                let price_f64 = second_leg_fixed_price.to_f64().unwrap_or(0.0);
+                                                let side_for_record = second_leg_side.clone();
                                                 tokio::spawn(async move {
-                                                    let yes = exec.buy_at_price(yes_token_id, second_leg_limit_price, qty2);
-                                                    let no = exec.buy_at_price(no_token_id, second_leg_limit_price, qty2);
-                                                    let (yes_res, no_res) = tokio::join!(yes, no);
-                                                    let yes_ok = yes_res.is_ok();
-                                                    let no_ok = no_res.is_ok();
+                                                    let res = exec.buy_at_price(second_leg_token_id, second_leg_fixed_price, qty2).await;
+                                                    let ok = res.is_ok();
 
                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                     use chrono::Utc;
 
-                                                    if let Ok(resp) = yes_res {
-                                                        pt.update_exposure_cost(yes_token_id, second_leg_limit_price, qty2);
-                                                        pt.update_position(yes_token_id, qty2);
+                                                    if let Ok(resp) = res {
+                                                        pt.update_exposure_cost(second_leg_token_id, second_leg_fixed_price, qty2);
+                                                        pt.update_position(second_leg_token_id, qty2);
                                                         add_trade(TradeRecord {
                                                             id: resp.order_id.clone(),
                                                             market_id: market_id_str.clone(),
                                                             market_slug: market_display_str.clone(),
-                                                            side: "YES".to_string(),
+                                                            side: side_for_record,
                                                             price: price_f64,
                                                             size: qty2.to_f64().unwrap_or(0.0),
                                                             timestamp: Utc::now().timestamp(),
@@ -1022,24 +1014,7 @@ async fn main() -> Result<()> {
                                                             sell_countdown: None,
                                                         });
                                                     }
-                                                    if let Ok(resp) = no_res {
-                                                        pt.update_exposure_cost(no_token_id, second_leg_limit_price, qty2);
-                                                        pt.update_position(no_token_id, qty2);
-                                                        add_trade(TradeRecord {
-                                                            id: resp.order_id.clone(),
-                                                            market_id: market_id_str.clone(),
-                                                            market_slug: market_display_str.clone(),
-                                                            side: "NO".to_string(),
-                                                            price: price_f64,
-                                                            size: qty2.to_f64().unwrap_or(0.0),
-                                                            timestamp: Utc::now().timestamp(),
-                                                            status: "Bought".to_string(),
-                                                            profit: None,
-                                                            buy_countdown: buy_countdown.clone(),
-                                                            sell_countdown: None,
-                                                        });
-                                                    }
-                                                    if yes_ok && no_ok {
+                                                    if ok {
                                                         state_map.insert(market_id_key, 3u8);
                                                         price_map.remove(&market_id_key);
                                                     } else {
@@ -1056,21 +1031,8 @@ async fn main() -> Result<()> {
                                                     id: format!("SIM-{}", uuid::Uuid::new_v4()),
                                                     market_id: market_id.to_string(),
                                                     market_slug: market_display.clone(),
-                                                    side: "YES".to_string(),
-                                                    price: second_leg_limit_price.to_f64().unwrap_or(0.0),
-                                                    size: qty2.to_f64().unwrap_or(0.0),
-                                                    timestamp: Utc::now().timestamp(),
-                                                    status: "SimBought".to_string(),
-                                                    profit: None,
-                                                    buy_countdown: buy_countdown.clone(),
-                                                    sell_countdown: None,
-                                                });
-                                                add_trade(TradeRecord {
-                                                    id: format!("SIM-{}", uuid::Uuid::new_v4()),
-                                                    market_id: market_id.to_string(),
-                                                    market_slug: market_display.clone(),
-                                                    side: "NO".to_string(),
-                                                    price: second_leg_limit_price.to_f64().unwrap_or(0.0),
+                                                    side: second_leg_side,
+                                                    price: second_leg_fixed_price.to_f64().unwrap_or(0.0),
                                                     size: qty2.to_f64().unwrap_or(0.0),
                                                     timestamp: Utc::now().timestamp(),
                                                     status: "SimBought".to_string(),
