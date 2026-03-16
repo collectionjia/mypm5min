@@ -579,6 +579,7 @@ async fn main() -> Result<()> {
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
         let strategy_state: DashMap<B256, u8> = DashMap::new();
+        let first_leg_price_map: Arc<DashMap<B256, Decimal>> = Arc::new(DashMap::new());
 
         // 监控订单簿更新
         loop {
@@ -809,8 +810,9 @@ async fn main() -> Result<()> {
                                 {
                                     let state = strategy_state.get(&market_id).map(|v| *v).unwrap_or(0);
                                     let is_live = is_running.load(Ordering::Relaxed);
-                                    let second_leg_limit_price = dec!(0.05);
                                     let entry_trigger_secs_to_end: i64 = 60;
+                                    let total_price_cap = dec!(0.90);
+                                    let second_leg_min_price = dec!(0.06);
 
                                     if sec_to_end > 0 {
                                         if state == 0 {
@@ -818,31 +820,46 @@ async fn main() -> Result<()> {
                                             let no_ask = no_best_ask.map(|(p, _)| p.round_dp(2));
 
                                             if sec_to_end_nonneg <= entry_trigger_secs_to_end {
-                                                let (yp, np) = match (yes_ask, no_ask) {
-                                                    (Some(yp), Some(np)) => (yp, np),
-                                                    _ => {
+                                                let (side_key, token_id, side_name, limit_price) = match (yes_ask, no_ask) {
+                                                    (Some(yp), Some(np)) => {
+                                                        if yp >= np {
+                                                            (0u8, pair.yes_book.asset_id, "YES".to_string(), yp)
+                                                        } else {
+                                                            (1u8, pair.no_book.asset_id, "NO".to_string(), np)
+                                                        }
+                                                    }
+                                                    (Some(yp), None) => (0u8, pair.yes_book.asset_id, "YES".to_string(), yp),
+                                                    (None, Some(np)) => (1u8, pair.no_book.asset_id, "NO".to_string(), np),
+                                                    (None, None) => {
                                                         continue;
                                                     }
                                                 };
 
-                                                let (side_key, token_id, side_name, limit_price) = if yp >= np {
-                                                    (0u8, pair.yes_book.asset_id, "YES".to_string(), yp)
-                                                } else {
-                                                    (1u8, pair.no_book.asset_id, "NO".to_string(), np)
-                                                };
+                                                if limit_price >= total_price_cap {
+                                                    continue;
+                                                }
+                                                let second_leg_candidate = (total_price_cap - limit_price).round_dp(2);
+                                                if second_leg_candidate < second_leg_min_price {
+                                                    continue;
+                                                }
 
                                                 let qty = dec!(5.0);
                                                 let max_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(100.0));
                                                 let qty = if qty > max_qty { max_qty } else { qty };
 
                                                 info!(
-                                                    "⏱️ 倒计时策略入场买入 | 市场:{} | 倒数<=90s | {} 价格更高 | 价格:{:.4} | 份额:{:.2}",
+                                                    "⏱️ 倒计时策略入场买入 | 市场:{} | 倒数<=60s | {} 价格更高 | 价格:{:.4} | 份额:{:.2}",
                                                     market_display, side_name, limit_price, qty
                                                 );
 
                                                 if is_live {
+                                                    strategy_state.insert(market_id, 9);
                                                     let executor_clone = executor.clone();
                                                     let pt = _risk_manager.position_tracker();
+                                                    let state_map = strategy_state.clone();
+                                                    let price_map = first_leg_price_map.clone();
+                                                    let market_id_key = market_id;
+                                                    let next_state = if side_key == 0 { 1u8 } else { 2u8 };
                                                     let market_id_str = market_id.to_string();
                                                     let market_display_str = market_display.clone();
                                                     let buy_countdown = Some(countdown_str.clone());
@@ -868,9 +885,13 @@ async fn main() -> Result<()> {
                                                                     buy_countdown,
                                                                     sell_countdown: None,
                                                                 });
+                                                                price_map.insert(market_id_key, limit_price);
+                                                                state_map.insert(market_id_key, next_state);
                                                             }
                                                             Err(e) => {
                                                                 warn!("❌ 倒计时策略第一腿下单失败: {}", e);
+                                                                price_map.remove(&market_id_key);
+                                                                state_map.insert(market_id_key, 0u8);
                                                             }
                                                         }
                                                     });
@@ -893,25 +914,44 @@ async fn main() -> Result<()> {
                                                         buy_countdown,
                                                         sell_countdown: None,
                                                     });
+                                                    first_leg_price_map.insert(market_id, limit_price);
+                                                    strategy_state.insert(market_id, if side_key == 0 { 1 } else { 2 });
                                                 }
-
-                                                strategy_state.insert(market_id, if side_key == 0 { 1 } else { 2 });
                                             }
                                         } else if state == 1 || state == 2 {
+                                            let first_leg_price = match first_leg_price_map.get(&market_id).map(|v| *v) {
+                                                Some(p) => p,
+                                                None => {
+                                                    strategy_state.insert(market_id, 0u8);
+                                                    continue;
+                                                }
+                                            };
+
+                                            let mut second_leg_limit_price = (total_price_cap - first_leg_price).round_dp(2);
+                                            if second_leg_limit_price < second_leg_min_price {
+                                                strategy_state.insert(market_id, 0u8);
+                                                first_leg_price_map.remove(&market_id);
+                                                continue;
+                                            }
+
                                             let qty2 = dec!(5.0);
                                             let max_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(100.0));
                                             let qty2 = if qty2 > max_qty { max_qty } else { qty2 };
 
                                             info!(
-                                                "⏱️ 倒计时策略第二腿下单 | 市场:{} | YES+NO 各挂一次0.05 | 份额:{:.2}",
-                                                market_display, qty2
+                                                "⏱️ 倒计时策略第二腿下单 | 市场:{} | YES+NO 各挂一次 | 价格:{:.4} | 份额:{:.2}",
+                                                market_display, second_leg_limit_price, qty2
                                             );
 
                                             if is_live {
+                                                strategy_state.insert(market_id, 10);
                                                 let exec = executor.clone();
                                                 let pt = _risk_manager.position_tracker();
                                                 let yes_token_id = pair.yes_book.asset_id;
                                                 let no_token_id = pair.no_book.asset_id;
+                                                let state_map = strategy_state.clone();
+                                                let price_map = first_leg_price_map.clone();
+                                                let market_id_key = market_id;
                                                 let market_id_str = market_id.to_string();
                                                 let market_display_str = market_display.clone();
                                                 let buy_countdown = Some(countdown_str.clone());
@@ -921,6 +961,8 @@ async fn main() -> Result<()> {
                                                     let yes = exec.buy_at_price(yes_token_id, second_leg_limit_price, qty2);
                                                     let no = exec.buy_at_price(no_token_id, second_leg_limit_price, qty2);
                                                     let (yes_res, no_res) = tokio::join!(yes, no);
+                                                    let yes_ok = yes_res.is_ok();
+                                                    let no_ok = no_res.is_ok();
 
                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                     use chrono::Utc;
@@ -959,6 +1001,13 @@ async fn main() -> Result<()> {
                                                             sell_countdown: None,
                                                         });
                                                     }
+                                                    if yes_ok && no_ok {
+                                                        state_map.insert(market_id_key, 3u8);
+                                                        price_map.remove(&market_id_key);
+                                                    } else {
+                                                        state_map.insert(market_id_key, 0u8);
+                                                        price_map.remove(&market_id_key);
+                                                    }
                                                 });
                                             } else {
                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
@@ -991,9 +1040,9 @@ async fn main() -> Result<()> {
                                                     buy_countdown,
                                                     sell_countdown: None,
                                                 });
+                                                first_leg_price_map.remove(&market_id);
+                                                strategy_state.insert(market_id, 3);
                                             }
-
-                                            strategy_state.insert(market_id, 3);
                                         }
                                     }
                                 }
