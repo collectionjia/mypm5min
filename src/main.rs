@@ -974,6 +974,21 @@ async fn main() -> Result<()> {
                                         drawdown_trigger_mask.insert(market_id, mask);
                                     }
 
+                                    if should_check_drawdown && !is_live {
+                                        let has_buy_price = first_leg_price_map.get(&market_id).is_some();
+                                        let has_book_price = if state == 1 {
+                                            yes_best_ask.is_some()
+                                        } else if state == 2 {
+                                            no_best_ask.is_some()
+                                        } else {
+                                            false
+                                        };
+                                        info!(
+                                            "🧪 模拟回撤触发点 | 市场:{} | 秒:{} | state:{} | 有买入价:{} | 有盘口:{}",
+                                            market_display, sec_to_end_nonneg, state, has_buy_price, has_book_price
+                                        );
+                                    }
+
                                     if should_check_drawdown && (state == 1 || state == 2) {
                                         let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
                                         let current_price = if state == 1 {
@@ -1093,6 +1108,11 @@ async fn main() -> Result<()> {
                                                 market_display, sec_to_end_nonneg
                                             );
                                         }
+                                    } else if should_check_drawdown && !is_live {
+                                        info!(
+                                            "🧪 模拟回撤未执行 | 市场:{} | 秒:{} | 原因: state不是1/2(尚未第一腿买入或已跳过)",
+                                            market_display, sec_to_end_nonneg
+                                        );
                                     }
                                     if sec_to_end > 0 {
                                         if state == 0 {
@@ -1137,7 +1157,7 @@ async fn main() -> Result<()> {
                                                             id: format!("SIM-{}", uuid::Uuid::new_v4()),
                                                             market_id: market_id.to_string(),
                                                             market_slug: market_display.clone(),
-                                                            side: side_name,
+                                                            side: side_name.clone(),
                                                             price: limit_price.to_f64().unwrap_or(0.0),
                                                             size: 0.0,
                                                             timestamp: Utc::now().timestamp(),
@@ -1170,7 +1190,7 @@ async fn main() -> Result<()> {
                                                             id: format!("SIM-{}", uuid::Uuid::new_v4()),
                                                             market_id: market_id.to_string(),
                                                             market_slug: market_display.clone(),
-                                                            side: side_name,
+                                                            side: side_name.clone(),
                                                             price: limit_price.to_f64().unwrap_or(0.0),
                                                             size: 0.0,
                                                             timestamp: Utc::now().timestamp(),
@@ -1204,7 +1224,7 @@ async fn main() -> Result<()> {
                                                                 id: format!("SIM-{}", uuid::Uuid::new_v4()),
                                                                 market_id: market_id.to_string(),
                                                                 market_slug: market_display.clone(),
-                                                                side: side_name,
+                                                                side: side_name.clone(),
                                                                 price: limit_price.to_f64().unwrap_or(0.0),
                                                                 size: 0.0,
                                                                 timestamp: Utc::now().timestamp(),
@@ -1256,7 +1276,7 @@ async fn main() -> Result<()> {
                                                             id: format!("SIM-{}", uuid::Uuid::new_v4()),
                                                             market_id: market_id.to_string(),
                                                             market_slug: market_display.clone(),
-                                                            side: side_name,
+                                                            side: side_name.clone(),
                                                             price: limit_price.to_f64().unwrap_or(0.0),
                                                             size: 0.0,
                                                             timestamp: Utc::now().timestamp(),
@@ -1294,6 +1314,7 @@ async fn main() -> Result<()> {
                                                     let next_state = if side_key == 0 { 1u8 } else { 2u8 };
                                                     let market_id_str = market_id.to_string();
                                                     let market_display_str = market_display.clone();
+                                                    let side_for_record = side_name.clone();
                                                     let buy_countdown = Some(countdown_str.clone());
                                                     use rust_decimal::prelude::ToPrimitive;
                                                     let price_f64 = limit_price.to_f64().unwrap_or(0.0);
@@ -1308,7 +1329,7 @@ async fn main() -> Result<()> {
                                                                     id: resp.order_id.clone(),
                                                                     market_id: market_id_str,
                                                                     market_slug: market_display_str,
-                                                                    side: side_name,
+                                                                    side: side_for_record,
                                                                     price: price_f64,
                                                                     size: qty.to_f64().unwrap_or(0.0),
                                                                     timestamp: Utc::now().timestamp(),
@@ -1336,11 +1357,12 @@ async fn main() -> Result<()> {
                                                     use chrono::Utc;
                                                     use rust_decimal::prelude::ToPrimitive;
                                                     let buy_countdown = Some(countdown_str.clone());
+                                                    let side_for_log = side_name.clone();
                                                     add_trade(TradeRecord {
                                                         id: format!("SIM-{}", uuid::Uuid::new_v4()),
                                                         market_id: market_id.to_string(),
                                                         market_slug: market_display.clone(),
-                                                        side: side_name,
+                                                        side: side_name.clone(),
                                                         price: limit_price.to_f64().unwrap_or(0.0),
                                                         size: qty.to_f64().unwrap_or(0.0),
                                                         timestamp: Utc::now().timestamp(),
@@ -1353,6 +1375,10 @@ async fn main() -> Result<()> {
                                                     first_leg_qty_map.insert(market_id, qty);
                                                     drawdown_trigger_mask.remove(&market_id);
                                                     strategy_state.insert(market_id, if side_key == 0 { 1 } else { 2 });
+                                                    info!(
+                                                        "🧪 模拟第一腿买入 | 市场:{} | 秒:{} | {} | 买入价:{:.2} | 份额:{:.2}",
+                                                        market_display, sec_to_end_nonneg, side_for_log, limit_price, qty
+                                                    );
                                                 }
                                             }
                                         } else if state == 1 || state == 2 {
