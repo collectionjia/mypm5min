@@ -636,18 +636,24 @@ async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
             .map(|m| (m.yes_price, m.no_price))
             .unwrap_or((None, None));
 
+        let mut new_status: Option<&'static str> = None;
         if trade.side == "YES" {
             if yes_price.is_none() || yes_price.unwrap_or(0.0) > 0.99 {
-                trade.status = "Won".to_string();
+                new_status = Some("Won");
             } else if yes_price.unwrap_or(1.0) < 0.01 {
-                trade.status = "Lost".to_string();
+                new_status = Some("Lost");
             }
         } else if trade.side == "NO" {
             if no_price.is_none() || no_price.unwrap_or(0.0) > 0.99 {
-                trade.status = "Won".to_string();
+                new_status = Some("Won");
             } else if no_price.unwrap_or(1.0) < 0.01 {
-                trade.status = "Lost".to_string();
+                new_status = Some("Lost");
             }
+        }
+
+        if let Some(s) = new_status {
+            trade.status = s.to_string();
+            trade_history::update_trade_status(&trade.id, s);
         }
     }
 

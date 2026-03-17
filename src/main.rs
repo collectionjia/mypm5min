@@ -638,6 +638,8 @@ async fn main() -> Result<()> {
             clear_first_leg_price: bool,
         }
         let sim_open_orders: Arc<DashMap<String, SimOrderInfo>> = Arc::new(DashMap::new());
+        let drawdown_last_sec_to_end: Arc<DashMap<B256, i64>> = Arc::new(DashMap::new());
+        let drawdown_trigger_mask: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
 
         // 监控订单簿更新
         loop {
@@ -933,19 +935,42 @@ async fn main() -> Result<()> {
                                                 crate::utils::trade_history::update_trade_status(&id, "SimBought");
                                                 if info.on_filled_state == 1u8 || info.on_filled_state == 2u8 {
                                                     first_leg_qty_map.insert(info.market_id, info.size);
+                                                    drawdown_trigger_mask.remove(&info.market_id);
                                                 }
                                                 strategy_state.insert(info.market_id, info.on_filled_state);
                                                 if info.clear_first_leg_price {
                                                     first_leg_price_map.remove(&info.market_id);
                                                     first_leg_qty_map.remove(&info.market_id);
+                                                    drawdown_trigger_mask.remove(&info.market_id);
                                                 }
                                             }
                                         }
                                     }
 
                                     let state = strategy_state.get(&market_id).map(|v| *v).unwrap_or(0);
-                                    let should_check_drawdown =
-                                        matches!(sec_to_end_nonneg, 55 | 50 | 45 | 40);
+
+                                    let prev_sec = drawdown_last_sec_to_end
+                                        .insert(market_id, sec_to_end_nonneg)
+                                        .unwrap_or(sec_to_end_nonneg + 1);
+                                    let mut mask = drawdown_trigger_mask
+                                        .get(&market_id)
+                                        .map(|v| *v)
+                                        .unwrap_or(0u8);
+
+                                    let mut should_check_drawdown = false;
+                                    for (t, bit) in [(55i64, 1u8), (50i64, 2u8), (45i64, 4u8), (40i64, 8u8)] {
+                                        if mask & bit != 0 {
+                                            continue;
+                                        }
+                                        if prev_sec > t && sec_to_end_nonneg <= t {
+                                            mask |= bit;
+                                            should_check_drawdown = true;
+                                        }
+                                    }
+                                    if should_check_drawdown {
+                                        drawdown_trigger_mask.insert(market_id, mask);
+                                    }
+
                                     if should_check_drawdown && (state == 1 || state == 2) {
                                         let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
                                         let current_price = if state == 1 {
@@ -955,8 +980,7 @@ async fn main() -> Result<()> {
                                         };
 
                                         if let (Some(buy_price), Some(cur_price)) = (buy_price, current_price) {
-                                            let price_delta = (cur_price - buy_price).abs();
-                                            if price_delta >= dec!(0.03) {
+                                            if cur_price < buy_price {
                                                 let qty_sell = first_leg_qty_map
                                                     .get(&market_id)
                                                     .map(|v| *v)
@@ -1018,8 +1042,9 @@ async fn main() -> Result<()> {
                                                             }
                                                             Err(e) => {
                                                                 warn!(
-                                                                    "❌ 倒计时策略{}秒回撤卖出失败: {}",
-                                                                    sec_to_end_nonneg, e
+                                                                    "❌ 倒计时策略回撤卖出失败 | 秒:{} | error:{}",
+                                                                    sec_to_end_nonneg,
+                                                                    e
                                                                 );
                                                             }
                                                         }
@@ -1168,7 +1193,59 @@ async fn main() -> Result<()> {
                                                     continue;
                                                 }
 
-                                                let qty = dec!(5.0);
+                                                let base_qty = dec!(5.0);
+                                                let trades = crate::utils::trade_history::get_trades();
+                                                let mut loss_count: u32 = 0;
+                                                for t in trades.iter() {
+                                                    if t.status == "Lost" {
+                                                        loss_count += 1;
+                                                        if loss_count >= 3 {
+                                                            break;
+                                                        }
+                                                    } else if t.status == "Won" {
+                                                        break;
+                                                    }
+                                                }
+
+                                                if loss_count >= 3 {
+                                                    strategy_state.insert(market_id, 4);
+                                                    first_leg_price_map.remove(&market_id);
+                                                    first_leg_qty_map.remove(&market_id);
+                                                    drawdown_trigger_mask.remove(&market_id);
+                                                    let keys: Vec<String> = sim_open_orders
+                                                        .iter()
+                                                        .filter(|e| e.value().market_id == market_id)
+                                                        .map(|e| e.key().clone())
+                                                        .collect();
+                                                    for k in keys {
+                                                        sim_open_orders.remove(&k);
+                                                    }
+                                                    if !is_live {
+                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                        use chrono::Utc;
+                                                        use rust_decimal::prelude::ToPrimitive;
+                                                        add_trade(TradeRecord {
+                                                            id: format!("SIM-{}", uuid::Uuid::new_v4()),
+                                                            market_id: market_id.to_string(),
+                                                            market_slug: market_display.clone(),
+                                                            side: side_name,
+                                                            price: limit_price.to_f64().unwrap_or(0.0),
+                                                            size: 0.0,
+                                                            timestamp: Utc::now().timestamp(),
+                                                            status: "SimSkipped".to_string(),
+                                                            profit: None,
+                                                            buy_countdown: Some(countdown_str.clone()),
+                                                            sell_countdown: Some("马丁止损".to_string()),
+                                                        });
+                                                    }
+                                                    continue;
+                                                }
+
+                                                let mut mult = dec!(1.0);
+                                                for _ in 0..loss_count {
+                                                    mult *= dec!(2.0);
+                                                }
+                                                let qty = base_qty * mult;
                                                 let max_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(100.0));
                                                 let qty = if qty > max_qty { max_qty } else { qty };
 
@@ -1184,6 +1261,7 @@ async fn main() -> Result<()> {
                                                     let state_map = strategy_state.clone();
                                                     let price_map = first_leg_price_map.clone();
                                                     let qty_map = first_leg_qty_map.clone();
+                                                    let dd_mask = drawdown_trigger_mask.clone();
                                                     let market_id_key = market_id;
                                                     let next_state = if side_key == 0 { 1u8 } else { 2u8 };
                                                     let market_id_str = market_id.to_string();
@@ -1213,12 +1291,14 @@ async fn main() -> Result<()> {
                                                                 });
                                                                 price_map.insert(market_id_key, limit_price);
                                                                 qty_map.insert(market_id_key, qty);
+                                                                dd_mask.remove(&market_id_key);
                                                                 state_map.insert(market_id_key, next_state);
                                                             }
                                                             Err(e) => {
                                                                 warn!("❌ 倒计时策略第一腿下单失败: {}", e);
                                                                 price_map.remove(&market_id_key);
                                                                 qty_map.remove(&market_id_key);
+                                                                dd_mask.remove(&market_id_key);
                                                                 state_map.insert(market_id_key, 0u8);
                                                             }
                                                         }
@@ -1244,6 +1324,7 @@ async fn main() -> Result<()> {
                                                     });
                                                     first_leg_price_map.insert(market_id, limit_price);
                                                     first_leg_qty_map.insert(market_id, qty);
+                                                    drawdown_trigger_mask.remove(&market_id);
                                                     sim_open_orders.insert(
                                                         order_id.clone(),
                                                         SimOrderInfo {
@@ -1264,7 +1345,10 @@ async fn main() -> Result<()> {
                                                 continue;
                                             }
 
-                                            let qty2 = dec!(5.0);
+                                            let qty2 = first_leg_qty_map
+                                                .get(&market_id)
+                                                .map(|v| *v)
+                                                .unwrap_or(dec!(5.0));
                                             let max_qty = Decimal::try_from(config.max_order_size_usdc).unwrap_or(dec!(100.0));
                                             let qty2 = if qty2 > max_qty { max_qty } else { qty2 };
 
@@ -1285,7 +1369,7 @@ async fn main() -> Result<()> {
                                                 let pt = _risk_manager.position_tracker();
                                                 let state_map = strategy_state.clone();
                                                 let price_map = first_leg_price_map.clone();
-                                                    let qty_map = first_leg_qty_map.clone();
+                                                let qty_map = first_leg_qty_map.clone();
                                                 let market_id_key = market_id;
                                                 let market_id_str = market_id.to_string();
                                                 let market_display_str = market_display.clone();
