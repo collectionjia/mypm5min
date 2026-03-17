@@ -1307,17 +1307,16 @@ async fn main() -> Result<()> {
                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                     use chrono::Utc;
                                                     use rust_decimal::prelude::ToPrimitive;
-                                                    let order_id = format!("SIM-{}", uuid::Uuid::new_v4());
                                                     let buy_countdown = Some(countdown_str.clone());
                                                     add_trade(TradeRecord {
-                                                        id: order_id.clone(),
+                                                        id: format!("SIM-{}", uuid::Uuid::new_v4()),
                                                         market_id: market_id.to_string(),
                                                         market_slug: market_display.clone(),
                                                         side: side_name,
                                                         price: limit_price.to_f64().unwrap_or(0.0),
                                                         size: qty.to_f64().unwrap_or(0.0),
                                                         timestamp: Utc::now().timestamp(),
-                                                        status: "SimPosted".to_string(),
+                                                        status: "SimBought".to_string(),
                                                         profit: None,
                                                         buy_countdown,
                                                         sell_countdown: None,
@@ -1325,18 +1324,7 @@ async fn main() -> Result<()> {
                                                     first_leg_price_map.insert(market_id, limit_price);
                                                     first_leg_qty_map.insert(market_id, qty);
                                                     drawdown_trigger_mask.remove(&market_id);
-                                                    sim_open_orders.insert(
-                                                        order_id.clone(),
-                                                        SimOrderInfo {
-                                                            market_id,
-                                                            side_key,
-                                                            limit_price,
-                                                            size: qty,
-                                                            on_filled_state: if side_key == 0 { 1 } else { 2 },
-                                                            clear_first_leg_price: false,
-                                                        },
-                                                    );
-                                                    strategy_state.insert(market_id, 9);
+                                                    strategy_state.insert(market_id, if side_key == 0 { 1 } else { 2 });
                                                 }
                                             }
                                         } else if state == 1 || state == 2 {
