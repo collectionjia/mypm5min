@@ -1342,6 +1342,7 @@ async fn main() -> Result<()> {
                                                     let price_map = first_leg_price_map.clone();
                                                     let qty_map = first_leg_qty_map.clone();
                                                     let dd_mask = drawdown_trigger_mask.clone();
+                                                    let side_map = first_leg_side_key_map.clone();
                                                     let market_id_key = market_id;
                                                     let next_state = if side_key == 0 { 1u8 } else { 2u8 };
                                                     let market_id_str = market_id.to_string();
@@ -1372,6 +1373,7 @@ async fn main() -> Result<()> {
                                                                 });
                                                                 price_map.insert(market_id_key, limit_price);
                                                                 qty_map.insert(market_id_key, qty);
+                                                                side_map.insert(market_id_key, if next_state == 1 { 0u8 } else { 1u8 });
                                                                 dd_mask.remove(&market_id_key);
                                                                 state_map.insert(market_id_key, next_state);
                                                             }
@@ -1379,6 +1381,7 @@ async fn main() -> Result<()> {
                                                                 warn!("❌ 倒计时策略第一腿下单失败: {}", e);
                                                                 price_map.remove(&market_id_key);
                                                                 qty_map.remove(&market_id_key);
+                                                                side_map.remove(&market_id_key);
                                                                 dd_mask.remove(&market_id_key);
                                                                 state_map.insert(market_id_key, 0u8);
                                                             }
