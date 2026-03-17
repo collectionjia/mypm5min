@@ -975,7 +975,7 @@ async fn main() -> Result<()> {
                                     }
 
                                     if should_check_drawdown && !is_live {
-                                        let has_buy_price = first_leg_price_map.get(&market_id).is_some();
+                                        let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
                                         let has_book_price = if state == 1 {
                                             yes_best_ask.is_some()
                                         } else if state == 2 {
@@ -983,9 +983,26 @@ async fn main() -> Result<()> {
                                         } else {
                                             false
                                         };
+                                        let current_price = if state == 1 {
+                                            yes_best_ask.map(|(p, _)| p.round_dp(2))
+                                        } else if state == 2 {
+                                            no_best_ask.map(|(p, _)| p.round_dp(2))
+                                        } else {
+                                            None
+                                        };
+                                        let cmp = match (buy_price, current_price) {
+                                            (Some(b), Some(c)) => {
+                                                if c < b {
+                                                    "当前<买入(卖出)"
+                                                } else {
+                                                    "当前>=买入(不卖)"
+                                                }
+                                            }
+                                            _ => "无法比较",
+                                        };
                                         info!(
-                                            "🧪 模拟回撤触发点 | 市场:{} | 秒:{} | state:{} | 有买入价:{} | 有盘口:{}",
-                                            market_display, sec_to_end_nonneg, state, has_buy_price, has_book_price
+                                            "🧪 模拟回撤触发点 | 市场:{} | 秒:{} | state:{} | 买入:{:?} | 当前:{:?} | 有盘口:{} | {}",
+                                            market_display, sec_to_end_nonneg, state, buy_price, current_price, has_book_price, cmp
                                         );
                                     }
 
