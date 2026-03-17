@@ -951,7 +951,7 @@ async fn main() -> Result<()> {
 
                                     let prev_sec = drawdown_last_sec_to_end
                                         .insert(market_id, sec_to_end_nonneg)
-                                        .unwrap_or(sec_to_end_nonneg + 1);
+                                        .unwrap_or(sec_to_end_nonneg + 1000);
                                     let mut mask = drawdown_trigger_mask
                                         .get(&market_id)
                                         .map(|v| *v)
