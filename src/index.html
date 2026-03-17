@@ -297,6 +297,7 @@
         const SIM_BALANCE_KEY = 'pm_sim_balance_v1';
         const SIM_APPLIED_BUYS_KEY = 'pm_sim_applied_buys_v1';
         const SIM_APPLIED_SETTLES_KEY = 'pm_sim_applied_settles_v1';
+        const SIM_APPLIED_SELLS_KEY = 'pm_sim_applied_sells_v1';
 
         function toNumber(v) {
             const n = Number(v);
@@ -395,19 +396,32 @@
         function applySimBalance(trades) {
             const appliedBuys = new Set(getJsonArray(SIM_APPLIED_BUYS_KEY));
             const appliedSettles = new Set(getJsonArray(SIM_APPLIED_SETTLES_KEY));
+            const appliedSells = new Set(getJsonArray(SIM_APPLIED_SELLS_KEY));
 
             let bal = getSimBalance();
             const ordered = [...trades].reverse();
 
             for (const t of ordered) {
-                if (t.status !== 'SimBought') continue;
-                if (!appliedBuys.has(t.id)) {
-                    const price = toNumber(t.price);
-                    const size = toNumber(t.size);
-                    if (price != null && size != null) {
-                        bal -= price * size;
+                if (t.status === 'SimBought') {
+                    if (!appliedBuys.has(t.id)) {
+                        const price = toNumber(t.price);
+                        const size = toNumber(t.size);
+                        if (price != null && size != null) {
+                            bal -= price * size;
+                        }
+                        appliedBuys.add(t.id);
                     }
-                    appliedBuys.add(t.id);
+                } else if (t.status === 'SimSold') {
+                    if (!appliedSells.has(t.id)) {
+                        const price = toNumber(t.price);
+                        const size = toNumber(t.size);
+                        if (price != null && size != null) {
+                            bal += price * size;
+                        }
+                        appliedSells.add(t.id);
+                    }
+                } else {
+                    continue;
                 }
 
                 const outcome = getSimOutcome(t);
@@ -422,6 +436,7 @@
 
             setJsonArray(SIM_APPLIED_BUYS_KEY, Array.from(appliedBuys));
             setJsonArray(SIM_APPLIED_SETTLES_KEY, Array.from(appliedSettles));
+            setJsonArray(SIM_APPLIED_SELLS_KEY, Array.from(appliedSells));
             setSimBalance(bal);
         }
 
@@ -553,6 +568,7 @@
             try {
                 localStorage.removeItem(SIM_APPLIED_BUYS_KEY);
                 localStorage.removeItem(SIM_APPLIED_SETTLES_KEY);
+                localStorage.removeItem(SIM_APPLIED_SELLS_KEY);
             } catch {
             }
             const tbody = document.querySelector('#trades-table tbody');

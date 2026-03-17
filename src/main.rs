@@ -580,11 +580,13 @@ async fn main() -> Result<()> {
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
         let strategy_state: DashMap<B256, u8> = DashMap::new();
         let first_leg_price_map: Arc<DashMap<B256, Decimal>> = Arc::new(DashMap::new());
+        let first_leg_qty_map: Arc<DashMap<B256, Decimal>> = Arc::new(DashMap::new());
         #[derive(Clone)]
         struct SimOrderInfo {
             market_id: B256,
             side_key: u8,
             limit_price: Decimal,
+            size: Decimal,
             on_filled_state: u8,
             clear_first_leg_price: bool,
         }
@@ -849,15 +851,118 @@ async fn main() -> Result<()> {
                                         for id in to_fill {
                                             if let Some((_k, info)) = sim_open_orders.remove(&id) {
                                                 crate::utils::trade_history::update_trade_status(&id, "SimBought");
+                                                if info.on_filled_state == 1u8 || info.on_filled_state == 2u8 {
+                                                    first_leg_qty_map.insert(info.market_id, info.size);
+                                                }
                                                 strategy_state.insert(info.market_id, info.on_filled_state);
                                                 if info.clear_first_leg_price {
                                                     first_leg_price_map.remove(&info.market_id);
+                                                    first_leg_qty_map.remove(&info.market_id);
                                                 }
                                             }
                                         }
                                     }
 
                                     let state = strategy_state.get(&market_id).map(|v| *v).unwrap_or(0);
+                                    let should_check_drawdown =
+                                        matches!(sec_to_end_nonneg, 55 | 50 | 45 | 40);
+                                    if should_check_drawdown && (state == 1 || state == 2) {
+                                        let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
+                                        let current_price = if state == 1 {
+                                            yes_best_ask.map(|(p, _)| p.round_dp(2))
+                                        } else {
+                                            no_best_ask.map(|(p, _)| p.round_dp(2))
+                                        };
+
+                                        if let (Some(buy_price), Some(cur_price)) = (buy_price, current_price) {
+                                            if cur_price < buy_price {
+                                                let qty_sell = first_leg_qty_map
+                                                    .get(&market_id)
+                                                    .map(|v| *v)
+                                                    .unwrap_or(dec!(5.0));
+
+                                                let bid_price = if state == 1 {
+                                                    pair.yes_book.bids.last().map(|b| b.price.round_dp(2))
+                                                } else {
+                                                    pair.no_book.bids.last().map(|b| b.price.round_dp(2))
+                                                }
+                                                .unwrap_or(dec!(0.01));
+
+                                                strategy_state.insert(market_id, 4);
+                                                first_leg_price_map.remove(&market_id);
+                                                first_leg_qty_map.remove(&market_id);
+                                                let keys: Vec<String> = sim_open_orders
+                                                    .iter()
+                                                    .filter(|e| e.value().market_id == market_id)
+                                                    .map(|e| e.key().clone())
+                                                    .collect();
+                                                for k in keys {
+                                                    sim_open_orders.remove(&k);
+                                                }
+
+                                                if is_live {
+                                                    let exec_sell = executor.clone();
+                                                    let pt = _risk_manager.position_tracker();
+                                                    let token_id_sell = if state == 1 {
+                                                        pair.yes_book.asset_id
+                                                    } else {
+                                                        pair.no_book.asset_id
+                                                    };
+                                                    let market_id_str = market_id.to_string();
+                                                    let market_display_str = market_display.clone();
+                                                    let sell_countdown = Some(countdown_str.clone());
+                                                    use rust_decimal::prelude::ToPrimitive;
+                                                    let price_f64 = bid_price.to_f64().unwrap_or(0.0);
+                                                    tokio::spawn(async move {
+                                                        match exec_sell.sell_at_price(token_id_sell, bid_price, qty_sell).await {
+                                                            Ok(resp) => {
+                                                                pt.update_position(token_id_sell, -qty_sell);
+                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                use chrono::Utc;
+                                                                add_trade(TradeRecord {
+                                                                    id: resp.order_id.clone(),
+                                                                    market_id: market_id_str,
+                                                                    market_slug: market_display_str,
+                                                                    side: if state == 1 { "YES".to_string() } else { "NO".to_string() },
+                                                                    price: price_f64,
+                                                                    size: qty_sell.to_f64().unwrap_or(0.0),
+                                                                    timestamp: Utc::now().timestamp(),
+                                                                    status: "Sold".to_string(),
+                                                                    profit: None,
+                                                                    buy_countdown: None,
+                                                                    sell_countdown,
+                                                                });
+                                                            }
+                                                            Err(e) => {
+                                                                warn!(
+                                                                    "❌ 倒计时策略{}秒回撤卖出失败: {}",
+                                                                    sec_to_end_nonneg, e
+                                                                );
+                                                            }
+                                                        }
+                                                    });
+                                                } else {
+                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                    use chrono::Utc;
+                                                    use rust_decimal::prelude::ToPrimitive;
+                                                    add_trade(TradeRecord {
+                                                        id: format!("SIM-{}", uuid::Uuid::new_v4()),
+                                                        market_id: market_id.to_string(),
+                                                        market_slug: market_display.clone(),
+                                                        side: if state == 1 { "YES".to_string() } else { "NO".to_string() },
+                                                        price: bid_price.to_f64().unwrap_or(0.0),
+                                                        size: qty_sell.to_f64().unwrap_or(0.0),
+                                                        timestamp: Utc::now().timestamp(),
+                                                        status: "SimSold".to_string(),
+                                                        profit: None,
+                                                        buy_countdown: None,
+                                                        sell_countdown: Some(countdown_str.clone()),
+                                                    });
+                                                }
+                                                continue;
+                                            }
+                                        }
+                                    }
                                     if sec_to_end > 0 {
                                         if state == 0 {
                                             let yes_ask = yes_best_ask.map(|(p, _)| p.round_dp(2));
@@ -884,6 +989,7 @@ async fn main() -> Result<()> {
                                                 if limit_price < first_leg_min_price {
                                                     strategy_state.insert(market_id, 4);
                                                     first_leg_price_map.remove(&market_id);
+                                                    first_leg_qty_map.remove(&market_id);
                                                     let keys: Vec<String> = sim_open_orders
                                                         .iter()
                                                         .filter(|e| e.value().market_id == market_id)
@@ -916,6 +1022,7 @@ async fn main() -> Result<()> {
                                                 if limit_price >= total_price_cap {
                                                     strategy_state.insert(market_id, 4);
                                                     first_leg_price_map.remove(&market_id);
+                                                    first_leg_qty_map.remove(&market_id);
                                                     let keys: Vec<String> = sim_open_orders
                                                         .iter()
                                                         .filter(|e| e.value().market_id == market_id)
@@ -948,6 +1055,7 @@ async fn main() -> Result<()> {
                                                 if second_leg_candidate < second_leg_fixed_price {
                                                     strategy_state.insert(market_id, 4);
                                                     first_leg_price_map.remove(&market_id);
+                                                    first_leg_qty_map.remove(&market_id);
                                                     let keys: Vec<String> = sim_open_orders
                                                         .iter()
                                                         .filter(|e| e.value().market_id == market_id)
@@ -992,6 +1100,7 @@ async fn main() -> Result<()> {
                                                     let pt = _risk_manager.position_tracker();
                                                     let state_map = strategy_state.clone();
                                                     let price_map = first_leg_price_map.clone();
+                                                    let qty_map = first_leg_qty_map.clone();
                                                     let market_id_key = market_id;
                                                     let next_state = if side_key == 0 { 1u8 } else { 2u8 };
                                                     let market_id_str = market_id.to_string();
@@ -1020,11 +1129,13 @@ async fn main() -> Result<()> {
                                                                     sell_countdown: None,
                                                                 });
                                                                 price_map.insert(market_id_key, limit_price);
+                                                                qty_map.insert(market_id_key, qty);
                                                                 state_map.insert(market_id_key, next_state);
                                                             }
                                                             Err(e) => {
                                                                 warn!("❌ 倒计时策略第一腿下单失败: {}", e);
                                                                 price_map.remove(&market_id_key);
+                                                                qty_map.remove(&market_id_key);
                                                                 state_map.insert(market_id_key, 0u8);
                                                             }
                                                         }
@@ -1049,12 +1160,14 @@ async fn main() -> Result<()> {
                                                         sell_countdown: None,
                                                     });
                                                     first_leg_price_map.insert(market_id, limit_price);
+                                                    first_leg_qty_map.insert(market_id, qty);
                                                     sim_open_orders.insert(
                                                         order_id.clone(),
                                                         SimOrderInfo {
                                                             market_id,
                                                             side_key,
                                                             limit_price,
+                                                            size: qty,
                                                             on_filled_state: if side_key == 0 { 1 } else { 2 },
                                                             clear_first_leg_price: false,
                                                         },
@@ -1089,6 +1202,7 @@ async fn main() -> Result<()> {
                                                 let pt = _risk_manager.position_tracker();
                                                 let state_map = strategy_state.clone();
                                                 let price_map = first_leg_price_map.clone();
+                                                    let qty_map = first_leg_qty_map.clone();
                                                 let market_id_key = market_id;
                                                 let market_id_str = market_id.to_string();
                                                 let market_display_str = market_display.clone();
@@ -1123,9 +1237,11 @@ async fn main() -> Result<()> {
                                                     if ok {
                                                         state_map.insert(market_id_key, 3u8);
                                                         price_map.remove(&market_id_key);
+                                                        qty_map.remove(&market_id_key);
                                                     } else {
                                                         state_map.insert(market_id_key, 0u8);
                                                         price_map.remove(&market_id_key);
+                                                        qty_map.remove(&market_id_key);
                                                     }
                                                 });
                                             } else {
@@ -1153,6 +1269,7 @@ async fn main() -> Result<()> {
                                                         market_id,
                                                         side_key: if state == 1 { 1 } else { 0 },
                                                         limit_price: second_leg_fixed_price,
+                                                        size: qty2,
                                                         on_filled_state: 3,
                                                         clear_first_leg_price: true,
                                                     },
