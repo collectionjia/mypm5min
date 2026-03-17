@@ -20,18 +20,23 @@ async fn main() -> Result<()> {
     dotenv().ok();
 
     // 检查环境变量
-    let proxy_private_key = env::var("POLYMARKET_PRIVATE_KEY").context("POLYMARKET_PRIVATE_KEY 未设置")?;
+    let proxy_private_key =
+        env::var("POLYMARKET_PRIVATE_KEY").context("POLYMARKET_PRIVATE_KEY 未设置")?;
     let proxy_address_str =
         env::var("POLYMARKET_PROXY_ADDRESS").context("POLYMARKET_PROXY_ADDRESS 未设置")?;
-    let proxy_address = Address::from_str(&proxy_address_str).context("POLYMARKET_PROXY_ADDRESS 格式无效")?;
+    let proxy_address =
+        Address::from_str(&proxy_address_str).context("POLYMARKET_PROXY_ADDRESS 格式无效")?;
 
     // 新增：Target Wallet 配置
     // 用户需要在 .env 中配置 TARGET_WALLET_ADDRESS 和 TARGET_WALLET_PRIVATE_KEY
-    let target_wallet_str = env::var("TARGET_WALLET_ADDRESS").context("TARGET_WALLET_ADDRESS 未设置 (用于接收提现和来源充值)")?;
-    let target_wallet = Address::from_str(&target_wallet_str).context("TARGET_WALLET_ADDRESS 格式无效")?;
-    
+    let target_wallet_str = env::var("TARGET_WALLET_ADDRESS")
+        .context("TARGET_WALLET_ADDRESS 未设置 (用于接收提现和来源充值)")?;
+    let target_wallet =
+        Address::from_str(&target_wallet_str).context("TARGET_WALLET_ADDRESS 格式无效")?;
+
     // 如果没有配置 TARGET_WALLET_PRIVATE_KEY，充值功能将无法工作，但提现仍可尝试
-    let target_private_key = env::var("TARGET_WALLET_PRIVATE_KEY").unwrap_or_else(|_| "".to_string());
+    let target_private_key =
+        env::var("TARGET_WALLET_PRIVATE_KEY").unwrap_or_else(|_| "".to_string());
 
     info!("👤 Proxy 地址: {:?}", proxy_address);
     info!("🎯 Target 地址: {:?}", target_wallet);
@@ -45,8 +50,10 @@ async fn main() -> Result<()> {
         target_wallet,
         &target_private_key,
         &proxy_private_key,
-        None
-    ).await {
+        None,
+    )
+    .await
+    {
         Ok(_) => info!("✅ 资金检查/操作完成"),
         Err(e) => error!("❌ 资金操作失败: {}", e),
     }

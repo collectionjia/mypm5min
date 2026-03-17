@@ -32,11 +32,9 @@ pub use polymarket_client_sdk::data::types::response::Position;
 /// ```
 pub async fn get_positions() -> Result<Vec<Position>> {
     dotenvy::dotenv().ok();
-    let addr = std::env::var("POLYMARKET_PROXY_ADDRESS")
-        .context("POLYMARKET_PROXY_ADDRESS 未设置")?;
-    let user: Address = addr
-        .parse()
-        .context("POLYMARKET_PROXY_ADDRESS 格式无效")?;
+    let addr =
+        std::env::var("POLYMARKET_PROXY_ADDRESS").context("POLYMARKET_PROXY_ADDRESS 未设置")?;
+    let user: Address = addr.parse().context("POLYMARKET_PROXY_ADDRESS 格式无效")?;
     let client = Client::default();
     let req = PositionsRequest::builder().user(user).build();
     client.positions(&req).await.context("获取持仓失败")

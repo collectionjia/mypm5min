@@ -42,15 +42,13 @@ fn main() -> Result<()> {
             }
             "--out" => {
                 i += 1;
-                out_path = Some(
-                    args.get(i)
-                        .context("--out 需要参数")?
-                        .into(),
-                );
+                out_path = Some(args.get(i).context("--out 需要参数")?.into());
                 i += 1;
             }
             _ => {
-                eprintln!("用法: gen_license --hours <N> | --until \"<datetime>\" [--out license.key]");
+                eprintln!(
+                    "用法: gen_license --hours <N> | --until \"<datetime>\" [--out license.key]"
+                );
                 eprintln!("  --hours N    从当前起 N 小时后过期");
                 eprintln!("  --until \"...\" 指定过期时间（UTC），格式如 2025-02-03 00:00:00");
                 eprintln!("  --out FILE   写入文件，不指定则输出到 stdout");

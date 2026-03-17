@@ -1,10 +1,10 @@
-use anyhow::Result;
-use alloy::signers::Signer;
 use alloy::signers::local::LocalSigner;
+use alloy::signers::Signer;
+use anyhow::Result;
 use dashmap::DashMap;
-use polymarket_client_sdk::clob::Client;
 use polymarket_client_sdk::clob::types::{OrderType, Side};
 use polymarket_client_sdk::clob::ws::types::response::BookUpdate;
+use polymarket_client_sdk::clob::Client;
 use polymarket_client_sdk::types::{Address, Decimal, U256};
 use polymarket_client_sdk::POLYGON;
 use rust_decimal::prelude::ToPrimitive;
@@ -21,26 +21,30 @@ pub struct HedgePosition {
     pub token_id: U256,
     pub opposite_token_id: U256, // 对立边的token_id（用于计算差值）
     pub amount: Decimal,
-    pub entry_price: Decimal, // 买入价格（卖一价）
+    pub entry_price: Decimal,       // 买入价格（卖一价）
     pub take_profit_price: Decimal, // 止盈价格
     pub stop_loss_price: Decimal,   // 止损价格
     pub pair_id: String,
-    pub market_display: String, // 市场显示名称（例如"btc预测市场"）
-    pub order_id: Option<String>, // 如果已下GTC订单，保存订单ID
+    pub market_display: String,       // 市场显示名称（例如"btc预测市场"）
+    pub order_id: Option<String>,     // 如果已下GTC订单，保存订单ID
     pub pending_sell_amount: Decimal, // 待卖出的数量
 }
 
 pub struct HedgeMonitor {
-    client: Client<polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>>,
+    client: Client<
+        polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+    >,
     private_key: String,
     proxy_address: Option<Address>,
     positions: DashMap<String, HedgePosition>, // pair_id -> position
-    position_tracker: Arc<PositionTracker>, // 用于更新风险敞口
+    position_tracker: Arc<PositionTracker>,    // 用于更新风险敞口
 }
 
 impl HedgeMonitor {
     pub fn new(
-        client: Client<polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>>,
+        client: Client<
+            polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+        >,
         private_key: String,
         proxy_address: Option<Address>,
         position_tracker: Arc<PositionTracker>,
@@ -73,11 +77,7 @@ impl HedgeMonitor {
 
             info!(
                 "🛡️ 开始对冲监测 | 市场:{} | 持仓:{}份 | 买入价:{:.4} | 止盈:{:.4} | 止损:{:.4}",
-                market_display,
-                amount,
-                entry_price,
-                take_profit_price,
-                stop_loss_price
+                market_display, amount, entry_price, take_profit_price, stop_loss_price
             );
 
             let position = HedgePosition {
@@ -108,7 +108,7 @@ impl HedgeMonitor {
             let stop_loss_pct = (old_entry - pos.stop_loss_price) / old_entry;
             pos.take_profit_price = entry_price * (dec!(1.0) + take_profit_pct);
             pos.stop_loss_price = entry_price * (dec!(1.0) - stop_loss_pct);
-            
+
             info!(
                 pair_id = %pair_id,
                 old_entry = %old_entry,
@@ -163,10 +163,16 @@ impl HedgeMonitor {
 
             // 检查是否达到止盈或止损
             let (should_sell, reason) = if best_bid_price >= position.take_profit_price {
-                let profit_pct = ((best_bid_price - position.entry_price) / position.entry_price * dec!(100.0)).to_f64().unwrap_or(0.0);
+                let profit_pct = ((best_bid_price - position.entry_price) / position.entry_price
+                    * dec!(100.0))
+                .to_f64()
+                .unwrap_or(0.0);
                 (true, format!("止盈({:.2}%)", profit_pct))
             } else if best_bid_price <= position.stop_loss_price {
-                let loss_pct = ((position.entry_price - best_bid_price) / position.entry_price * dec!(100.0)).to_f64().unwrap_or(0.0);
+                let loss_pct = ((position.entry_price - best_bid_price) / position.entry_price
+                    * dec!(100.0))
+                .to_f64()
+                .unwrap_or(0.0);
                 (true, format!("止损({:.2}%)", loss_pct))
             } else {
                 (false, String::new())
@@ -175,11 +181,13 @@ impl HedgeMonitor {
             if should_sell {
                 // 获取当前token和对立边token的持仓
                 let current_position = self.position_tracker.get_position(position.token_id);
-                let opposite_position = self.position_tracker.get_position(position.opposite_token_id);
-                
+                let opposite_position = self
+                    .position_tracker
+                    .get_position(position.opposite_token_id);
+
                 // 计算差值：当前持仓 - 对立边持仓
                 let difference = current_position - opposite_position;
-                
+
                 // 如果差值 <= 0，说明对立边可以覆盖，不需要卖出
                 if difference <= dec!(0) {
                     info!(
@@ -191,16 +199,17 @@ impl HedgeMonitor {
                     );
                     continue;
                 }
-                
+
                 // 确定实际要卖出的数量
-                let sell_amount = if position.order_id.is_some() && position.pending_sell_amount > dec!(0) {
-                    // 如果有未成交订单，使用pending_sell_amount
-                    position.pending_sell_amount
-                } else {
-                    // 否则使用差值
-                    difference
-                };
-                
+                let sell_amount =
+                    if position.order_id.is_some() && position.pending_sell_amount > dec!(0) {
+                        // 如果有未成交订单，使用pending_sell_amount
+                        position.pending_sell_amount
+                    } else {
+                        // 否则使用差值
+                        difference
+                    };
+
                 // 差值 > 0，只卖出差值部分
                 info!(
                     "✅ 达到{} | 市场:{} | 当前买一价:{:.4} | 买入价:{:.4} | 当前持仓:{}份 | 对立边持仓:{}份 | 差值:{}份 | 准备卖出:{}份",
@@ -213,7 +222,7 @@ impl HedgeMonitor {
                     difference,
                     sell_amount
                 );
-                
+
                 // 使用GTC订单卖出
                 // 为了避免阻塞主循环，将卖出操作放到独立的异步任务中
                 let position_clone = position.clone();
@@ -222,13 +231,13 @@ impl HedgeMonitor {
                 let positions = self.positions.clone();
                 let client = self.client.clone();
                 let private_key = self.private_key.clone();
-                
+
                 // 先标记为正在处理，避免重复下单（使用remove+insert避免阻塞）
                 if let Some((_, mut pos)) = self.positions.remove(&pair_id) {
                     pos.order_id = Some("processing".to_string());
                     self.positions.insert(pair_id.clone(), pos);
                 }
-                
+
                 tokio::spawn(async move {
                     // 重新创建 signer（因为不能在 spawn 中直接使用 self）
                     let signer = match LocalSigner::from_str(&private_key) {
@@ -236,13 +245,12 @@ impl HedgeMonitor {
                         Err(e) => {
                             error!(
                                 "❌ 创建signer失败 | 市场:{} | 错误:{}",
-                                position_clone.market_display,
-                                e
+                                position_clone.market_display, e
                             );
                             return;
                         }
                     };
-                    
+
                     // 执行卖出操作
                     match Self::execute_sell_order(
                         &client,
@@ -250,7 +258,9 @@ impl HedgeMonitor {
                         &position_clone,
                         best_bid_price,
                         sell_amount,
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok((order_id, filled, remaining)) => {
                             // 更新仓位，标记已下订单（使用remove+insert避免get_mut阻塞）
                             let order_id_short = order_id[..16].to_string();
@@ -259,27 +269,33 @@ impl HedgeMonitor {
                                     // 还有剩余，保存订单ID
                                     pos.order_id = Some(order_id);
                                     pos.pending_sell_amount = remaining;
-                                    info!("🔒 仓位order_id已更新 | 市场:{} | 订单ID:{} | 剩余:{}份", 
-                                        position_clone.market_display, order_id_short, remaining);
+                                    info!(
+                                        "🔒 仓位order_id已更新 | 市场:{} | 订单ID:{} | 剩余:{}份",
+                                        position_clone.market_display, order_id_short, remaining
+                                    );
                                 } else {
                                     // 完全成交，清除订单ID
                                     pos.order_id = None;
                                     pos.pending_sell_amount = dec!(0);
-                                    info!("✅ 卖出订单已完全成交 | 市场:{} | 订单ID:{} | 成交:{}份", 
-                                        position_clone.market_display, order_id_short, filled);
+                                    info!(
+                                        "✅ 卖出订单已完全成交 | 市场:{} | 订单ID:{} | 成交:{}份",
+                                        position_clone.market_display, order_id_short, filled
+                                    );
                                 }
                                 positions.insert(pair_id_clone.clone(), pos);
                             } else {
                                 warn!("⚠️ 未找到仓位 | pair_id:{}", pair_id_clone);
                             }
-                            
+
                             // 只有实际成交的部分才更新持仓和风险敞口
                             if filled > dec!(0) {
-                                info!("📊 开始更新持仓 | 市场:{} | 减少:{}份", 
-                                    position_clone.market_display, filled);
+                                info!(
+                                    "📊 开始更新持仓 | 市场:{} | 减少:{}份",
+                                    position_clone.market_display, filled
+                                );
                                 position_tracker.update_position(position_clone.token_id, -filled);
                                 info!("📊 持仓更新完成 | 市场:{}", position_clone.market_display);
-                                
+
                                 // 更新风险敞口成本
                                 info!("💰 开始更新风险敞口 | 市场:{} | entry_price:{} | sell_amount:{}", 
                                     position_clone.market_display,
@@ -290,24 +306,23 @@ impl HedgeMonitor {
                                     position_clone.entry_price,
                                     -filled,
                                 );
-                                info!("💰 风险敞口更新完成 | 市场:{}", position_clone.market_display);
-                                
+                                info!(
+                                    "💰 风险敞口更新完成 | 市场:{}",
+                                    position_clone.market_display
+                                );
+
                                 // 计算风险敞口
                                 let current_exposure = position_tracker.calculate_exposure();
                                 info!(
                                     "📉 风险敞口已更新 | 市场:{} | 卖出:{}份 | 当前敞口:{:.2} USD",
-                                    position_clone.market_display,
-                                    filled,
-                                    current_exposure
+                                    position_clone.market_display, filled, current_exposure
                                 );
                             }
                         }
                         Err(e) => {
                             error!(
                                 "❌ 卖出订单失败 | 市场:{} | 价格:{:.4} | 错误:{}",
-                                position_clone.market_display,
-                                best_bid_price,
-                                e
+                                position_clone.market_display, best_bid_price, e
                             );
                             // 如果失败，清除 processing 标记
                             if let Some(mut pos) = positions.get_mut(&pair_id_clone) {
@@ -328,17 +343,21 @@ impl HedgeMonitor {
     }
 
     /// 计算指定数量的实际卖出数量（考虑手续费）
-    fn calculate_sell_amount_with_size(&self, position: &HedgePosition, base_amount: Decimal) -> Decimal {
+    fn calculate_sell_amount_with_size(
+        &self,
+        position: &HedgePosition,
+        base_amount: Decimal,
+    ) -> Decimal {
         // 计算手续费
         let p = position.entry_price.to_f64().unwrap_or(0.0);
         let c = 100.0;
         let fee_rate = 0.25;
         let exponent = 2.0;
-        
+
         let base = p * (1.0 - p);
         let fee_value = c * fee_rate * base.powf(exponent);
         let fee_decimal = Decimal::try_from(fee_value).unwrap_or(dec!(0));
-        
+
         // 计算实际可用份额
         let available_amount = if fee_decimal >= dec!(100.0) {
             dec!(0.01)
@@ -346,10 +365,10 @@ impl HedgeMonitor {
             let multiplier = (dec!(100.0) - fee_decimal) / dec!(100.0);
             base_amount * multiplier
         };
-        
+
         // 向下取整到2位小数
         let floored_size = (available_amount * dec!(100.0)).floor() / dec!(100.0);
-        
+
         if floored_size.is_zero() {
             dec!(0.01)
         } else {
@@ -364,11 +383,11 @@ impl HedgeMonitor {
         let c = 100.0;
         let fee_rate = 0.25;
         let exponent = 2.0;
-        
+
         let base = p * (1.0 - p);
         let fee_value = c * fee_rate * base.powf(exponent);
         let fee_decimal = Decimal::try_from(fee_value).unwrap_or(dec!(0));
-        
+
         // 计算实际可用份额
         let available_amount = if fee_decimal >= dec!(100.0) {
             dec!(0.01)
@@ -376,10 +395,10 @@ impl HedgeMonitor {
             let multiplier = (dec!(100.0) - fee_decimal) / dec!(100.0);
             base_amount * multiplier
         };
-        
+
         // 向下取整到2位小数
         let floored_size = (available_amount * dec!(100.0)).floor() / dec!(100.0);
-        
+
         if floored_size.is_zero() {
             dec!(0.01)
         } else {
@@ -389,7 +408,9 @@ impl HedgeMonitor {
 
     /// 静态方法：执行卖出订单
     async fn execute_sell_order(
-        client: &Client<polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>>,
+        client: &Client<
+            polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+        >,
         signer: &impl Signer<alloy::primitives::Signature>,
         position: &HedgePosition,
         price: Decimal,
@@ -400,11 +421,11 @@ impl HedgeMonitor {
         let c = 100.0;
         let fee_rate = 0.25;
         let exponent = 2.0;
-        
+
         let base = p * (1.0 - p);
         let fee_value = c * fee_rate * base.powf(exponent);
         let fee_decimal = Decimal::try_from(fee_value).unwrap_or(dec!(0));
-        
+
         // 计算实际可用份额
         let available_amount = if fee_decimal >= dec!(100.0) {
             dec!(0.01)
@@ -412,7 +433,7 @@ impl HedgeMonitor {
             let multiplier = (dec!(100.0) - fee_decimal) / dec!(100.0);
             size * multiplier
         };
-        
+
         // 向下取整到2位小数
         let floored_size = (available_amount * dec!(100.0)).floor() / dec!(100.0);
         let order_size = if floored_size.is_zero() {
@@ -456,7 +477,7 @@ impl HedgeMonitor {
         // 检查订单是否立即成交
         let filled = result.taking_amount;
         let remaining = order_size - filled;
-        
+
         if filled > dec!(0) {
             info!(
                 "💰 卖出订单已部分成交 | 市场:{} | 订单ID:{} | 已成交:{}份 | 剩余:{}份",
@@ -474,7 +495,7 @@ impl HedgeMonitor {
                 price
             );
         }
-        
+
         Ok((result.order_id, filled, remaining))
     }
 
@@ -486,8 +507,7 @@ impl HedgeMonitor {
         price: Decimal,
         size: Option<Decimal>,
     ) -> Result<(String, Decimal, Decimal)> {
-        let signer = LocalSigner::from_str(&self.private_key)?
-            .with_chain_id(Some(POLYGON));
+        let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
 
         // 计算手续费
         // 公式: fee = c * fee_rate * (p * (1-p))^exponent
@@ -497,17 +517,17 @@ impl HedgeMonitor {
         let c = 100.0; // 固定为100
         let fee_rate = 0.25;
         let exponent = 2.0;
-        
+
         // 计算手续费比例值（0-1.56之间）
         let base = p * (1.0 - p);
         let fee_value = c * fee_rate * base.powf(exponent);
-        
+
         // 将手续费转换为 Decimal
         let fee_decimal = Decimal::try_from(fee_value).unwrap_or(dec!(0));
-        
+
         // 使用提供的size，如果没有提供则使用position.amount
         let base_amount = size.unwrap_or(position.amount);
-        
+
         // 计算实际可用份额 = 成交份额 * (100 - Fee) / 100
         // 如果 Fee >= 100，说明异常情况，使用最小可交易单位
         let available_amount = if fee_decimal >= dec!(100.0) {
@@ -517,12 +537,12 @@ impl HedgeMonitor {
             let multiplier = (dec!(100.0) - fee_decimal) / dec!(100.0);
             base_amount * multiplier
         };
-        
+
         // 将订单大小向下取整到2位小数（Polymarket要求）
         // 使用向下取整而不是四舍五入，避免订单大小超过实际持有份额
         // 方法：乘以100，向下取整，再除以100
         let floored_size = (available_amount * dec!(100.0)).floor() / dec!(100.0);
-        
+
         // 如果向下取整后为0，则使用最小可交易单位
         let order_size = if floored_size.is_zero() {
             dec!(0.01) // 最小单位
@@ -566,7 +586,7 @@ impl HedgeMonitor {
         // 检查订单是否立即成交
         let filled = result.taking_amount;
         let remaining = order_size - filled;
-        
+
         if filled > dec!(0) {
             info!(
                 "💰 卖出订单已部分成交 | 市场:{} | 订单ID:{} | 已成交:{}份 | 剩余:{}份",
@@ -584,7 +604,7 @@ impl HedgeMonitor {
                 price
             );
         }
-        
+
         Ok((result.order_id, filled, remaining))
     }
 

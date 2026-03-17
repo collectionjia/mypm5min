@@ -4,25 +4,25 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use dashmap::DashMap;
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use dashmap::DashMap;
-use tokio::sync::RwLock;
 use tokio::net::TcpListener;
+use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
-use tracing::{info, warn, error};
-use rust_decimal::Decimal;
-use rust_decimal_macros::dec;
+use tracing::{error, info, warn};
 
-use crate::trading::TradingExecutor;
-use poly_5min_bot::positions::{get_positions, Position};
 use crate::config::Config;
 use crate::merge;
+use crate::trading::TradingExecutor;
 use crate::utils::balance_checker::get_usdc_balance;
 use alloy::primitives::Address;
+use poly_5min_bot::positions::{get_positions, Position};
 use std::str::FromStr;
 
 #[derive(Clone, Serialize, Debug)]
@@ -124,13 +124,21 @@ pub async fn start_server(
     executor: Option<Arc<TradingExecutor>>,
     countdown_settings: Arc<RwLock<CountdownSettings>>,
 ) {
-    let state = AppState { is_running, market_data, executor, countdown_settings };
+    let state = AppState {
+        is_running,
+        market_data,
+        executor,
+        countdown_settings,
+    };
 
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/api/status", get(status_handler))
         .route("/api/control", post(control_handler))
-        .route("/api/countdown_settings", get(get_countdown_settings_handler).post(set_countdown_settings_handler))
+        .route(
+            "/api/countdown_settings",
+            get(get_countdown_settings_handler).post(set_countdown_settings_handler),
+        )
         .route("/api/close_all", post(close_all_handler))
         .route("/api/redeem", post(redeem_handler))
         .route("/api/buy", post(buy_handler))
@@ -168,7 +176,11 @@ async fn set_countdown_settings_handler(
     Json(payload): Json<CountdownSettings>,
 ) -> impl IntoResponse {
     let side = payload.side.trim().to_uppercase();
-    let side = if side == "YES" || side == "NO" { side } else { "YES".to_string() };
+    let side = if side == "YES" || side == "NO" {
+        side
+    } else {
+        "YES".to_string()
+    };
     let multiplier = if payload.multiplier.is_finite() && payload.multiplier >= 1.0 {
         payload.multiplier
     } else {
@@ -214,12 +226,15 @@ async fn portfolio_handler() -> Json<PortfolioResponse> {
 
     // 获取持仓
     let positions = match get_positions().await {
-        Ok(p) => p.into_iter().map(|pos| PositionView {
-            asset: pos.asset.to_string(),
-            title: pos.title,
-            size: pos.size,
-            cur_price: pos.cur_price,
-        }).collect(),
+        Ok(p) => p
+            .into_iter()
+            .map(|pos| PositionView {
+                asset: pos.asset.to_string(),
+                title: pos.title,
+                size: pos.size,
+                cur_price: pos.cur_price,
+            })
+            .collect(),
         Err(e) => {
             warn!("获取持仓失败: {}", e);
             vec![]
@@ -236,11 +251,13 @@ async fn portfolio_handler() -> Json<PortfolioResponse> {
 async fn close_all_handler(State(state): State<AppState>) -> impl IntoResponse {
     let executor = match &state.executor {
         Some(exec) => exec,
-        None => return Json(CloseAllResponse {
-            success: false,
-            message: "Executor not initialized".to_string(),
-            positions_closed: 0,
-        }),
+        None => {
+            return Json(CloseAllResponse {
+                success: false,
+                message: "Executor not initialized".to_string(),
+                positions_closed: 0,
+            })
+        }
     };
 
     info!("🛑 收到Web控制台平仓指令，开始执行平仓...");
@@ -250,11 +267,12 @@ async fn close_all_handler(State(state): State<AppState>) -> impl IntoResponse {
     // info!("⏸️ 已暂停Bot自动交易，防止新开仓位");
 
     let mut closed_count = 0;
-    
+
     // 获取当前持仓
     match get_positions().await {
         Ok(positions) => {
-            let active_positions: Vec<_> = positions.iter().filter(|p| p.size > dec!(0.01)).collect();
+            let active_positions: Vec<_> =
+                positions.iter().filter(|p| p.size > dec!(0.01)).collect();
             if active_positions.is_empty() {
                 info!("✅ 当前无剩余持仓");
                 return Json(CloseAllResponse {
@@ -265,22 +283,28 @@ async fn close_all_handler(State(state): State<AppState>) -> impl IntoResponse {
             }
 
             info!("🔍 发现 {} 个持仓需要平仓", active_positions.len());
-            
+
             for pos in active_positions {
                 let size_floor = (pos.size * dec!(100)).floor() / dec!(100);
                 if size_floor < dec!(0.01) {
                     continue;
                 }
-                
+
                 // 尝试以 0.05 卖出 (市价单效果，比0.01稍微高一点避免极端情况，但实际上0.01最稳妥能成交)
                 // 这里使用0.01确保只要有买单就能成交
                 let sell_price = dec!(0.01);
-                
-                match executor.sell_at_price(pos.asset, sell_price, size_floor).await {
+
+                match executor
+                    .sell_at_price(pos.asset, sell_price, size_floor)
+                    .await
+                {
                     Ok(_) => {
-                        info!("✅ 已下卖单 | token_id={:#x} | 数量:{} | 价格:{:.4}", pos.asset, size_floor, sell_price);
+                        info!(
+                            "✅ 已下卖单 | token_id={:#x} | 数量:{} | 价格:{:.4}",
+                            pos.asset, size_floor, sell_price
+                        );
                         closed_count += 1;
-                    },
+                    }
                     Err(e) => {
                         error!("❌ 平仓失败 | token_id={:#x} | 错误:{}", pos.asset, e);
                     }
@@ -306,7 +330,7 @@ async fn close_all_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn redeem_handler() -> impl IntoResponse {
     info!("🎁 收到Web控制台领取奖励指令，开始执行 Merge...");
-    
+
     // 加载配置
     let config = match Config::from_env() {
         Ok(c) => c,
@@ -339,13 +363,16 @@ async fn redeem_handler() -> impl IntoResponse {
         Ok(positions) => {
             // 找到所有 YES+NO 双边都有持仓的市场
             // 先按 condition_id 分组
-            let mut markets: std::collections::HashMap<String, (Decimal, Decimal)> = std::collections::HashMap::new();
-            
+            let mut markets: std::collections::HashMap<String, (Decimal, Decimal)> =
+                std::collections::HashMap::new();
+
             for pos in positions {
                 // pos.condition_id 是 B256 转 hex 字符串
                 // pos.outcome_index: 0=YES, 1=NO
                 let condition_id_str = pos.condition_id.to_string();
-                let entry = markets.entry(condition_id_str).or_insert((dec!(0), dec!(0)));
+                let entry = markets
+                    .entry(condition_id_str)
+                    .or_insert((dec!(0), dec!(0)));
                 if pos.outcome_index == 0 {
                     entry.0 = pos.size;
                 } else if pos.outcome_index == 1 {
@@ -378,7 +405,7 @@ async fn redeem_handler() -> impl IntoResponse {
                         Ok(tx) => {
                             info!("✅ Merge 成功: {}", tx);
                             tx_hashes.push(tx);
-                        },
+                        }
                         Err(e) => {
                             error!("❌ Merge 失败 {}: {}", cid_str, e);
                         }
@@ -500,11 +527,7 @@ async fn buy_handler(
 
     info!(
         "🛒 Web手动买入 | market_id={} | side={} | token_id={} | price={:.4} | qty={}",
-        payload.market_id,
-        side,
-        token_id_str,
-        price_f64,
-        qty
+        payload.market_id, side, token_id_str, price_f64, qty
     );
 
     if !state.is_running.load(Ordering::Relaxed) {
@@ -571,7 +594,11 @@ async fn buy_handler(
 }
 
 async fn markets_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let mut markets: Vec<MarketData> = state.market_data.iter().map(|r| r.value().clone()).collect();
+    let mut markets: Vec<MarketData> = state
+        .market_data
+        .iter()
+        .map(|r| r.value().clone())
+        .collect();
     // 按更新时间倒序排序
     markets.sort_by(|a, b| b.update_time.cmp(&a.update_time));
     Json(markets)
@@ -579,20 +606,20 @@ async fn markets_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn logs_handler() -> impl IntoResponse {
     use crate::utils::logger::LOG_BUFFER;
-    
+
     let logs: Vec<String> = if let Ok(buffer) = LOG_BUFFER.lock() {
         buffer.iter().cloned().collect::<Vec<_>>()
     } else {
         vec!["无法获取日志锁".to_string()]
     };
-    
+
     Json(logs)
 }
 
 async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
     use crate::utils::trade_history;
     let mut trades = trade_history::get_trades();
-    
+
     // 更新交易状态（基于最新市场价格）
     for trade in &mut trades {
         if trade.status == "Won"
@@ -623,7 +650,7 @@ async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
             }
         }
     }
-    
+
     Json(trades)
 }
 

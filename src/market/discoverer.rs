@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use polymarket_client_sdk::gamma::{Client, types::request::MarketsRequest};
+use polymarket_client_sdk::gamma::{types::request::MarketsRequest, Client};
 use polymarket_client_sdk::types::{B256, U256};
 use tracing::{info, warn};
 
@@ -62,9 +62,7 @@ impl MarketDiscoverer {
         info!(timestamp, slug_count = slugs.len(), "查询市场");
 
         // 使用Gamma API批量查询
-        let request = MarketsRequest::builder()
-            .slug(slugs.clone())
-            .build();
+        let request = MarketsRequest::builder().slug(slugs.clone()).build();
 
         match self.gamma_client.markets(&request).await {
             Ok(markets) => {
@@ -85,20 +83,25 @@ impl MarketDiscoverer {
     }
 
     /// 解析市场信息，提取YES和NO的token_id
-    fn parse_market(&self, market: polymarket_client_sdk::gamma::types::response::Market) -> Option<MarketInfo> {
+    fn parse_market(
+        &self,
+        market: polymarket_client_sdk::gamma::types::response::Market,
+    ) -> Option<MarketInfo> {
         // 检查市场是否活跃、启用订单簿且接受订单
-        if !market.active.unwrap_or(false) 
-           || !market.enable_order_book.unwrap_or(false)
-           || !market.accepting_orders.unwrap_or(false) {
+        if !market.active.unwrap_or(false)
+            || !market.enable_order_book.unwrap_or(false)
+            || !market.accepting_orders.unwrap_or(false)
+        {
             return None;
         }
 
         // 检查outcomes是否为["Up", "Down"]
         let outcomes = market.outcomes.as_ref()?;
 
-        if outcomes.len() != 2 
-           || !outcomes.contains(&"Up".to_string()) 
-           || !outcomes.contains(&"Down".to_string()) {
+        if outcomes.len() != 2
+            || !outcomes.contains(&"Up".to_string())
+            || !outcomes.contains(&"Down".to_string())
+        {
             return None;
         }
 
@@ -118,11 +121,7 @@ impl MarketDiscoverer {
 
         // 从slug中提取加密货币符号
         let slug = market.slug.as_ref()?;
-        let crypto_symbol = slug
-            .split('-')
-            .next()
-            .unwrap_or("")
-            .to_string();
+        let crypto_symbol = slug.split('-').next().unwrap_or("").to_string();
 
         // 获取endDate
         let end_date = market.end_date?;

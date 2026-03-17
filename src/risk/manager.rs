@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use polymarket_client_sdk::clob::Client;
-use polymarket_client_sdk::types::{B256, Decimal, U256};
+use polymarket_client_sdk::types::{Decimal, B256, U256};
 use rust_decimal_macros::dec;
 use tracing::{debug, error, info};
 
@@ -38,7 +38,9 @@ pub struct OrderPair {
 }
 
 pub struct RiskManager {
-    clob_client: Client<polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>>,
+    clob_client: Client<
+        polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+    >,
     pending_pairs: DashMap<String, OrderPair>,
     position_tracker: std::sync::Arc<PositionTracker>,
     recovery_strategy: RecoveryStrategy,
@@ -46,7 +48,9 @@ pub struct RiskManager {
 
 impl RiskManager {
     pub fn new(
-        clob_client: Client<polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>>,
+        clob_client: Client<
+            polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+        >,
         config: &BotConfig,
     ) -> Self {
         Self {
@@ -103,8 +107,10 @@ impl RiskManager {
         };
 
         // 更新持仓（敞口已在「执行套利」时按订单成本增加，此处不再按成交更新敞口）
-        self.position_tracker.update_position(yes_token, pair.yes_filled);
-        self.position_tracker.update_position(no_token, pair.no_filled);
+        self.position_tracker
+            .update_position(yes_token, pair.yes_filled);
+        self.position_tracker
+            .update_position(no_token, pair.no_filled);
 
         // 这个日志已经在executor中打印了，这里不再重复打印
         debug!(
@@ -143,9 +149,7 @@ impl RiskManager {
                     .await
             }
             PairStatus::BothFailed => {
-                error!(
-                    "❌ 套利失败 | YES和NO订单都未成交，可能原因：价格已变化或流动性不足"
-                );
+                error!("❌ 套利失败 | YES和NO订单都未成交，可能原因：价格已变化或流动性不足");
                 Ok(RecoveryAction::ManualIntervention {
                     reason: "两个订单都失败".to_string(),
                 })

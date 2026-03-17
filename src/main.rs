@@ -12,6 +12,7 @@ use poly_5min_bot::positions::{get_positions, Position};
 use anyhow::Result;
 use dashmap::DashMap;
 use futures::StreamExt;
+use polymarket_client_sdk::types::{Address, B256, U256};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet};
@@ -20,7 +21,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
-use polymarket_client_sdk::types::{Address, B256, U256};
 
 use crate::config::Config;
 use crate::market::{MarketDiscoverer, MarketInfo, MarketScheduler};
@@ -45,7 +45,8 @@ fn condition_ids_with_both_sides(positions: &[Position]) -> Vec<B256> {
     by_condition
         .into_iter()
         .filter(|(_, indices)| {
-            (indices.contains(&0) && indices.contains(&1)) || (indices.contains(&1) && indices.contains(&2))
+            (indices.contains(&0) && indices.contains(&1))
+                || (indices.contains(&1) && indices.contains(&2))
         })
         .map(|(c, _)| c)
         .collect()
@@ -157,7 +158,9 @@ async fn run_merge_task(
     sleep(INITIAL_DELAY).await;
 
     loop {
-        if wind_down_in_progress.load(Ordering::Relaxed) || countdown_in_progress.load(Ordering::Relaxed) {
+        if wind_down_in_progress.load(Ordering::Relaxed)
+            || countdown_in_progress.load(Ordering::Relaxed)
+        {
             info!("收尾进行中，本轮回 merge 跳过");
             sleep(interval).await;
             continue;
@@ -187,7 +190,11 @@ async fn run_merge_task(
         for (i, &condition_id) in condition_ids.iter().enumerate() {
             // 第 2 个及以后的市场：先等 30 秒再 merge，避免与上一笔链上处理重叠
             if i > 0 {
-                info!("本轮回 merge: 等待 30 秒后合并下一市场 (第 {}/{} 个)", i + 1, condition_ids.len());
+                info!(
+                    "本轮回 merge: 等待 30 秒后合并下一市场 (第 {}/{} 个)",
+                    i + 1,
+                    condition_ids.len()
+                );
                 sleep(DELAY_BETWEEN_MERGES).await;
             }
             let mut result = merge::merge_max(condition_id, proxy, &private_key, None).await;
@@ -253,13 +260,13 @@ async fn main() -> Result<()> {
     // 初始化组件（暂时不使用，主循环已禁用）
     let _discoverer = MarketDiscoverer::new(config.crypto_symbols.clone());
     let _scheduler = MarketScheduler::new(_discoverer, config.market_refresh_advance_secs);
-    
+
     // 验证私钥格式
     info!("正在验证私钥格式...");
     use alloy::signers::local::LocalSigner;
     use polymarket_client_sdk::POLYGON;
     use std::str::FromStr;
-    
+
     let _signer_test = LocalSigner::from_str(&config.private_key)
         .map_err(|e| anyhow::anyhow!("私钥格式无效: {}", e))?;
     info!("私钥格式验证通过");
@@ -279,7 +286,9 @@ async fn main() -> Result<()> {
         config.slippage,
         config.gtd_expiration_secs,
         config.arbitrage_order_type.clone(),
-    ).await {
+    )
+    .await
+    {
         Ok(exec) => {
             info!("交易执行器认证成功（可能使用了派生API key）");
             Arc::new(exec)
@@ -298,22 +307,21 @@ async fn main() -> Result<()> {
     // 创建CLOB客户端用于风险管理（需要认证）
     info!("正在初始化风险管理客户端（需要API认证）...");
     use alloy::signers::Signer;
-    use polymarket_client_sdk::clob::{Client, Config as ClobConfig};
     use polymarket_client_sdk::clob::types::SignatureType;
+    use polymarket_client_sdk::clob::{Client, Config as ClobConfig};
 
-    let signer_for_risk = LocalSigner::from_str(&config.private_key)?
-        .with_chain_id(Some(POLYGON));
+    let signer_for_risk = LocalSigner::from_str(&config.private_key)?.with_chain_id(Some(POLYGON));
     let clob_config = ClobConfig::builder().use_server_time(true).build();
     let mut auth_builder_risk = Client::new("https://clob.polymarket.com", clob_config)?
         .authentication_builder(&signer_for_risk);
-    
+
     // 如果提供了proxy_address，设置funder和signature_type
     if let Some(funder) = config.proxy_address {
         auth_builder_risk = auth_builder_risk
             .funder(funder)
             .signature_type(SignatureType::Proxy);
     }
-    
+
     let clob_client = match auth_builder_risk.authenticate().await {
         Ok(client) => {
             info!("风险管理客户端认证成功（可能使用了派生API key）");
@@ -329,7 +337,7 @@ async fn main() -> Result<()> {
             return Err(anyhow::anyhow!("认证失败，程序退出: {}", e));
         }
     };
-    
+
     let _risk_manager = Arc::new(RiskManager::new(clob_client.clone(), &config));
 
     // 验证认证是否真的成功 - 尝试一个简单的API调用
@@ -345,11 +353,16 @@ async fn main() -> Result<()> {
             } else {
                 _signer_test.address()
             };
-            
-            if let Err(e) = crate::utils::balance_checker::check_balance_and_allowance(wallet_to_check).await {
+
+            if let Err(e) =
+                crate::utils::balance_checker::check_balance_and_allowance(wallet_to_check).await
+            {
                 warn!("余额/授权检查失败（非致命错误）: {}", e);
             }
-            if let Err(e) = crate::utils::balance_checker::check_conditional_token_approval(wallet_to_check).await {
+            if let Err(e) =
+                crate::utils::balance_checker::check_conditional_token_approval(wallet_to_check)
+                    .await
+            {
                 warn!("ConditionalTokens 授权检查失败（非致命错误）: {}", e);
             }
         }
@@ -370,13 +383,21 @@ async fn main() -> Result<()> {
     // 启动 Web 控制服务器
     let is_running = Arc::new(AtomicBool::new(false));
     let market_data = Arc::new(DashMap::new());
-    let countdown_settings = Arc::new(tokio::sync::RwLock::new(web_server::CountdownSettings::default()));
+    let countdown_settings = Arc::new(tokio::sync::RwLock::new(
+        web_server::CountdownSettings::default(),
+    ));
     let is_running_server = is_running.clone();
     let market_data_server = market_data.clone();
     let executor_server = Some(executor.clone());
     let countdown_settings_server = countdown_settings.clone();
     tokio::spawn(async move {
-        web_server::start_server(is_running_server, market_data_server, executor_server, countdown_settings_server).await;
+        web_server::start_server(
+            is_running_server,
+            market_data_server,
+            executor_server,
+            countdown_settings_server,
+        )
+        .await;
     });
 
     info!("🌐 Web控制台已启动: http://localhost:3000");
@@ -391,24 +412,41 @@ async fn main() -> Result<()> {
             match _risk_manager.position_tracker().sync_from_api().await {
                 Ok(positions) => {
                     // 聚合 condition_id -> outcome_indexes
-                    let mut conditions_map: std::collections::HashMap<B256, std::collections::HashSet<i32>> = std::collections::HashMap::new();
+                    let mut conditions_map: std::collections::HashMap<
+                        B256,
+                        std::collections::HashSet<i32>,
+                    > = std::collections::HashMap::new();
                     for p in &positions {
                         conditions_map
                             .entry(p.condition_id)
                             .or_default()
                             .insert(p.outcome_index);
                     }
-                    
+
                     if !conditions_map.is_empty() {
-                        info!("🔍 发现 {} 个相关市场，尝试执行 Redeem...", conditions_map.len());
+                        info!(
+                            "🔍 发现 {} 个相关市场，尝试执行 Redeem...",
+                            conditions_map.len()
+                        );
                         // 启动一个异步任务来执行 Redeem，避免阻塞主线程
                         let priv_key_clone = priv_key.clone();
                         tokio::spawn(async move {
                             for (condition_id, indexes_set) in conditions_map {
                                 let indexes: Vec<i32> = indexes_set.into_iter().collect();
                                 // 对每个市场尝试 Redeem（如果未决议会失败，忽略即可）
-                                match crate::merge::redeem_outcomes(condition_id, proxy, &priv_key_clone, &indexes, None).await {
-                                    Ok(tx) => info!("✅ 启动自动领取成功 | condition_id={} | tx={}", condition_id, tx),
+                                match crate::merge::redeem_outcomes(
+                                    condition_id,
+                                    proxy,
+                                    &priv_key_clone,
+                                    &indexes,
+                                    None,
+                                )
+                                .await
+                                {
+                                    Ok(tx) => info!(
+                                        "✅ 启动自动领取成功 | condition_id={} | tx={}",
+                                        condition_id, tx
+                                    ),
                                     Err(e) => {
                                         // 大多数失败是因为市场未决议，这是正常的，使用 debug 日志
                                         debug!("启动自动领取跳过 (可能未决议/无获胜持仓): {} | condition_id={}", e, condition_id);
@@ -427,7 +465,6 @@ async fn main() -> Result<()> {
             }
         }
     }
-
 
     // 创建仓位平衡器
     let position_balancer = Arc::new(PositionBalancer::new(
@@ -456,8 +493,7 @@ async fn main() -> Result<()> {
         });
         info!(
             interval_secs = position_sync_interval,
-            "已启动定时持仓同步任务，每 {} 秒从API获取最新持仓覆盖本地缓存",
-            position_sync_interval
+            "已启动定时持仓同步任务，每 {} 秒从API获取最新持仓覆盖本地缓存", position_sync_interval
         );
     } else {
         warn!("POSITION_SYNC_INTERVAL_SECS=0，持仓同步已禁用");
@@ -469,8 +505,7 @@ async fn main() -> Result<()> {
     if balance_interval > 0 {
         info!(
             interval_secs = balance_interval,
-            "仓位平衡任务将在主循环中每 {} 秒执行一次",
-            balance_interval
+            "仓位平衡任务将在主循环中每 {} 秒执行一次", balance_interval
         );
     } else {
         info!("定时仓位平衡未启用（POSITION_BALANCE_INTERVAL_SECS=0）");
@@ -487,17 +522,27 @@ async fn main() -> Result<()> {
             let private_key = config.private_key.clone();
             let position_tracker = _risk_manager.position_tracker().clone();
             let wind_down_flag = wind_down_in_progress.clone();
-                let countdown_flag_merge = countdown_in_progress.clone();
-                tokio::spawn(async move {
-                    run_merge_task(merge_interval, proxy, private_key, position_tracker, wind_down_flag, countdown_flag_merge).await;
-                });
+            let countdown_flag_merge = countdown_in_progress.clone();
+            tokio::spawn(async move {
+                run_merge_task(
+                    merge_interval,
+                    proxy,
+                    private_key,
+                    position_tracker,
+                    wind_down_flag,
+                    countdown_flag_merge,
+                )
+                .await;
+            });
             info!(
                 interval_minutes = merge_interval,
-                "已启动定时 Merge 任务，每 {} 分钟根据持仓执行（仅 YES+NO 双边）",
-                merge_interval
+                "已启动定时 Merge 任务，每 {} 分钟根据持仓执行（仅 YES+NO 双边）", merge_interval
             );
         } else {
-            warn!("MERGE_INTERVAL_MINUTES={} 但未设置 POLYMARKET_PROXY_ADDRESS，定时 Merge 已禁用", merge_interval);
+            warn!(
+                "MERGE_INTERVAL_MINUTES={} 但未设置 POLYMARKET_PROXY_ADDRESS，定时 Merge 已禁用",
+                merge_interval
+            );
         }
     } else {
         info!("定时 Merge 未启用（MERGE_INTERVAL_MINUTES=0），如需启用请在 .env 中设置 MERGE_INTERVAL_MINUTES 为正数，例如 5 或 15");
@@ -546,22 +591,24 @@ async fn main() -> Result<()> {
         info!(market_count = markets.len(), "开始监控订单簿");
 
         // 记录当前窗口的时间戳，用于检测周期切换与收尾触发
-        use chrono::Utc;
         use crate::market::discoverer::FIVE_MIN_SECS;
-        let current_window_timestamp = MarketDiscoverer::calculate_current_window_timestamp(Utc::now());
-        let window_end = chrono::DateTime::from_timestamp(current_window_timestamp + FIVE_MIN_SECS, 0)
-            .unwrap_or_else(|| Utc::now());
+        use chrono::Utc;
+        let current_window_timestamp =
+            MarketDiscoverer::calculate_current_window_timestamp(Utc::now());
+        let window_end =
+            chrono::DateTime::from_timestamp(current_window_timestamp + FIVE_MIN_SECS, 0)
+                .unwrap_or_else(|| Utc::now());
         let mut wind_down_done = false;
         let mut post_end_claim_done = false;
         let mut force_close_cancel_done = false;
 
         // 创建市场ID到市场信息的映射
-        let market_map: HashMap<B256, &MarketInfo> = markets.iter()
-            .map(|m| (m.market_id, m))
-            .collect();
+        let market_map: HashMap<B256, &MarketInfo> =
+            markets.iter().map(|m| (m.market_id, m)).collect();
 
         // 创建市场映射（condition_id -> (yes_token_id, no_token_id)）用于仓位平衡
-        let market_token_map: HashMap<B256, (U256, U256)> = markets.iter()
+        let market_token_map: HashMap<B256, (U256, U256)> = markets
+            .iter()
             .map(|m| (m.market_id, (m.yes_token_id, m.no_token_id)))
             .collect();
 
@@ -616,10 +663,20 @@ async fn main() -> Result<()> {
                                             info!("自动领取：当前无双边持仓可领取");
                                         }
                                     } else {
-                                        info!("自动领取：发现 {} 个市场可领取", condition_ids.len());
+                                        info!(
+                                            "自动领取：发现 {} 个市场可领取",
+                                            condition_ids.len()
+                                        );
                                         let n = condition_ids.len();
                                         for (j, condition_id) in condition_ids.iter().enumerate() {
-                                            match merge::merge_max(*condition_id, proxy, &config_claim.private_key, None).await {
+                                            match merge::merge_max(
+                                                *condition_id,
+                                                proxy,
+                                                &config_claim.private_key,
+                                                None,
+                                            )
+                                            .await
+                                            {
                                                 Ok(tx) => {
                                                     info!("🎁 自动领取：Merge 完成 | condition_id={:#x} | tx={}", condition_id, tx);
                                                 }
@@ -633,7 +690,9 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 }
-                                Err(e) => { warn!(error = %e, "自动领取：获取持仓失败，跳过"); }
+                                Err(e) => {
+                                    warn!(error = %e, "自动领取：获取持仓失败，跳过");
+                                }
                             }
                             sleep(Duration::from_secs(30)).await;
                         }
@@ -648,7 +707,7 @@ async fn main() -> Result<()> {
                 let now = Utc::now();
                 let seconds_until_end = (window_end - now).num_seconds();
                 let threshold_seconds = config.wind_down_before_window_end_minutes as i64 * 60;
-                
+
                 // 如果时间到了，或者已经过期（比如窗口已经结束），都应该触发收尾
                 // 注意：如果窗口已经结束(seconds_until_end <= 0)，也应该执行收尾
                 if seconds_until_end <= threshold_seconds {
@@ -661,7 +720,7 @@ async fn main() -> Result<()> {
                     let config_wd = config.clone();
                     let risk_manager_wd = _risk_manager.clone();
                     let wind_down_flag = wind_down_in_progress.clone();
-                    
+
                     // 克隆 one_dollar_attempted 以便在收尾时清理倒计时策略的持仓
                     // 注意：DashMap本身是并发安全的，但这里我们需要它的引用，而 tokio::spawn 需要 'static
                     // 所以我们需要将 one_dollar_attempted 包装在 Arc 中，或者在 main 函数开始时就用 Arc<DashMap>
@@ -669,7 +728,7 @@ async fn main() -> Result<()> {
                     // 临时的解决方案：我们在收尾任务中不直接操作 one_dollar_attempted，
                     // 而是通过 get_positions() 获取所有持仓并卖出，这自然涵盖了倒计时策略的持仓。
                     // 下面的代码已经包含了 "3. 市价卖出剩余单腿持仓"，这应该已经满足了需求。
-                    
+
                     tokio::spawn(async move {
                         const MERGE_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -694,15 +753,34 @@ async fn main() -> Result<()> {
                                     let merge_info = merge_info_with_both_sides(&positions);
                                     let n = condition_ids.len();
                                     for (i, condition_id) in condition_ids.iter().enumerate() {
-                                        match merge::merge_max(*condition_id, proxy, &config_wd.private_key, None).await {
+                                        match merge::merge_max(
+                                            *condition_id,
+                                            proxy,
+                                            &config_wd.private_key,
+                                            None,
+                                        )
+                                        .await
+                                        {
                                             Ok(tx) => {
                                                 did_any_merge = true;
                                                 info!("✅ 收尾：Merge 完成 | condition_id={:#x} | tx={}", condition_id, tx);
-                                                if let Some((yes_token, no_token, merge_amt)) = merge_info.get(condition_id) {
-                                                    position_tracker.update_exposure_cost(*yes_token, dec!(0), -*merge_amt);
-                                                    position_tracker.update_exposure_cost(*no_token, dec!(0), -*merge_amt);
-                                                    position_tracker.update_position(*yes_token, -*merge_amt);
-                                                    position_tracker.update_position(*no_token, -*merge_amt);
+                                                if let Some((yes_token, no_token, merge_amt)) =
+                                                    merge_info.get(condition_id)
+                                                {
+                                                    position_tracker.update_exposure_cost(
+                                                        *yes_token,
+                                                        dec!(0),
+                                                        -*merge_amt,
+                                                    );
+                                                    position_tracker.update_exposure_cost(
+                                                        *no_token,
+                                                        dec!(0),
+                                                        -*merge_amt,
+                                                    );
+                                                    position_tracker
+                                                        .update_position(*yes_token, -*merge_amt);
+                                                    position_tracker
+                                                        .update_position(*no_token, -*merge_amt);
                                                     info!("💰 收尾：Merge 已扣减敞口 | condition_id={:#x} | 数量:{}", condition_id, merge_amt);
                                                 }
                                             }
@@ -717,7 +795,9 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 }
-                                Err(e) => { warn!(error = %e, "收尾：获取持仓失败，跳过 Merge"); }
+                                Err(e) => {
+                                    warn!(error = %e, "收尾：获取持仓失败，跳过 Merge");
+                                }
                             }
                         } else {
                             warn!("收尾：未配置 POLYMARKET_PROXY_ADDRESS，跳过 Merge");
@@ -875,7 +955,8 @@ async fn main() -> Result<()> {
                                         };
 
                                         if let (Some(buy_price), Some(cur_price)) = (buy_price, current_price) {
-                                            if cur_price < buy_price {
+                                            let price_delta = (cur_price - buy_price).abs();
+                                            if price_delta >= dec!(0.03) {
                                                 let qty_sell = first_leg_qty_map
                                                     .get(&market_id)
                                                     .map(|v| *v)
@@ -900,6 +981,7 @@ async fn main() -> Result<()> {
                                                     sim_open_orders.remove(&k);
                                                 }
 
+                                                let profit_dec = (bid_price - buy_price) * qty_sell;
                                                 if is_live {
                                                     let exec_sell = executor.clone();
                                                     let pt = _risk_manager.position_tracker();
@@ -913,6 +995,7 @@ async fn main() -> Result<()> {
                                                     let sell_countdown = Some(countdown_str.clone());
                                                     use rust_decimal::prelude::ToPrimitive;
                                                     let price_f64 = bid_price.to_f64().unwrap_or(0.0);
+                                                    let profit_f64 = profit_dec.to_f64();
                                                     tokio::spawn(async move {
                                                         match exec_sell.sell_at_price(token_id_sell, bid_price, qty_sell).await {
                                                             Ok(resp) => {
@@ -928,7 +1011,7 @@ async fn main() -> Result<()> {
                                                                     size: qty_sell.to_f64().unwrap_or(0.0),
                                                                     timestamp: Utc::now().timestamp(),
                                                                     status: "Sold".to_string(),
-                                                                    profit: None,
+                                                                    profit: profit_f64,
                                                                     buy_countdown: None,
                                                                     sell_countdown,
                                                                 });
@@ -954,7 +1037,7 @@ async fn main() -> Result<()> {
                                                         size: qty_sell.to_f64().unwrap_or(0.0),
                                                         timestamp: Utc::now().timestamp(),
                                                         status: "SimSold".to_string(),
-                                                        profit: None,
+                                                        profit: profit_dec.to_f64(),
                                                         buy_countdown: None,
                                                         sell_countdown: Some(countdown_str.clone()),
                                                     });
@@ -1395,11 +1478,11 @@ async fn main() -> Result<()> {
                         let prev_round_markets: Vec<(B256, U256, U256)> = market_map.values()
                             .map(|m| (m.market_id, m.yes_token_id, m.no_token_id))
                             .collect();
-                        
+
                         let pt = _risk_manager.position_tracker();
                         let proxy_addr = config.proxy_address.clone();
                         let priv_key = config.private_key.clone();
-                        
+
                         // 启动异步任务：在下一轮开始后10秒，对上一轮市场执行平仓（Merge/Redeem）
                         if !prev_round_markets.is_empty() && proxy_addr.is_some() {
                             let proxy = proxy_addr.unwrap();
@@ -1409,11 +1492,11 @@ async fn main() -> Result<()> {
                                 settle_delay_secs,
                                 prev_round_markets.len()
                             );
-                            
+
                             tokio::spawn(async move {
                                 sleep(Duration::from_secs(settle_delay_secs)).await;
                                 info!("⏰ 开始对上一轮市场执行平仓（Merge/Redeem）检查...");
-                                
+
                                 // 1. 先尝试 Merge 所有市场（无需等待决议，立刻执行）
                                 for (condition_id, _, _) in &prev_round_markets {
                                     match merge::merge_max(*condition_id, proxy, &priv_key, None).await {
@@ -1429,19 +1512,19 @@ async fn main() -> Result<()> {
                                 // 2. 循环尝试 Redeem（需等待决议，支持重试）
                                 let mut pending_markets: HashSet<B256> = prev_round_markets.iter().map(|(c, _, _)| *c).collect();
                                 let max_retries = 20; // 20 * 30s = 约10分钟
-                                
+
                                 for i in 0..max_retries {
                                     if pending_markets.is_empty() {
                                         break;
                                     }
-                                    
+
                                     if i > 0 {
                                         info!("Redeem 重试 {}/{} | 剩余 {} 个市场等待决议...", i, max_retries, pending_markets.len());
                                         sleep(Duration::from_secs(30)).await;
                                     }
 
                                     let mut completed = Vec::new();
-                                    
+
                                     for (condition_id, yes_token, no_token) in &prev_round_markets {
                                         if !pending_markets.contains(condition_id) {
                                             continue;
@@ -1472,12 +1555,12 @@ async fn main() -> Result<()> {
                                             }
                                         }
                                     }
-                                    
+
                                     for c in completed {
                                         pending_markets.remove(&c);
                                     }
                                 }
-                                
+
                                 if !pending_markets.is_empty() {
                                     warn!("⚠️ 部分市场 Redeem 超时未完成: {:?}", pending_markets);
                                 } else {

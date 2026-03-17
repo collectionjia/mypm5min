@@ -1,9 +1,9 @@
 use anyhow::Result;
+use std::collections::VecDeque;
 use std::fs::File;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use std::collections::VecDeque;
-use std::io::Write;
 
 // 全局日志缓冲区，用于 Web 显示
 lazy_static::lazy_static! {
@@ -17,7 +17,7 @@ impl std::io::Write for MultiWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         // 将日志转换为字符串并添加到缓冲区
         let log_entry = String::from_utf8_lossy(buf).to_string();
-        
+
         if let Ok(mut buffer) = LOG_BUFFER.lock() {
             buffer.push_back(log_entry.clone());
             // 保持缓冲区大小在 300 行以内
@@ -25,7 +25,7 @@ impl std::io::Write for MultiWriter {
                 buffer.pop_front();
             }
         }
-        
+
         // 同时也写入 stdout
         std::io::stdout().write(buf)
     }
@@ -45,9 +45,8 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for MultiWriter {
 
 pub fn init_logger() -> Result<()> {
     // 设置默认日志级别为 info，如果没有设置 RUST_LOG 环境变量
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
     // 使用 MultiWriter
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)

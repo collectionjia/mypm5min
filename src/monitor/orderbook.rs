@@ -2,7 +2,7 @@ use anyhow::Result;
 use dashmap::DashMap;
 use futures::Stream;
 use futures::StreamExt;
-use polymarket_client_sdk::clob::ws::{Client as WsClient, types::response::BookUpdate};
+use polymarket_client_sdk::clob::ws::{types::response::BookUpdate, Client as WsClient};
 use polymarket_client_sdk::types::{B256, U256};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -14,7 +14,11 @@ use crate::market::MarketInfo;
 #[inline]
 fn short_b256(b: &B256) -> String {
     let s = format!("{b}");
-    if s.len() > 12 { format!("{}..", &s[..10]) } else { s }
+    if s.len() > 12 {
+        format!("{}..", &s[..10])
+    } else {
+        s
+    }
 }
 
 /// 缩短 U256 用于日志：保留末尾 8 位，如 ..67033653
@@ -54,10 +58,8 @@ impl OrderBookMonitor {
     /// 订阅新市场
     pub fn subscribe_market(&mut self, market: &MarketInfo) -> Result<()> {
         // 记录市场映射
-        self.market_map.insert(
-            market.market_id,
-            (market.yes_token_id, market.no_token_id),
-        );
+        self.market_map
+            .insert(market.market_id, (market.yes_token_id, market.no_token_id));
 
         info!(
             market_id = short_b256(&market.market_id),
@@ -70,7 +72,7 @@ impl OrderBookMonitor {
     }
 
     /// 创建订单簿订阅流
-    /// 
+    ///
     /// 注意：订单簿订阅使用未认证的 WebSocket 客户端，因为订单簿数据是公开的。
     /// 只有订阅用户相关数据（如用户订单状态、交易历史等）才需要认证。
     pub fn create_orderbook_stream(
@@ -98,10 +100,11 @@ impl OrderBookMonitor {
 
     /// 处理订单簿更新
     pub fn handle_book_update(&self, book: BookUpdate) -> Option<OrderBookPair> {
-
         // 打印前5档买卖价格（用于调试）
         if !book.bids.is_empty() {
-            let top_bids: Vec<String> = book.bids.iter()
+            let top_bids: Vec<String> = book
+                .bids
+                .iter()
                 .take(5)
                 .map(|b| format!("{}@{}", b.size, b.price))
                 .collect();
@@ -112,7 +115,9 @@ impl OrderBookMonitor {
             );
         }
         if !book.asks.is_empty() {
-            let top_asks: Vec<String> = book.asks.iter()
+            let top_asks: Vec<String> = book
+                .asks
+                .iter()
                 .take(5)
                 .map(|a| format!("{}@{}", a.size, a.price))
                 .collect();

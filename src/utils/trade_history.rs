@@ -1,7 +1,7 @@
+use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use lazy_static::lazy_static;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeRecord {
@@ -21,7 +21,8 @@ pub struct TradeRecord {
 }
 
 lazy_static! {
-    pub static ref TRADE_HISTORY: Arc<Mutex<VecDeque<TradeRecord>>> = Arc::new(Mutex::new(VecDeque::with_capacity(1000)));
+    pub static ref TRADE_HISTORY: Arc<Mutex<VecDeque<TradeRecord>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(1000)));
 }
 
 pub fn add_trade(record: TradeRecord) {

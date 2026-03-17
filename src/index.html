@@ -411,6 +411,15 @@
                         }
                         appliedBuys.add(t.id);
                     }
+
+                    const outcome = getSimOutcome(t);
+                    if (outcome && !appliedSettles.has(t.id)) {
+                        const size = toNumber(t.size);
+                        if (outcome === 'win' && size != null) {
+                            bal += size;
+                        }
+                        appliedSettles.add(t.id);
+                    }
                 } else if (t.status === 'SimSold') {
                     if (!appliedSells.has(t.id)) {
                         const price = toNumber(t.price);
@@ -420,17 +429,6 @@
                         }
                         appliedSells.add(t.id);
                     }
-                } else {
-                    continue;
-                }
-
-                const outcome = getSimOutcome(t);
-                if (outcome && !appliedSettles.has(t.id)) {
-                    const size = toNumber(t.size);
-                    if (outcome === 'win' && size != null) {
-                        bal += size;
-                    }
-                    appliedSettles.add(t.id);
                 }
             }
 
@@ -470,12 +468,40 @@
 
                 const summaryEl = document.getElementById('trades-summary');
                 if (summaryEl) {
-                    const total = trades.filter(t => t.status === 'Won' || t.status === 'Lost').length;
-                    const won = trades.filter(t => t.status === 'Won').length;
-                    const lost = trades.filter(t => t.status === 'Lost').length;
+                    const pairByMarket = new Map();
+                    for (const t of trades) {
+                        if (t.status !== 'Bought' && t.status !== 'SimBought' && t.status !== 'Won' && t.status !== 'Lost') continue;
+                        const side = t.side;
+                        if (side !== 'YES' && side !== 'NO') continue;
+                        const price = toNumber(t.price);
+                        const size = toNumber(t.size);
+                        if (price == null || size == null) continue;
+                        const marketId = t.market_id;
+                        if (!pairByMarket.has(marketId)) {
+                            pairByMarket.set(marketId, { yes: null, no: null, resolved: false });
+                        }
+                        const entry = pairByMarket.get(marketId);
+                        entry.resolved = entry.resolved || t.status === 'Won' || t.status === 'Lost';
+                        if (side === 'YES') entry.yes = { price, size, id: t.id };
+                        if (side === 'NO') entry.no = { price, size, id: t.id };
+                    }
+
+                    let total = 0;
+                    let won = 0;
+                    let lost = 0;
+                    for (const [_mid, v] of pairByMarket) {
+                        if (!v.resolved) continue;
+                        if (!v.yes || !v.no) continue;
+                        const qty = Math.min(v.yes.size, v.no.size, 5);
+                        const profit = (1 - (v.yes.price + v.no.price)) * qty;
+                        total += 1;
+                        if (profit >= 0) won += 1;
+                        else lost += 1;
+                    }
+
                     const skipped = trades.filter(t => t.status === 'SimSkipped').length;
                     const posted = trades.filter(t => t.status === 'SimPosted' || t.status === 'BuyPosted').length;
-                    const ongoing = trades.length - won - lost - skipped - posted;
+                    const ongoing = Math.max(0, trades.length - skipped - posted - total);
                     summaryEl.textContent = `总:${total} | 赢:${won} | 输:${lost} | 跳过:${skipped} | 挂单中:${posted} | 进行中:${ongoing}`;
                 }
 
@@ -505,6 +531,24 @@
                     cashflowById.set(t.id, { cashflow, cumulativeCashflow });
                 }
 
+                const pairInfoByMarket = new Map();
+                for (const t of trades) {
+                    if (t.status !== 'Bought' && t.status !== 'SimBought' && t.status !== 'Won' && t.status !== 'Lost') continue;
+                    const side = t.side;
+                    if (side !== 'YES' && side !== 'NO') continue;
+                    const price = toNumber(t.price);
+                    const size = toNumber(t.size);
+                    if (price == null || size == null) continue;
+                    const marketId = t.market_id;
+                    if (!pairInfoByMarket.has(marketId)) {
+                        pairInfoByMarket.set(marketId, { yes: null, no: null, resolved: false });
+                    }
+                    const entry = pairInfoByMarket.get(marketId);
+                    entry.resolved = entry.resolved || t.status === 'Won' || t.status === 'Lost';
+                    if (side === 'YES') entry.yes = { price, size, id: t.id };
+                    if (side === 'NO') entry.no = { price, size, id: t.id };
+                }
+
                 tbody.innerHTML = trades.map(trade => {
                     const date = new Date(trade.timestamp * 1000).toLocaleString();
                     let statusClass = 'status-pending';
@@ -527,6 +571,28 @@
                     const size = toNumber(trade.size);
                     const flow = cashflowById.get(trade.id) || { cashflow: 0, cumulativeCashflow: 0 };
                     const cashflow = flow.cashflow;
+
+                    const pair = pairInfoByMarket.get(trade.market_id);
+                    let displayPnl = null;
+                    if (pair && pair.resolved && pair.yes && pair.no) {
+                        const qty = Math.min(pair.yes.size, pair.no.size, 5);
+                        const profit = (1 - (pair.yes.price + pair.no.price)) * qty;
+                        if (trade.id === pair.yes.id) {
+                            displayPnl = profit;
+                        } else if (trade.id === pair.no.id) {
+                            displayPnl = null;
+                        }
+                        statusClass = profit >= 0 ? 'status-won' : 'status-lost';
+                        statusText = profit >= 0 ? '赢' : '输';
+                    } else if (trade.status === 'Sold' || trade.status === 'SimSold') {
+                        const p = toNumber(trade.profit);
+                        if (p != null) {
+                            displayPnl = p;
+                            statusClass = p >= 0 ? 'status-won' : 'status-lost';
+                            statusText = p >= 0 ? '赢' : '输';
+                        }
+                    }
+
                     const estBalance = initialUsdcBalance != null ? initialUsdcBalance + flow.cumulativeCashflow : null;
                     const estBalanceText = initialUsdcBalance != null
                         ? formatMoney(estBalance)
@@ -545,7 +611,7 @@
                             <td class="${statusClass}">${statusText}</td>
                             <td>${buyCountdown}</td>
                             <td>${sellCountdown}</td>
-                            <td>${formatSignedMoney(cashflow)}</td>
+                            <td>${formatSignedMoney(displayPnl != null ? displayPnl : cashflow)}</td>
                             <td>${estBalanceText}</td>
                         </tr>
                     `;

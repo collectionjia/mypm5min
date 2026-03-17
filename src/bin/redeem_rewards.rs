@@ -24,10 +24,12 @@ async fn main() -> Result<()> {
     dotenv().ok();
 
     // 检查环境变量
-    let private_key = env::var("POLYMARKET_PRIVATE_KEY").context("POLYMARKET_PRIVATE_KEY 未设置")?;
+    let private_key =
+        env::var("POLYMARKET_PRIVATE_KEY").context("POLYMARKET_PRIVATE_KEY 未设置")?;
     let proxy_address_str =
         env::var("POLYMARKET_PROXY_ADDRESS").context("POLYMARKET_PROXY_ADDRESS 未设置")?;
-    let proxy_address = Address::from_str(&proxy_address_str).context("POLYMARKET_PROXY_ADDRESS 格式无效")?;
+    let proxy_address =
+        Address::from_str(&proxy_address_str).context("POLYMARKET_PROXY_ADDRESS 格式无效")?;
 
     info!("👤 代理地址: {:?}", proxy_address);
 
@@ -55,19 +57,29 @@ async fn main() -> Result<()> {
             .insert(p.outcome_index);
     }
 
-    info!("✅ 获取到 {} 个持仓记录，涉及 {} 个独立市场", positions.len(), conditions_map.len());
+    info!(
+        "✅ 获取到 {} 个持仓记录，涉及 {} 个独立市场",
+        positions.len(),
+        conditions_map.len()
+    );
 
     let mut success_count = 0;
     let mut fail_count = 0;
 
     for (condition_id, indexes_set) in conditions_map {
         let indexes: Vec<i32> = indexes_set.into_iter().collect();
-        info!("🔍 检查市场 Condition ID: {:?} | Indexes: {:?}", condition_id, indexes);
+        info!(
+            "🔍 检查市场 Condition ID: {:?} | Indexes: {:?}",
+            condition_id, indexes
+        );
 
         // 尝试 Redeem
         match redeem_outcomes(condition_id, proxy_address, &private_key, &indexes, None).await {
             Ok(tx_hash) => {
-                info!("🎉 领取成功! Condition: {:?} | Tx: {}", condition_id, tx_hash);
+                info!(
+                    "🎉 领取成功! Condition: {:?} | Tx: {}",
+                    condition_id, tx_hash
+                );
                 success_count += 1;
                 // 成功后延时，确保 Nonce 更新和 RPC 同步
                 sleep(Duration::from_secs(3)).await;
@@ -90,7 +102,10 @@ async fn main() -> Result<()> {
     }
 
     info!("🏁 脚本运行结束。");
-    info!("📊 统计: 成功领取 {} 个, 失败/跳过 {} 个", success_count, fail_count);
+    info!(
+        "📊 统计: 成功领取 {} 个, 失败/跳过 {} 个",
+        success_count, fail_count
+    );
 
     Ok(())
 }

@@ -44,17 +44,17 @@ pub fn log_arbitrage_opportunity(
 
     // 将记录格式化为JSON
     let json = serde_json::to_string_pretty(&record)?;
-    
+
     // 追加写入文件
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(file_path)?;
-    
+
     writeln!(file, "{}", json)?;
     writeln!(file, "---")?; // 分隔符
     file.flush()?; // 确保立即写入磁盘
-    
+
     Ok(())
 }
 

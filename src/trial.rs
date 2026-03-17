@@ -65,11 +65,9 @@ fn encrypt_timestamp(ts_secs: u64) -> Result<String> {
 
 /// 解密许可证/试用状态内容，返回 u64 时间戳；解密失败或篡改则返回错误。
 fn decrypt_timestamp(encoded: &str) -> Result<u64> {
-    let payload = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        encoded.trim(),
-    )
-    .context("许可证格式无效（base64 解码失败）")?;
+    let payload =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded.trim())
+            .context("许可证格式无效（base64 解码失败）")?;
     if payload.len() < NONCE_LEN {
         anyhow::bail!("许可证无效或已篡改（数据过短）");
     }
@@ -115,9 +113,7 @@ pub fn check_license() -> Result<()> {
     let expiry_secs = decrypt_timestamp(&content)?;
 
     if now >= expiry_secs {
-        anyhow::bail!(
-            "许可证已过期。如需继续使用请联系作者获取新许可证。"
-        );
+        anyhow::bail!("许可证已过期。如需继续使用请联系作者获取新许可证。");
     }
 
     let remaining_secs = expiry_secs - now;

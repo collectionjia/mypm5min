@@ -1,5 +1,5 @@
 use polymarket_client_sdk::clob::ws::types::response::BookUpdate;
-use polymarket_client_sdk::types::{B256, Decimal, U256};
+use polymarket_client_sdk::types::{Decimal, B256, U256};
 use rust_decimal_macros::dec;
 use tracing::debug;
 
@@ -18,16 +18,15 @@ pub struct ArbitrageOpportunity {
 
 pub struct ArbitrageDetector {
     min_profit_threshold: Decimal,
-    max_depth: usize, // 最大探测深度
+    max_depth: usize,             // 最大探测深度
     min_order_value_usd: Decimal, // 最小订单金额（USD）
 }
 
 impl ArbitrageDetector {
     pub fn new(min_profit_threshold: f64) -> Self {
         Self {
-            min_profit_threshold: Decimal::try_from(min_profit_threshold)
-                .unwrap_or(dec!(0.001)),
-            max_depth: 10, // 默认最多探测10档
+            min_profit_threshold: Decimal::try_from(min_profit_threshold).unwrap_or(dec!(0.001)),
+            max_depth: 10,                  // 默认最多探测10档
             min_order_value_usd: dec!(1.0), // 最小订单金额$1
         }
     }
@@ -69,7 +68,6 @@ impl ArbitrageDetector {
         Some((yes_price, no_price, final_size, profit_pct, total_price))
     }
 
-
     /// 打印订单深度（debug 级别，减少 info 刷屏）
     fn print_orderbook_depth(
         &self,
@@ -86,7 +84,11 @@ impl ArbitrageDetector {
             .rev()
             .take(5)
             .map(|level| {
-                let m = if (level.price - yes_final_price).abs() < dec!(0.001) { "←" } else { "" };
+                let m = if (level.price - yes_final_price).abs() < dec!(0.001) {
+                    "←"
+                } else {
+                    ""
+                };
                 format!("{:.2}@{:.2}{}", level.price, level.size, m)
             })
             .collect();
@@ -96,7 +98,11 @@ impl ArbitrageDetector {
             .rev()
             .take(5)
             .map(|level| {
-                let m = if (level.price - no_final_price).abs() < dec!(0.001) { "←" } else { "" };
+                let m = if (level.price - no_final_price).abs() < dec!(0.001) {
+                    "←"
+                } else {
+                    ""
+                };
                 format!("{:.2}@{:.2}{}", level.price, level.size, m)
             })
             .collect();

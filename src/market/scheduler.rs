@@ -22,8 +22,7 @@ impl MarketScheduler {
     /// 计算到下一个5分钟窗口的等待时间
     pub fn calculate_wait_time(&self, now: DateTime<Utc>) -> Duration {
         let next_window_ts = MarketDiscoverer::calculate_next_window_timestamp(now);
-        let next_window = DateTime::from_timestamp(next_window_ts, 0)
-            .expect("Invalid timestamp");
+        let next_window = DateTime::from_timestamp(next_window_ts, 0).expect("Invalid timestamp");
 
         // 提前几秒查询，确保市场已创建
         let wait_duration = next_window
@@ -48,7 +47,11 @@ impl MarketScheduler {
         }
 
         info!("尝试获取当前窗口的市场");
-        match self.discoverer.get_markets_for_timestamp(current_timestamp).await {
+        match self
+            .discoverer
+            .get_markets_for_timestamp(current_timestamp)
+            .await
+        {
             Ok(markets) => {
                 if !markets.is_empty() {
                     info!(count = markets.len(), "发现当前窗口的市场");
@@ -60,10 +63,17 @@ impl MarketScheduler {
                 const MAX_RETRY_SECS: u64 = 90; // 最多重试约 90 秒
                 let mut elapsed = 0u64;
                 while elapsed < MAX_RETRY_SECS {
-                    info!("当前窗口市场为空，{} 秒后重试（已等待 {} 秒）", RETRY_SECS, elapsed);
+                    info!(
+                        "当前窗口市场为空，{} 秒后重试（已等待 {} 秒）",
+                        RETRY_SECS, elapsed
+                    );
                     sleep(Duration::from_secs(RETRY_SECS)).await;
                     elapsed += RETRY_SECS;
-                    match self.discoverer.get_markets_for_timestamp(current_timestamp).await {
+                    match self
+                        .discoverer
+                        .get_markets_for_timestamp(current_timestamp)
+                        .await
+                    {
                         Ok(markets) if !markets.is_empty() => {
                             info!(count = markets.len(), "重试成功，发现当前窗口的市场");
                             return Ok(markets);
@@ -87,10 +97,7 @@ impl MarketScheduler {
         loop {
             let wait_time = self.calculate_wait_time(Utc::now());
             if wait_time > Duration::ZERO {
-                info!(
-                    wait_secs = wait_time.as_secs(),
-                    "等待下一个5分钟窗口"
-                );
+                info!(wait_secs = wait_time.as_secs(), "等待下一个5分钟窗口");
                 sleep(wait_time).await;
             }
 
