@@ -628,6 +628,7 @@ async fn main() -> Result<()> {
         let strategy_state: DashMap<B256, u8> = DashMap::new();
         let first_leg_price_map: Arc<DashMap<B256, Decimal>> = Arc::new(DashMap::new());
         let first_leg_qty_map: Arc<DashMap<B256, Decimal>> = Arc::new(DashMap::new());
+        let first_leg_side_key_map: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
         #[derive(Clone)]
         struct SimOrderInfo {
             market_id: B256,
@@ -938,12 +939,14 @@ async fn main() -> Result<()> {
                                                 crate::utils::trade_history::update_trade_status(&id, "SimBought");
                                                 if info.on_filled_state == 1u8 || info.on_filled_state == 2u8 {
                                                     first_leg_qty_map.insert(info.market_id, info.size);
+                                                    first_leg_side_key_map.insert(info.market_id, info.side_key);
                                                     drawdown_trigger_mask.remove(&info.market_id);
                                                 }
                                                 strategy_state.insert(info.market_id, info.on_filled_state);
                                                 if info.clear_first_leg_price {
                                                     first_leg_price_map.remove(&info.market_id);
                                                     first_leg_qty_map.remove(&info.market_id);
+                                                    first_leg_side_key_map.remove(&info.market_id);
                                                     drawdown_trigger_mask.remove(&info.market_id);
                                                 }
                                             }
@@ -976,20 +979,21 @@ async fn main() -> Result<()> {
 
                                     if should_check_drawdown && !is_live {
                                         let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
-                                        let has_book_price = if state == 1 {
-                                            yes_best_ask.is_some()
-                                        } else if state == 2 {
-                                            no_best_ask.is_some()
-                                        } else {
-                                            false
-                                        };
-                                        let current_price = if state == 1 {
+                                        let buy_side_key = first_leg_side_key_map
+                                            .get(&market_id)
+                                            .map(|v| *v)
+                                            .or_else(|| if state == 1 { Some(0u8) } else if state == 2 { Some(1u8) } else { None });
+                                        let buy_side_name = buy_side_key
+                                            .map(|k| if k == 0 { "YES" } else { "NO" })
+                                            .unwrap_or("--");
+                                        let current_price = if buy_side_key == Some(0u8) {
                                             yes_best_ask.map(|(p, _)| p.round_dp(2))
-                                        } else if state == 2 {
+                                        } else if buy_side_key == Some(1u8) {
                                             no_best_ask.map(|(p, _)| p.round_dp(2))
                                         } else {
                                             None
                                         };
+                                        let has_book_price = current_price.is_some();
                                         let cmp = match (buy_price, current_price) {
                                             (Some(b), Some(c)) => {
                                                 if c < b {
@@ -1001,17 +1005,23 @@ async fn main() -> Result<()> {
                                             _ => "无法比较",
                                         };
                                         info!(
-                                            "🧪 模拟回撤触发点 | 市场:{} | 秒:{} | state:{} | 买入:{:?} | 当前:{:?} | 有盘口:{} | {}",
-                                            market_display, sec_to_end_nonneg, state, buy_price, current_price, has_book_price, cmp
+                                            "🧪 模拟回撤触发点 | 市场:{} | 秒:{} | state:{} | 买入方向:{} | 买入:{:?} | 当前:{:?} | 有盘口:{} | {}",
+                                            market_display, sec_to_end_nonneg, state, buy_side_name, buy_price, current_price, has_book_price, cmp
                                         );
                                     }
 
-                                    if should_check_drawdown && (state == 1 || state == 2) {
+                                    let buy_side_key = first_leg_side_key_map
+                                        .get(&market_id)
+                                        .map(|v| *v)
+                                        .or_else(|| if state == 1 { Some(0u8) } else if state == 2 { Some(1u8) } else { None });
+                                    if should_check_drawdown && buy_side_key.is_some() && state != 4 {
                                         let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
-                                        let current_price = if state == 1 {
+                                        let current_price = if buy_side_key == Some(0u8) {
                                             yes_best_ask.map(|(p, _)| p.round_dp(2))
-                                        } else {
+                                        } else if buy_side_key == Some(1u8) {
                                             no_best_ask.map(|(p, _)| p.round_dp(2))
+                                        } else {
+                                            None
                                         };
 
                                         if let (Some(buy_price), Some(cur_price)) = (buy_price, current_price) {
@@ -1027,7 +1037,7 @@ async fn main() -> Result<()> {
                                                     .map(|v| *v)
                                                     .unwrap_or(dec!(5.0));
 
-                                                let bid_price = if state == 1 {
+                                                let bid_price = if buy_side_key == Some(0u8) {
                                                     pair.yes_book.bids.last().map(|b| b.price.round_dp(2))
                                                 } else {
                                                     pair.no_book.bids.last().map(|b| b.price.round_dp(2))
@@ -1037,6 +1047,7 @@ async fn main() -> Result<()> {
                                                 strategy_state.insert(market_id, 4);
                                                 first_leg_price_map.remove(&market_id);
                                                 first_leg_qty_map.remove(&market_id);
+                                                first_leg_side_key_map.remove(&market_id);
                                                 let keys: Vec<String> = sim_open_orders
                                                     .iter()
                                                     .filter(|e| e.value().market_id == market_id)
@@ -1050,7 +1061,7 @@ async fn main() -> Result<()> {
                                                 if is_live {
                                                     let exec_sell = executor.clone();
                                                     let pt = _risk_manager.position_tracker();
-                                                    let token_id_sell = if state == 1 {
+                                                    let token_id_sell = if buy_side_key == Some(0u8) {
                                                         pair.yes_book.asset_id
                                                     } else {
                                                         pair.no_book.asset_id
@@ -1071,7 +1082,7 @@ async fn main() -> Result<()> {
                                                                     id: resp.order_id.clone(),
                                                                     market_id: market_id_str,
                                                                     market_slug: market_display_str,
-                                                                    side: if state == 1 { "YES".to_string() } else { "NO".to_string() },
+                                                                    side: if buy_side_key == Some(0u8) { "YES".to_string() } else { "NO".to_string() },
                                                                     price: price_f64,
                                                                     size: qty_sell.to_f64().unwrap_or(0.0),
                                                                     timestamp: Utc::now().timestamp(),
@@ -1102,7 +1113,7 @@ async fn main() -> Result<()> {
                                                         id: format!("SIM-{}", uuid::Uuid::new_v4()),
                                                         market_id: market_id.to_string(),
                                                         market_slug: market_display.clone(),
-                                                        side: if state == 1 { "YES".to_string() } else { "NO".to_string() },
+                                                        side: if buy_side_key == Some(0u8) { "YES".to_string() } else { "NO".to_string() },
                                                         price: bid_price.to_f64().unwrap_or(0.0),
                                                         size: qty_sell.to_f64().unwrap_or(0.0),
                                                         timestamp: Utc::now().timestamp(),
@@ -1127,7 +1138,7 @@ async fn main() -> Result<()> {
                                         }
                                     } else if should_check_drawdown && !is_live {
                                         info!(
-                                            "🧪 模拟回撤未执行 | 市场:{} | 秒:{} | 原因: state不是1/2(尚未第一腿买入或已跳过)",
+                                            "🧪 模拟回撤未执行 | 市场:{} | 秒:{} | 原因: 未记录第一腿买入方向/尚未买入或已跳过",
                                             market_display, sec_to_end_nonneg
                                         );
                                     }
@@ -1158,6 +1169,7 @@ async fn main() -> Result<()> {
                                                     strategy_state.insert(market_id, 4);
                                                     first_leg_price_map.remove(&market_id);
                                                     first_leg_qty_map.remove(&market_id);
+                                                    first_leg_side_key_map.remove(&market_id);
                                                     let keys: Vec<String> = sim_open_orders
                                                         .iter()
                                                         .filter(|e| e.value().market_id == market_id)
@@ -1191,6 +1203,7 @@ async fn main() -> Result<()> {
                                                     strategy_state.insert(market_id, 4);
                                                     first_leg_price_map.remove(&market_id);
                                                     first_leg_qty_map.remove(&market_id);
+                                                    first_leg_side_key_map.remove(&market_id);
                                                     let keys: Vec<String> = sim_open_orders
                                                         .iter()
                                                         .filter(|e| e.value().market_id == market_id)
@@ -1225,6 +1238,7 @@ async fn main() -> Result<()> {
                                                         strategy_state.insert(market_id, 4);
                                                         first_leg_price_map.remove(&market_id);
                                                         first_leg_qty_map.remove(&market_id);
+                                                        first_leg_side_key_map.remove(&market_id);
                                                         let keys: Vec<String> = sim_open_orders
                                                             .iter()
                                                             .filter(|e| e.value().market_id == market_id)
@@ -1276,6 +1290,7 @@ async fn main() -> Result<()> {
                                                     strategy_state.insert(market_id, 4);
                                                     first_leg_price_map.remove(&market_id);
                                                     first_leg_qty_map.remove(&market_id);
+                                                    first_leg_side_key_map.remove(&market_id);
                                                     drawdown_trigger_mask.remove(&market_id);
                                                     let keys: Vec<String> = sim_open_orders
                                                         .iter()
@@ -1390,6 +1405,7 @@ async fn main() -> Result<()> {
                                                     });
                                                     first_leg_price_map.insert(market_id, limit_price);
                                                     first_leg_qty_map.insert(market_id, qty);
+                                                    first_leg_side_key_map.insert(market_id, side_key);
                                                     drawdown_trigger_mask.remove(&market_id);
                                                     strategy_state.insert(market_id, if side_key == 0 { 1 } else { 2 });
                                                     info!(
