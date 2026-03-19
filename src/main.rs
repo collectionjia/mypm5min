@@ -1148,8 +1148,8 @@ async fn main() -> Result<()> {
                                                 yes_best_ask.map(|(p, _)| p.round_dp(2));
                                             let no_ask = no_best_ask.map(|(p, _)| p.round_dp(2));
 
-                                            let trigger_price = dec!(0.90);
-                                            let first_price = dec!(0.90);
+                                            let trigger_price = dec!(0.80);
+                                            let first_price = dec!(0.80);
                                             let first_qty = dec!(5.0);
                                             let second_price = dec!(0.03);
                                             let second_qty = dec!(10.0);
