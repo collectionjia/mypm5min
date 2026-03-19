@@ -1405,24 +1405,50 @@ async fn main() -> Result<()> {
                                 let market_price_info = price_to_beat
                                     .map(|v| format!("目标价:{:.0}", v))
                                     .unwrap_or_else(|| "目标价:--".to_string());
-                                let yes_info = yes_best_ask
-                                    .map(|(p, s)| {
-                                        if is_arbitrage && !yes_dir.is_empty() {
-                                            format!("Yes:{:.4}({:.2}) {}", p, s, yes_dir)
-                                        } else {
-                                            format!("Yes:{:.4}({:.2})", p, s)
-                                        }
-                                    })
-                                    .unwrap_or_else(|| "Yes:无".to_string());
-                                let no_info = no_best_ask
-                                    .map(|(p, s)| {
-                                        if is_arbitrage && !no_dir.is_empty() {
-                                            format!("No:{:.4}({:.2}) {}", p, s, no_dir)
-                                        } else {
-                                            format!("No:{:.4}({:.2})", p, s)
-                                        }
-                                    })
-                                    .unwrap_or_else(|| "No:无".to_string());
+                                let yes_best_bid = pair
+                                    .yes_book
+                                    .bids
+                                    .last()
+                                    .map(|b| (b.price, b.size));
+                                let no_best_bid = pair.no_book.bids.last().map(|b| (b.price, b.size));
+
+                                let yes_arrow = if is_arbitrage && !yes_dir.is_empty() {
+                                    format!(" {}", yes_dir)
+                                } else {
+                                    String::new()
+                                };
+                                let no_arrow = if is_arbitrage && !no_dir.is_empty() {
+                                    format!(" {}", no_dir)
+                                } else {
+                                    String::new()
+                                };
+
+                                let yes_info = match (yes_best_ask, yes_best_bid) {
+                                    (Some((ap, asz)), Some((bp, bsz))) => format!(
+                                        "Yes:A{:.4}({:.2}){} B{:.4}({:.2})",
+                                        ap, asz, yes_arrow, bp, bsz
+                                    ),
+                                    (Some((ap, asz)), None) => {
+                                        format!("Yes:A{:.4}({:.2}){} B:无", ap, asz, yes_arrow)
+                                    }
+                                    (None, Some((bp, bsz))) => {
+                                        format!("Yes:A:无 B{:.4}({:.2})", bp, bsz)
+                                    }
+                                    (None, None) => "Yes:无".to_string(),
+                                };
+                                let no_info = match (no_best_ask, no_best_bid) {
+                                    (Some((ap, asz)), Some((bp, bsz))) => format!(
+                                        "No:A{:.4}({:.2}){} B{:.4}({:.2})",
+                                        ap, asz, no_arrow, bp, bsz
+                                    ),
+                                    (Some((ap, asz)), None) => {
+                                        format!("No:A{:.4}({:.2}){} B:无", ap, asz, no_arrow)
+                                    }
+                                    (None, Some((bp, bsz))) => {
+                                        format!("No:A:无 B{:.4}({:.2})", bp, bsz)
+                                    }
+                                    (None, None) => "No:无".to_string(),
+                                };
 
                                 info!(
                                     "{} {} | {}分{:02}秒 | {} | {} | {} | {}",
