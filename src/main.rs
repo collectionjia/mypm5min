@@ -1151,7 +1151,7 @@ async fn main() -> Result<()> {
                                             let trigger_price = dec!(0.90);
                                             let first_price = dec!(0.90);
                                             let first_qty = dec!(5.0);
-                                            let second_price = dec!(0.30);
+                                            let second_price = dec!(0.03);
                                             let second_qty = dec!(10.0);
 
                                             let first_side_key = match (yes_ask, no_ask) {
@@ -1402,34 +1402,38 @@ async fn main() -> Result<()> {
 
                                 // 涨跌箭头仅在套利机会时显示
                                 let is_arbitrage = prefix == "🚨套利机会";
+                                let market_price_info = price_to_beat
+                                    .map(|v| format!("目标价:{:.0}", v))
+                                    .unwrap_or_else(|| "目标价:--".to_string());
                                 let yes_info = yes_best_ask
-                                    .map(|(p, _s)| {
+                                    .map(|(p, s)| {
                                         if is_arbitrage && !yes_dir.is_empty() {
-                                            format!("Yes:{:.4} {}", p, yes_dir)
+                                            format!("Yes:{:.4}({:.2}) {}", p, s, yes_dir)
                                         } else {
-                                            format!("Yes:{:.4}", p)
+                                            format!("Yes:{:.4}({:.2})", p, s)
                                         }
                                     })
                                     .unwrap_or_else(|| "Yes:无".to_string());
                                 let no_info = no_best_ask
-                                    .map(|(p, _s)| {
+                                    .map(|(p, s)| {
                                         if is_arbitrage && !no_dir.is_empty() {
-                                            format!("No:{:.4} {}", p, no_dir)
+                                            format!("No:{:.4}({:.2}) {}", p, s, no_dir)
                                         } else {
-                                            format!("No:{:.4}", p)
+                                            format!("No:{:.4}({:.2})", p, s)
                                         }
                                     })
                                     .unwrap_or_else(|| "No:无".to_string());
 
                                 info!(
-                                    "{} {} | {}分{:02}秒 | {} | {} | {}",
+                                    "{} {} | {}分{:02}秒 | {} | {} | {} | {}",
                                     prefix,
                                     market_display,
                                     countdown_minutes,
                                     countdown_seconds,
                                     yes_info,
                                     no_info,
-                                    spread_info
+                                    spread_info,
+                                    market_price_info
                                 );
 
                                 // 保留原有的结构化日志用于调试（可选）
