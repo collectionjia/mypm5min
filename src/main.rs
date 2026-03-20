@@ -1224,6 +1224,14 @@ async fn main() -> Result<()> {
                                                     let exec = executor.clone();
                                                     let pt = _risk_manager.position_tracker();
                                                     let state_map = strategy_state.clone();
+                                                    let first_leg_price_map_clone =
+                                                        first_leg_price_map.clone();
+                                                    let first_leg_qty_map_clone =
+                                                        first_leg_qty_map.clone();
+                                                    let first_leg_side_key_map_clone =
+                                                        first_leg_side_key_map.clone();
+                                                    let drawdown_trigger_mask_clone =
+                                                        drawdown_trigger_mask.clone();
                                                     let market_id_key = market_id;
                                                     let market_id_str = market_id.to_string();
                                                     let market_display_str = market_display.clone();
@@ -1285,6 +1293,14 @@ async fn main() -> Result<()> {
                                                                     buy_countdown.clone(),
                                                                 sell_countdown: None,
                                                             });
+                                                            first_leg_price_map_clone
+                                                                .insert(market_id_key, first_reference_ask);
+                                                            first_leg_qty_map_clone
+                                                                .insert(market_id_key, first_size);
+                                                            first_leg_side_key_map_clone
+                                                                .insert(market_id_key, first_side_key);
+                                                            drawdown_trigger_mask_clone
+                                                                .remove(&market_id_key);
                                                         }
 
                                                         if !first_ok {
@@ -1292,6 +1308,7 @@ async fn main() -> Result<()> {
                                                             return;
                                                         }
 
+                                                        let mut second_ok = false;
                                                         if let Some(second_reference_ask) =
                                                             second_reference_ask
                                                         {
@@ -1342,10 +1359,43 @@ async fn main() -> Result<()> {
                                                                         buy_countdown.clone(),
                                                                     sell_countdown: None,
                                                                 });
+                                                                second_ok = true;
+                                                            } else if let Err(e) = second_res {
+                                                                warn!(
+                                                                    "⚠️ 倒计时策略第二腿下单失败 | 市场:{} | side:{} | error:{}",
+                                                                    market_display_str,
+                                                                    second_side_name,
+                                                                    e
+                                                                );
                                                             }
+                                                        } else {
+                                                            warn!(
+                                                                "⚠️ 倒计时策略第二腿跳过 | 市场:{} | side:{} | 原因: 无可用卖一价",
+                                                                market_display_str,
+                                                                second_side_name
+                                                            );
                                                         }
 
-                                                        state_map.insert(market_id_key, 4u8);
+                                                        if second_ok {
+                                                            first_leg_price_map_clone
+                                                                .remove(&market_id_key);
+                                                            first_leg_qty_map_clone
+                                                                .remove(&market_id_key);
+                                                            first_leg_side_key_map_clone
+                                                                .remove(&market_id_key);
+                                                            drawdown_trigger_mask_clone
+                                                                .remove(&market_id_key);
+                                                            state_map.insert(market_id_key, 4u8);
+                                                        } else {
+                                                            state_map.insert(
+                                                                market_id_key,
+                                                                if first_side_key == 0u8 {
+                                                                    1u8
+                                                                } else {
+                                                                    2u8
+                                                                },
+                                                            );
+                                                        }
                                                     });
                                                 } else {
                                                     use crate::utils::trade_history::{
@@ -1436,9 +1486,6 @@ async fn main() -> Result<()> {
 
                                 // 涨跌箭头仅在套利机会时显示
                                 let is_arbitrage = prefix == "🚨套利机会";
-                                let market_price_info = price_to_beat
-                                    .map(|v| format!("目标价:{:.0}", v))
-                                    .unwrap_or_else(|| "目标价:--".to_string());
                                 let yes_best_bid = pair
                                     .yes_book
                                     .bids
@@ -1485,15 +1532,14 @@ async fn main() -> Result<()> {
                                 };
 
                                 info!(
-                                    "{} {} | {}分{:02}秒 | {} | {} | {} | {}",
+                                    "{} {} | {}分{:02}秒 | {} | {} | {}",
                                     prefix,
                                     market_display,
                                     countdown_minutes,
                                     countdown_seconds,
                                     yes_info,
                                     no_info,
-                                    spread_info,
-                                    market_price_info
+                                    spread_info
                                 );
 
                                 // 保留原有的结构化日志用于调试（可选）
