@@ -172,6 +172,50 @@ impl TradingExecutor {
             })
     }
 
+    pub async fn buy_market_usd(
+        &self,
+        token_id: U256,
+        reference_ask: Decimal,
+        usd_amount: Decimal,
+    ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
+        if usd_amount <= dec!(0) {
+            return Err(anyhow::anyhow!("usd_amount 必须大于 0"));
+        }
+        if reference_ask <= dec!(0) {
+            return Err(anyhow::anyhow!("reference_ask 必须大于 0"));
+        }
+
+        let reference_ask = reference_ask.round_dp(2);
+        let mut size = (usd_amount / reference_ask * dec!(100.0)).floor() / dec!(100.0);
+        if size < dec!(0.01) {
+            size = dec!(0.01);
+        }
+
+        let price = dec!(1.0);
+        let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
+        let order = self
+            .client
+            .limit_order()
+            .token_id(token_id)
+            .side(Side::Buy)
+            .price(price)
+            .size(size)
+            .order_type(OrderType::FAK)
+            .build()
+            .await?;
+        let signed = self.client.sign(&signer, order).await?;
+        self.client
+            .post_order(signed)
+            .await
+            .map_err(|e| {
+                if e.to_string().contains("not enough balance / allowance") {
+                    anyhow::anyhow!("买入订单提交失败: 余额不足或未授权 (USDC)。请检查钱包余额及对CTF Exchange的授权。原始错误: {}", e)
+                } else {
+                    anyhow::anyhow!("买入订单提交失败: {}", e)
+                }
+            })
+    }
+
     /// 按方向取滑点：仅下降(↓)用 second，上涨(↑)和持平(−/空)用 first
     fn slippage_for_direction(&self, dir: &str) -> Decimal {
         if dir == "↓" {

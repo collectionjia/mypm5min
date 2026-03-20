@@ -502,32 +502,15 @@ async fn buy_handler(
         }
     };
 
-    let qty = if let Some(q) = payload.qty {
-        match Decimal::try_from(q) {
-            Ok(d) => d,
-            Err(e) => {
-                return Json(BuyResponse {
-                    success: false,
-                    message: format!("数量解析失败: {}", e),
-                    order_id: None,
-                });
-            }
-        }
-    } else {
-        let target_qty = Config::from_env()
-            .ok()
-            .and_then(|c| Decimal::try_from(c.max_order_size_usdc).ok())
-            .unwrap_or(dec!(5));
-        let mut q = (target_qty * dec!(100)).floor() / dec!(100);
-        if q < dec!(5) {
-            q = dec!(5);
-        }
-        q
-    };
+    let usd_amount = dec!(1.0);
+    let mut size = (usd_amount / price * dec!(100.0)).floor() / dec!(100.0);
+    if size < dec!(0.01) {
+        size = dec!(0.01);
+    }
 
     info!(
-        "🛒 Web手动买入 | market_id={} | side={} | token_id={} | price={:.4} | qty={}",
-        payload.market_id, side, token_id_str, price_f64, qty
+        "🛒 Web手动买入(市价意图) | market_id={} | side={} | token_id={} | ask={:.4} | usd={} | size={}",
+        payload.market_id, side, token_id_str, price_f64, usd_amount, size
     );
 
     if !state.is_running.load(Ordering::Relaxed) {
@@ -543,7 +526,7 @@ async fn buy_handler(
             market_slug: market.name.clone(),
             side: side.clone(),
             price: price.to_f64().unwrap_or(0.0),
-            size: qty.to_f64().unwrap_or(0.0),
+            size: size.to_f64().unwrap_or(0.0),
             timestamp: Utc::now().timestamp(),
             status: "SimBought".to_string(),
             profit: None,
@@ -558,7 +541,7 @@ async fn buy_handler(
         });
     }
 
-    match executor.buy_at_price(token_id, price, qty).await {
+    match executor.buy_market_usd(token_id, price, usd_amount).await {
         Ok(resp) => {
             use crate::utils::trade_history::{add_trade, TradeRecord};
             use chrono::Utc;
@@ -571,7 +554,7 @@ async fn buy_handler(
                 market_slug: market.name.clone(),
                 side: side.clone(),
                 price: price.to_f64().unwrap_or(0.0),
-                size: qty.to_f64().unwrap_or(0.0),
+                size: size.to_f64().unwrap_or(0.0),
                 timestamp: Utc::now().timestamp(),
                 status: "Bought".to_string(),
                 profit: None,

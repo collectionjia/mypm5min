@@ -1149,10 +1149,7 @@ async fn main() -> Result<()> {
                                             let no_ask = no_best_ask.map(|(p, _)| p.round_dp(2));
 
                                             let trigger_price = dec!(0.80);
-                                            let first_price = dec!(0.80);
-                                            let first_qty = dec!(5.0);
-                                            let second_price = dec!(0.03);
-                                            let second_qty = dec!(10.0);
+                                            let usd_amount = dec!(1.0);
 
                                             let first_side_key = match (yes_ask, no_ask) {
                                                 (Some(yp), Some(np)) => {
@@ -1186,6 +1183,16 @@ async fn main() -> Result<()> {
                                             };
 
                                             if let Some(first_side_key) = first_side_key {
+                                                let first_reference_ask = if first_side_key == 0u8 {
+                                                    yes_ask.unwrap()
+                                                } else {
+                                                    no_ask.unwrap()
+                                                };
+                                                let second_reference_ask = if first_side_key == 0u8 {
+                                                    no_ask
+                                                } else {
+                                                    yes_ask
+                                                };
                                                 let (first_token_id, second_token_id) =
                                                     if first_side_key == 0u8 {
                                                         (
@@ -1206,7 +1213,7 @@ async fn main() -> Result<()> {
                                                     };
 
                                                 info!(
-                                                    "⏱️ 倒计时策略触发 | 市场:{} | 秒:{} | 先到:{}>=0.90",
+                                                    "⏱️ 倒计时策略触发 | 市场:{} | 秒:{} | 先到:{}>=0.80 | 每单$1市价意图",
                                                     market_display,
                                                     sec_to_end_nonneg,
                                                     first_side_name
@@ -1222,21 +1229,31 @@ async fn main() -> Result<()> {
                                                     let market_display_str = market_display.clone();
                                                     let buy_countdown = Some(countdown_str.clone());
                                                     use rust_decimal::prelude::ToPrimitive;
-                                                    let first_price_f64 =
-                                                        first_price.to_f64().unwrap_or(0.0);
-                                                    let second_price_f64 =
-                                                        second_price.to_f64().unwrap_or(0.0);
+                                                    let first_ask_f64 = first_reference_ask
+                                                        .to_f64()
+                                                        .unwrap_or(0.0);
+                                                    let second_ask_f64 = second_reference_ask
+                                                        .and_then(|p| p.to_f64());
                                                     tokio::spawn(async move {
                                                         use crate::utils::trade_history::{
                                                             add_trade, TradeRecord,
                                                         };
                                                         use chrono::Utc;
 
+                                                        let mut first_size = (usd_amount
+                                                            / first_reference_ask
+                                                            * dec!(100.0))
+                                                            .floor()
+                                                            / dec!(100.0);
+                                                        if first_size < dec!(0.01) {
+                                                            first_size = dec!(0.01);
+                                                        }
+
                                                         let first_res = exec
-                                                            .buy_at_price(
+                                                            .buy_market_usd(
                                                                 first_token_id,
-                                                                first_price,
-                                                                first_qty,
+                                                                first_reference_ask,
+                                                                usd_amount,
                                                             )
                                                             .await;
                                                         let first_ok = first_res.is_ok();
@@ -1244,12 +1261,12 @@ async fn main() -> Result<()> {
                                                         if let Ok(resp) = first_res {
                                                             pt.update_exposure_cost(
                                                                 first_token_id,
-                                                                first_price,
-                                                                first_qty,
+                                                                first_reference_ask,
+                                                                first_size,
                                                             );
                                                             pt.update_position(
                                                                 first_token_id,
-                                                                first_qty,
+                                                                first_size,
                                                             );
                                                             add_trade(TradeRecord {
                                                                 id: resp.order_id.clone(),
@@ -1257,8 +1274,8 @@ async fn main() -> Result<()> {
                                                                 market_slug: market_display_str
                                                                     .clone(),
                                                                 side: first_side_name.clone(),
-                                                                price: first_price_f64,
-                                                                size: first_qty
+                                                                price: first_ask_f64,
+                                                                size: first_size
                                                                     .to_f64()
                                                                     .unwrap_or(0.0),
                                                                 timestamp: Utc::now().timestamp(),
@@ -1275,41 +1292,57 @@ async fn main() -> Result<()> {
                                                             return;
                                                         }
 
-                                                        let second_res = exec
-                                                            .buy_at_price(
-                                                                second_token_id,
-                                                                second_price,
-                                                                second_qty,
-                                                            )
-                                                            .await;
+                                                        if let Some(second_reference_ask) =
+                                                            second_reference_ask
+                                                        {
+                                                            let mut second_size = (usd_amount
+                                                                / second_reference_ask
+                                                                * dec!(100.0))
+                                                                .floor()
+                                                                / dec!(100.0);
+                                                            if second_size < dec!(0.01) {
+                                                                second_size = dec!(0.01);
+                                                            }
 
-                                                        if let Ok(resp) = second_res {
-                                                            pt.update_exposure_cost(
-                                                                second_token_id,
-                                                                second_price,
-                                                                second_qty,
-                                                            );
-                                                            pt.update_position(
-                                                                second_token_id,
-                                                                second_qty,
-                                                            );
-                                                            add_trade(TradeRecord {
-                                                                id: resp.order_id.clone(),
-                                                                market_id: market_id_str.clone(),
-                                                                market_slug: market_display_str
-                                                                    .clone(),
-                                                                side: second_side_name.clone(),
-                                                                price: second_price_f64,
-                                                                size: second_qty
-                                                                    .to_f64()
-                                                                    .unwrap_or(0.0),
-                                                                timestamp: Utc::now().timestamp(),
-                                                                status: "Bought".to_string(),
-                                                                profit: None,
-                                                                buy_countdown:
-                                                                    buy_countdown.clone(),
-                                                                sell_countdown: None,
-                                                            });
+                                                            let second_res = exec
+                                                                .buy_market_usd(
+                                                                    second_token_id,
+                                                                    second_reference_ask,
+                                                                    usd_amount,
+                                                                )
+                                                                .await;
+
+                                                            if let Ok(resp) = second_res {
+                                                                pt.update_exposure_cost(
+                                                                    second_token_id,
+                                                                    second_reference_ask,
+                                                                    second_size,
+                                                                );
+                                                                pt.update_position(
+                                                                    second_token_id,
+                                                                    second_size,
+                                                                );
+                                                                add_trade(TradeRecord {
+                                                                    id: resp.order_id.clone(),
+                                                                    market_id: market_id_str
+                                                                        .clone(),
+                                                                    market_slug:
+                                                                        market_display_str.clone(),
+                                                                    side: second_side_name.clone(),
+                                                                    price: second_ask_f64
+                                                                        .unwrap_or(0.0),
+                                                                    size: second_size
+                                                                        .to_f64()
+                                                                        .unwrap_or(0.0),
+                                                                    timestamp: Utc::now()
+                                                                        .timestamp(),
+                                                                    status: "Bought".to_string(),
+                                                                    profit: None,
+                                                                    buy_countdown:
+                                                                        buy_countdown.clone(),
+                                                                    sell_countdown: None,
+                                                                });
+                                                            }
                                                         }
 
                                                         state_map.insert(market_id_key, 4u8);
@@ -1324,65 +1357,66 @@ async fn main() -> Result<()> {
 
                                                     let first_order_id =
                                                         format!("SIM-{}", uuid::Uuid::new_v4());
+                                                    let mut first_size = (usd_amount
+                                                        / first_reference_ask
+                                                        * dec!(100.0))
+                                                        .floor()
+                                                        / dec!(100.0);
+                                                    if first_size < dec!(0.01) {
+                                                        first_size = dec!(0.01);
+                                                    }
                                                     add_trade(TradeRecord {
                                                         id: first_order_id.clone(),
                                                         market_id: market_id.to_string(),
                                                         market_slug: market_display.clone(),
                                                         side: first_side_name.clone(),
-                                                        price: first_price.to_f64().unwrap_or(0.0),
-                                                        size: first_qty.to_f64().unwrap_or(0.0),
+                                                        price: first_reference_ask
+                                                            .to_f64()
+                                                            .unwrap_or(0.0),
+                                                        size: first_size.to_f64().unwrap_or(0.0),
                                                         timestamp: Utc::now().timestamp(),
-                                                        status: "SimPosted".to_string(),
+                                                        status: "SimBought".to_string(),
                                                         profit: None,
                                                         buy_countdown: buy_countdown.clone(),
                                                         sell_countdown: None,
                                                     });
-                                                    sim_open_orders.insert(
-                                                        first_order_id.clone(),
-                                                        SimOrderInfo {
-                                                            market_id,
-                                                            side_key: first_side_key,
-                                                            limit_price: first_price,
-                                                            size: first_qty,
-                                                            on_filled_state: 4,
-                                                            clear_first_leg_price: false,
-                                                        },
-                                                    );
-
-                                                    let second_order_id =
-                                                        format!("SIM-{}", uuid::Uuid::new_v4());
-                                                    add_trade(TradeRecord {
-                                                        id: second_order_id.clone(),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: second_side_name.clone(),
-                                                        price: second_price
-                                                            .to_f64()
-                                                            .unwrap_or(0.0),
-                                                        size: second_qty.to_f64().unwrap_or(0.0),
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "SimPosted".to_string(),
-                                                        profit: None,
-                                                        buy_countdown,
-                                                        sell_countdown: None,
-                                                    });
-                                                    sim_open_orders.insert(
-                                                        second_order_id.clone(),
-                                                        SimOrderInfo {
-                                                            market_id,
-                                                            side_key: if first_side_key == 0u8 {
-                                                                1u8
-                                                            } else {
-                                                                0u8
-                                                            },
-                                                            limit_price: second_price,
-                                                            size: second_qty,
-                                                            on_filled_state: 4,
-                                                            clear_first_leg_price: false,
-                                                        },
-                                                    );
 
                                                     strategy_state.insert(market_id, 4u8);
+
+                                                    if let Some(second_reference_ask) =
+                                                        second_reference_ask
+                                                    {
+                                                        let mut second_size = (usd_amount
+                                                            / second_reference_ask
+                                                            * dec!(100.0))
+                                                            .floor()
+                                                            / dec!(100.0);
+                                                        if second_size < dec!(0.01) {
+                                                            second_size = dec!(0.01);
+                                                        }
+
+                                                        let second_order_id = format!(
+                                                            "SIM-{}",
+                                                            uuid::Uuid::new_v4()
+                                                        );
+                                                        add_trade(TradeRecord {
+                                                            id: second_order_id.clone(),
+                                                            market_id: market_id.to_string(),
+                                                            market_slug: market_display.clone(),
+                                                            side: second_side_name.clone(),
+                                                            price: second_reference_ask
+                                                                .to_f64()
+                                                                .unwrap_or(0.0),
+                                                            size: second_size
+                                                                .to_f64()
+                                                                .unwrap_or(0.0),
+                                                            timestamp: Utc::now().timestamp(),
+                                                            status: "SimBought".to_string(),
+                                                            profit: None,
+                                                            buy_countdown,
+                                                            sell_countdown: None,
+                                                        });
+                                                    }
                                                 }
                                             }
                                         }
