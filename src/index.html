@@ -259,7 +259,7 @@
                 <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;">
                     <div style="display:flex; flex-direction: column; gap: 0.25rem;">
                         <h3 style="margin: 0;">交易统计</h3>
-                        <div id="trades-summary" style="color: #666; font-size: 0.85rem;">总:0 | 赢:0</div>
+                        <div id="trades-summary" style="color: #666; font-size: 0.85rem;">总:0 | 赢:0 | 输:0 | 当前:-- | 连输:1 | 下单金额:$1.00</div>
                     </div>
                     <button class="btn" style="width: auto; margin-bottom: 0; padding: 0.2rem 0.45rem; font-size: 0.85rem;" onclick="clearTrades()">清空</button>
                 </div>
@@ -502,7 +502,25 @@
                     const skipped = trades.filter(t => t.status === 'SimSkipped').length;
                     const posted = trades.filter(t => t.status === 'SimPosted' || t.status === 'BuyPosted').length;
                     const ongoing = Math.max(0, trades.length - skipped - posted - total);
-                    summaryEl.textContent = `总:${total} | 赢:${won} | 输:${lost} | 跳过:${skipped} | 挂单中:${posted} | 进行中:${ongoing}`;
+
+                    const soldTrades = [...trades]
+                        .filter(t => t.status === 'Sold' || t.status === 'SimSold')
+                        .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+                    let currentMarketResult = '--';
+                    let marketLoseStreakCount = 1;
+                    for (const st of soldTrades) {
+                        const p = toNumber(st.profit);
+                        if (p == null) continue;
+                        if (p >= 0) {
+                            currentMarketResult = '赢';
+                            marketLoseStreakCount = 1;
+                        } else {
+                            currentMarketResult = '输';
+                            marketLoseStreakCount += 1;
+                        }
+                    }
+                    const buyUsdAmount = marketLoseStreakCount * 1;
+                    summaryEl.textContent = `总:${total} | 赢:${won} | 输:${lost} | 当前:${currentMarketResult} | 连输:${marketLoseStreakCount} | 下单金额:$${buyUsdAmount.toFixed(2)} | 跳过:${skipped} | 挂单中:${posted} | 进行中:${ongoing}`;
                 }
 
                 const tbody = document.querySelector('#trades-table tbody');

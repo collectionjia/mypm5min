@@ -16,7 +16,7 @@ use polymarket_client_sdk::types::{Address, B256, U256};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -641,6 +641,7 @@ async fn main() -> Result<()> {
         let sim_open_orders: Arc<DashMap<String, SimOrderInfo>> = Arc::new(DashMap::new());
         let drawdown_last_sec_to_end: Arc<DashMap<B256, i64>> = Arc::new(DashMap::new());
         let drawdown_trigger_mask: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
+        let losing_streak_count = Arc::new(AtomicU64::new(1));
 
         // 监控订单簿更新
         loop {
@@ -1070,6 +1071,8 @@ async fn main() -> Result<()> {
                                                 if is_live {
                                                     let exec_sell = executor.clone();
                                                     let pt = _risk_manager.position_tracker();
+                                                    let losing_streak_count_clone =
+                                                        losing_streak_count.clone();
                                                     let token_id_sell = if buy_side_key == Some(0u8) {
                                                         pair.yes_book.asset_id
                                                     } else {
@@ -1081,6 +1084,7 @@ async fn main() -> Result<()> {
                                                     use rust_decimal::prelude::ToPrimitive;
                                                     let price_f64 = bid_price.to_f64().unwrap_or(0.0);
                                                     let profit_f64 = profit_dec.to_f64();
+                                                    let is_win = profit_dec >= dec!(0);
                                                     let trigger_reason = if should_take_profit {
                                                         "止盈"
                                                     } else {
@@ -1092,6 +1096,11 @@ async fn main() -> Result<()> {
                                                                 pt.update_position(token_id_sell, -qty_sell);
                                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
                                                                 use chrono::Utc;
+                                                                if is_win {
+                                                                    losing_streak_count_clone.store(1, Ordering::Relaxed);
+                                                                } else {
+                                                                    losing_streak_count_clone.fetch_add(1, Ordering::Relaxed);
+                                                                }
                                                                 add_trade(TradeRecord {
                                                                     id: resp.order_id.clone(),
                                                                     market_id: market_id_str,
@@ -1142,6 +1151,11 @@ async fn main() -> Result<()> {
                                                         buy_countdown: None,
                                                         sell_countdown: Some(countdown_str.clone()),
                                                     });
+                                                    if profit_dec >= dec!(0) {
+                                                        losing_streak_count.store(1, Ordering::Relaxed);
+                                                    } else {
+                                                        losing_streak_count.fetch_add(1, Ordering::Relaxed);
+                                                    }
                                                 }
                                                 continue;
                                             } else if !is_live {
@@ -1169,7 +1183,9 @@ async fn main() -> Result<()> {
                                             let no_ask = no_best_ask.map(|(p, _)| p.round_dp(2));
 
                                             let trigger_price = dec!(0.80);
-                                            let usd_amount = dec!(1.0);
+                                            let streak_count =
+                                                losing_streak_count.load(Ordering::Relaxed).max(1);
+                                            let usd_amount = Decimal::from(streak_count as i64);
 
                                             let first_side_key = match (yes_ask, no_ask) {
                                                 (Some(yp), Some(np)) => {
@@ -1228,10 +1244,12 @@ async fn main() -> Result<()> {
                                                     };
 
                                                 info!(
-                                                    "⏱️ 倒计时策略触发 | 市场:{} | 秒:{} | 先到:{}>=0.80 | 每单$1市价意图",
+                                                    "⏱️ 倒计时策略触发 | 市场:{} | 秒:{} | 先到:{}>=0.80 | 连输:{} | 本次下单:${}市价意图",
                                                     market_display,
                                                     sec_to_end_nonneg,
-                                                    first_side_name
+                                                    first_side_name,
+                                                    streak_count,
+                                                    usd_amount
                                                 );
 
                                                 if is_live {
