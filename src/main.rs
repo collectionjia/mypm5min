@@ -1014,24 +1014,33 @@ async fn main() -> Result<()> {
                                         .get(&market_id)
                                         .map(|v| *v)
                                         .or_else(|| if state == 1 { Some(0u8) } else if state == 2 { Some(1u8) } else { None });
-                                    if should_check_drawdown && buy_side_key.is_some() && state != 4 {
+                                    let current_price = if buy_side_key == Some(0u8) {
+                                        yes_best_ask.map(|(p, _)| p.round_dp(2))
+                                    } else if buy_side_key == Some(1u8) {
+                                        no_best_ask.map(|(p, _)| p.round_dp(2))
+                                    } else {
+                                        None
+                                    };
+                                    let should_check_take_profit = current_price
+                                        .map(|p| p >= dec!(0.98))
+                                        .unwrap_or(false);
+                                    if (should_check_drawdown || should_check_take_profit)
+                                        && buy_side_key.is_some()
+                                        && state != 4
+                                    {
                                         let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
-                                        let current_price = if buy_side_key == Some(0u8) {
-                                            yes_best_ask.map(|(p, _)| p.round_dp(2))
-                                        } else if buy_side_key == Some(1u8) {
-                                            no_best_ask.map(|(p, _)| p.round_dp(2))
-                                        } else {
-                                            None
-                                        };
 
                                         if let (Some(buy_price), Some(cur_price)) = (buy_price, current_price) {
+                                            let take_profit_price = dec!(0.98);
+                                            let should_take_profit = cur_price >= take_profit_price;
+                                            let should_drawdown_sell = cur_price < buy_price;
                                             if !is_live {
                                                 info!(
-                                                    "🧪 模拟回撤校验 | 市场:{} | 秒:{} | 买入:{:.2} | 当前:{:.2}",
+                                                    "🧪 模拟持仓校验 | 市场:{} | 秒:{} | 买入:{:.2} | 当前:{:.2}",
                                                     market_display, sec_to_end_nonneg, buy_price, cur_price
                                                 );
                                             }
-                                            if cur_price < buy_price {
+                                            if should_take_profit || should_drawdown_sell {
                                                 let qty_sell = first_leg_qty_map
                                                     .get(&market_id)
                                                     .map(|v| *v)
@@ -1072,6 +1081,11 @@ async fn main() -> Result<()> {
                                                     use rust_decimal::prelude::ToPrimitive;
                                                     let price_f64 = bid_price.to_f64().unwrap_or(0.0);
                                                     let profit_f64 = profit_dec.to_f64();
+                                                    let trigger_reason = if should_take_profit {
+                                                        "止盈"
+                                                    } else {
+                                                        "回撤"
+                                                    };
                                                     tokio::spawn(async move {
                                                         match exec_sell.sell_at_price(token_id_sell, bid_price, qty_sell).await {
                                                             Ok(resp) => {
@@ -1094,7 +1108,8 @@ async fn main() -> Result<()> {
                                                             }
                                                             Err(e) => {
                                                                 warn!(
-                                                                    "❌ 倒计时策略回撤卖出失败 | 秒:{} | error:{}",
+                                                                    "❌ 倒计时策略{}卖出失败 | 秒:{} | error:{}",
+                                                                    trigger_reason,
                                                                     sec_to_end_nonneg,
                                                                     e
                                                                 );
@@ -1102,9 +1117,14 @@ async fn main() -> Result<()> {
                                                         }
                                                     });
                                                 } else {
+                                                    let trigger_reason = if should_take_profit {
+                                                        "止盈"
+                                                    } else {
+                                                        "回撤"
+                                                    };
                                                     info!(
-                                                        "🧪 模拟回撤卖出 | 市场:{} | 秒:{} | 卖价:{:.2} | 份额:{:.2}",
-                                                        market_display, sec_to_end_nonneg, bid_price, qty_sell
+                                                        "🧪 模拟{}卖出 | 市场:{} | 秒:{} | 卖价:{:.2} | 份额:{:.2}",
+                                                        trigger_reason, market_display, sec_to_end_nonneg, bid_price, qty_sell
                                                     );
                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                     use chrono::Utc;
@@ -1126,13 +1146,13 @@ async fn main() -> Result<()> {
                                                 continue;
                                             } else if !is_live {
                                                 info!(
-                                                    "🧪 模拟回撤不卖 | 市场:{} | 秒:{} | 当前:{:.2} >= 买入:{:.2}",
+                                                    "🧪 模拟持仓不卖 | 市场:{} | 秒:{} | 当前:{:.2} >= 买入:{:.2}",
                                                     market_display, sec_to_end_nonneg, cur_price, buy_price
                                                 );
                                             }
                                         } else if !is_live {
                                             info!(
-                                                "🧪 模拟回撤校验跳过 | 市场:{} | 秒:{} | 买入价/盘口缺失",
+                                                "🧪 模拟持仓校验跳过 | 市场:{} | 秒:{} | 买入价/盘口缺失",
                                                 market_display, sec_to_end_nonneg
                                             );
                                         }
