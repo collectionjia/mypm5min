@@ -1188,12 +1188,7 @@ async fn main() -> Result<()> {
                                                 } else {
                                                     no_ask.unwrap()
                                                 };
-                                                let second_reference_ask = if first_side_key == 0u8 {
-                                                    no_ask
-                                                } else {
-                                                    yes_ask
-                                                };
-                                                let (first_token_id, second_token_id) =
+                                                let (first_token_id, _second_token_id) =
                                                     if first_side_key == 0u8 {
                                                         (
                                                             pair.yes_book.asset_id,
@@ -1205,7 +1200,7 @@ async fn main() -> Result<()> {
                                                             pair.yes_book.asset_id,
                                                         )
                                                     };
-                                                let (first_side_name, second_side_name) =
+                                                let (first_side_name, _second_side_name) =
                                                     if first_side_key == 0u8 {
                                                         ("YES".to_string(), "NO".to_string())
                                                     } else {
@@ -1240,8 +1235,6 @@ async fn main() -> Result<()> {
                                                     let first_ask_f64 = first_reference_ask
                                                         .to_f64()
                                                         .unwrap_or(0.0);
-                                                    let second_ask_f64 = second_reference_ask
-                                                        .and_then(|p| p.to_f64());
                                                     tokio::spawn(async move {
                                                         use crate::utils::trade_history::{
                                                             add_trade, TradeRecord,
@@ -1308,94 +1301,14 @@ async fn main() -> Result<()> {
                                                             return;
                                                         }
 
-                                                        let mut second_ok = false;
-                                                        if let Some(second_reference_ask) =
-                                                            second_reference_ask
-                                                        {
-                                                            let mut second_size = (usd_amount
-                                                                / second_reference_ask
-                                                                * dec!(100.0))
-                                                                .floor()
-                                                                / dec!(100.0);
-                                                            if second_size < dec!(0.01) {
-                                                                second_size = dec!(0.01);
-                                                            }
-
-                                                            let second_res = exec
-                                                                .buy_market_usd(
-                                                                    second_token_id,
-                                                                    second_reference_ask,
-                                                                    usd_amount,
-                                                                )
-                                                                .await;
-
-                                                            if let Ok(resp) = second_res {
-                                                                pt.update_exposure_cost(
-                                                                    second_token_id,
-                                                                    second_reference_ask,
-                                                                    second_size,
-                                                                );
-                                                                pt.update_position(
-                                                                    second_token_id,
-                                                                    second_size,
-                                                                );
-                                                                add_trade(TradeRecord {
-                                                                    id: resp.order_id.clone(),
-                                                                    market_id: market_id_str
-                                                                        .clone(),
-                                                                    market_slug:
-                                                                        market_display_str.clone(),
-                                                                    side: second_side_name.clone(),
-                                                                    price: second_ask_f64
-                                                                        .unwrap_or(0.0),
-                                                                    size: second_size
-                                                                        .to_f64()
-                                                                        .unwrap_or(0.0),
-                                                                    timestamp: Utc::now()
-                                                                        .timestamp(),
-                                                                    status: "Bought".to_string(),
-                                                                    profit: None,
-                                                                    buy_countdown:
-                                                                        buy_countdown.clone(),
-                                                                    sell_countdown: None,
-                                                                });
-                                                                second_ok = true;
-                                                            } else if let Err(e) = second_res {
-                                                                warn!(
-                                                                    "⚠️ 倒计时策略第二腿下单失败 | 市场:{} | side:{} | error:{}",
-                                                                    market_display_str,
-                                                                    second_side_name,
-                                                                    e
-                                                                );
-                                                            }
-                                                        } else {
-                                                            warn!(
-                                                                "⚠️ 倒计时策略第二腿跳过 | 市场:{} | side:{} | 原因: 无可用卖一价",
-                                                                market_display_str,
-                                                                second_side_name
-                                                            );
-                                                        }
-
-                                                        if second_ok {
-                                                            first_leg_price_map_clone
-                                                                .remove(&market_id_key);
-                                                            first_leg_qty_map_clone
-                                                                .remove(&market_id_key);
-                                                            first_leg_side_key_map_clone
-                                                                .remove(&market_id_key);
-                                                            drawdown_trigger_mask_clone
-                                                                .remove(&market_id_key);
-                                                            state_map.insert(market_id_key, 4u8);
-                                                        } else {
-                                                            state_map.insert(
-                                                                market_id_key,
-                                                                if first_side_key == 0u8 {
-                                                                    1u8
-                                                                } else {
-                                                                    2u8
-                                                                },
-                                                            );
-                                                        }
+                                                        state_map.insert(
+                                                            market_id_key,
+                                                            if first_side_key == 0u8 {
+                                                                1u8
+                                                            } else {
+                                                                2u8
+                                                            },
+                                                        );
                                                     });
                                                 } else {
                                                     use crate::utils::trade_history::{
@@ -1430,43 +1343,16 @@ async fn main() -> Result<()> {
                                                         buy_countdown: buy_countdown.clone(),
                                                         sell_countdown: None,
                                                     });
-
-                                                    strategy_state.insert(market_id, 4u8);
-
-                                                    if let Some(second_reference_ask) =
-                                                        second_reference_ask
-                                                    {
-                                                        let mut second_size = (usd_amount
-                                                            / second_reference_ask
-                                                            * dec!(100.0))
-                                                            .floor()
-                                                            / dec!(100.0);
-                                                        if second_size < dec!(0.01) {
-                                                            second_size = dec!(0.01);
-                                                        }
-
-                                                        let second_order_id = format!(
-                                                            "SIM-{}",
-                                                            uuid::Uuid::new_v4()
-                                                        );
-                                                        add_trade(TradeRecord {
-                                                            id: second_order_id.clone(),
-                                                            market_id: market_id.to_string(),
-                                                            market_slug: market_display.clone(),
-                                                            side: second_side_name.clone(),
-                                                            price: second_reference_ask
-                                                                .to_f64()
-                                                                .unwrap_or(0.0),
-                                                            size: second_size
-                                                                .to_f64()
-                                                                .unwrap_or(0.0),
-                                                            timestamp: Utc::now().timestamp(),
-                                                            status: "SimBought".to_string(),
-                                                            profit: None,
-                                                            buy_countdown,
-                                                            sell_countdown: None,
-                                                        });
-                                                    }
+                                                    first_leg_price_map
+                                                        .insert(market_id, first_reference_ask);
+                                                    first_leg_qty_map.insert(market_id, first_size);
+                                                    first_leg_side_key_map
+                                                        .insert(market_id, first_side_key);
+                                                    drawdown_trigger_mask.remove(&market_id);
+                                                    strategy_state.insert(
+                                                        market_id,
+                                                        if first_side_key == 0u8 { 1u8 } else { 2u8 },
+                                                    );
                                                 }
                                             }
                                         }
