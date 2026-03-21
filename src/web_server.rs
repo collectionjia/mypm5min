@@ -502,14 +502,7 @@ async fn buy_handler(
         }
     };
 
-    let usd_amount = match payload.qty {
-        Some(q) if q.is_finite() && q > 0.0 => match Decimal::try_from(q).map(|v| v.round_dp(2)) {
-            Ok(v) if v >= dec!(1) => v,
-            Ok(_) => dec!(1),
-            Err(_) => dec!(1),
-        },
-        _ => dec!(1),
-    };
+    let usd_amount = dec!(1) / dec!(0.99);
     let mut size = (usd_amount / price).round_dp(0);
     if size < dec!(1) {
         size = dec!(1);
