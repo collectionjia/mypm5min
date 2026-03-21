@@ -186,9 +186,9 @@ impl TradingExecutor {
         }
 
         let reference_ask = reference_ask.round_dp(2);
-        let mut size = (usd_amount / reference_ask * dec!(100.0)).floor() / dec!(100.0);
-        if size < dec!(0.01) {
-            size = dec!(0.01);
+        let mut size = (usd_amount / reference_ask).round_dp(0);
+        if size < dec!(1) {
+            size = dec!(1);
         }
 
         let price = dec!(1.0);
