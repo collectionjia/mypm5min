@@ -199,7 +199,7 @@ impl TradingExecutor {
             size = dec!(1);
         }
 
-        let price = dec!(1.0);
+        let price = dec!(0.99);
         info!(
             "🧾 下单参数详情 | action=buy_market_usd | token_id={} | side=BUY | order_type=FAK | reference_ask={} | usd_amount={} | price={} | computed_size={}",
             token_id, reference_ask, usd_amount, price, size
