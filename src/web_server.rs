@@ -548,6 +548,18 @@ async fn buy_handler(
         });
     }
 
+    info!(
+        "🧾 Web下单参数详情 | market_id={} | side={} | token_id={} | raw_qty={:?} | ask_price={} | usd_amount={} | computed_size={} | is_running={}",
+        payload.market_id,
+        side,
+        token_id,
+        payload.qty,
+        price,
+        usd_amount,
+        size,
+        state.is_running.load(Ordering::Relaxed)
+    );
+
     match executor.buy_market_usd(token_id, price, usd_amount).await {
         Ok(resp) => {
             use crate::utils::trade_history::{add_trade, TradeRecord};

@@ -116,6 +116,10 @@ impl TradingExecutor {
         size: Decimal,
     ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
         let price = price.round_dp(2);
+        info!(
+            "🧾 下单参数详情 | action=sell_at_price | token_id={} | side=SELL | order_type=GTC | price={} | size={}",
+            token_id, price, size
+        );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
         let order = self
             .client
@@ -148,6 +152,10 @@ impl TradingExecutor {
         size: Decimal,
     ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
         let price = price.round_dp(2);
+        info!(
+            "🧾 下单参数详情 | action=buy_at_price | token_id={} | side=BUY | order_type=GTC | price={} | size={}",
+            token_id, price, size
+        );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
         let order = self
             .client
@@ -192,6 +200,10 @@ impl TradingExecutor {
         }
 
         let price = dec!(1.0);
+        info!(
+            "🧾 下单参数详情 | action=buy_market_usd | token_id={} | side=BUY | order_type=FAK | reference_ask={} | usd_amount={} | price={} | computed_size={}",
+            token_id, reference_ask, usd_amount, price, size
+        );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
         let order = self
             .client
@@ -268,6 +280,24 @@ impl TradingExecutor {
         let no_slippage_apply = self.slippage_for_direction(no_dir);
         let yes_price_with_slippage = (opp.yes_ask_price + yes_slippage_apply).min(dec!(1.0));
         let no_price_with_slippage = (opp.no_ask_price + no_slippage_apply).min(dec!(1.0));
+        info!(
+            "🧾 下单参数详情 | action=execute_arbitrage_pair | pair_id={} | market_id={} | yes_token_id={} | no_token_id={} | yes_dir={} | no_dir={} | yes_ask={} | no_ask={} | yes_slippage={} | no_slippage={} | yes_price_final={} | no_price_final={} | size={} | order_type={} | expiration={}",
+            &pair_id[..8],
+            opp.market_id,
+            yes_token_id,
+            no_token_id,
+            yes_dir,
+            no_dir,
+            opp.yes_ask_price,
+            opp.no_ask_price,
+            yes_slippage_apply,
+            no_slippage_apply,
+            yes_price_with_slippage,
+            no_price_with_slippage,
+            order_size,
+            self.arbitrage_order_type,
+            expiration
+        );
 
         // 打印选档信息（加滑点后的价格）
         info!(
