@@ -1185,7 +1185,10 @@ async fn main() -> Result<()> {
                                             let trigger_price = dec!(0.80);
                                             let streak_count =
                                                 losing_streak_count.load(Ordering::Relaxed).max(1);
-                                            let usd_amount = Decimal::from(streak_count as i64);
+                                            let usd_amount = Decimal::from(
+                                                i64::try_from(streak_count).unwrap_or(i64::MAX),
+                                            )
+                                            .max(dec!(1));
 
                                             let first_side_key = match (yes_ask, no_ask) {
                                                 (Some(yp), Some(np)) => {
