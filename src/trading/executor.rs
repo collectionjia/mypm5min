@@ -200,9 +200,14 @@ impl TradingExecutor {
         }
 
         let price = dec!(0.99);
+        let min_size_for_order_price = (dec!(1) / price).ceil();
+        if size < min_size_for_order_price {
+            size = min_size_for_order_price;
+        }
+        let order_amount = price * size;
         info!(
-            "🧾 下单参数详情 | action=buy_market_usd | token_id={} | side=BUY | order_type=FAK | reference_ask={} | usd_amount={} | price={} | computed_size={}",
-            token_id, reference_ask, usd_amount, price, size
+            "🧾 下单参数详情 | action=buy_market_usd | token_id={} | side=BUY | order_type=FAK | reference_ask={} | usd_amount={} | price={} | min_size_for_price={} | computed_size={} | order_amount={}",
+            token_id, reference_ask, usd_amount, price, min_size_for_order_price, size, order_amount
         );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
         let order = self

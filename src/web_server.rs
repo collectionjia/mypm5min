@@ -502,7 +502,7 @@ async fn buy_handler(
         }
     };
 
-    let usd_amount = dec!(1) / dec!(0.99);
+    let usd_amount = dec!(1.01).round_dp(2);
     let mut size = (usd_amount / price).round_dp(0);
     if size < dec!(1) {
         size = dec!(1);
