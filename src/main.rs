@@ -517,7 +517,8 @@ async fn main() -> Result<()> {
 
     // 定时 Merge：每 N 分钟根据持仓执行 merge，仅对 YES+NO 双边都持仓的市场
     let merge_interval = config.merge_interval_minutes;
-    if merge_interval > 0 {
+    let enable_auto_merge = config.enable_auto_merge;
+    if merge_interval > 0 && enable_auto_merge {
         if let Some(proxy) = config.proxy_address {
             let private_key = config.private_key.clone();
             let position_tracker = _risk_manager.position_tracker().clone();

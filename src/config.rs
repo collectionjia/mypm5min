@@ -50,6 +50,8 @@ pub struct Config {
     pub stop_arbitrage_before_end_minutes: u64, // 市场结束前N分钟停止执行套利，默认0（不停止）
     /// 定时 Merge 间隔（分钟），0 表示不启用。CONDITION_ID 与订单簿一样由当前窗口市场获取。
     pub merge_interval_minutes: u64,
+    /// 是否启用自动 Merge，true 表示启用，false 表示禁用
+    pub enable_auto_merge: bool,
     /// YES 价格阈值：只有当 YES 价格 >= 此阈值时才执行套利，默认 0.0（不限制）
     pub min_yes_price_threshold: f64,
     /// NO 价格阈值：只有当 NO 价格 >= 此阈值时才执行套利，默认 0.0（不限制）
@@ -155,6 +157,10 @@ impl Config {
                 .unwrap_or_else(|_| "0".to_string())
                 .parse()
                 .unwrap_or(0), // 0=不启用
+            enable_auto_merge: env::var("ENABLE_AUTO_MERGE")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse()
+                .unwrap_or(false), // 默认false（不启用）
             min_yes_price_threshold: env::var("MIN_YES_PRICE_THRESHOLD")
                 .unwrap_or_else(|_| "0.0".to_string())
                 .parse()
