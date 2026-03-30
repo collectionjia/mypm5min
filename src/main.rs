@@ -1031,7 +1031,8 @@ async fn main() -> Result<()> {
                                                     market_display, sec_to_end_nonneg, buy_price, cur_price
                                                 );
                                             }
-                                            if cur_price < buy_price {
+                                            if cur_price >= buy_price + dec!(0.2) || cur_price <= buy_price - dec!(0.1) {
+                                                let sell_reason = if cur_price >= buy_price + dec!(0.2) { "涨0.2" } else { "跌0.1" };
                                                 let qty_sell = first_leg_qty_map
                                                     .get(&market_id)
                                                     .map(|v| *v)
