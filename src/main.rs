@@ -903,8 +903,8 @@ async fn main() -> Result<()> {
 
                                 {
                                     let is_live = is_running.load(Ordering::Relaxed);
-                                    let entry_trigger_secs_to_end_max: i64 = 60;
-                                    let entry_trigger_secs_to_end_min: i64 = 40;
+                                    let entry_trigger_secs_to_end_max: i64 = 280;
+                                    let entry_trigger_secs_to_end_min: i64 = 260;
                                     let total_price_cap = dec!(0.95);
                                     let first_leg_min_price = dec!(0.60);
                                     let high_first_leg_min = dec!(0.90);
