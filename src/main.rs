@@ -1095,7 +1095,7 @@ async fn main() -> Result<()> {
                                                             }
                                                             Err(e) => {
                                                                 warn!(
-                                                                    "❌ 倒计时策略回撤卖出失败 | 秒:{} | error:{}",
+                                                                    "❌ 倒计时策略回撤卖出失败 11| 秒:{} | error:{}",
                                                                     sec_to_end_nonneg,
                                                                     e
                                                                 );
