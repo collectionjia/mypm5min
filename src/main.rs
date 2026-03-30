@@ -1172,8 +1172,8 @@ async fn main() -> Result<()> {
                                                 let qty = if qty > max_qty { max_qty } else { qty };
 
                                                 info!(
-                                                    "⏱️ 倒计时策略入场买入 | 市场:{}  {} 价格更高 | 价格:{:.4} | 份额:{:.2}",
-                                                    market_display, side_name, limit_price, qty
+                                                    "⏱️ 倒计时策略入场买入(市价) | 市场:{}  {} 价格更高 | 价格:{:.4} | 金额:1美元",
+                                                    market_display, side_name, limit_price
                                                 );
 
                                                 if is_live {
@@ -1299,8 +1299,8 @@ async fn main() -> Result<()> {
                                             let second_leg_price = second_leg_market_price;
 
                                             info!(
-                                                "⏱️ 倒计时策略第二腿下单 | 市场:{} | {} 挂{:.2} | 份额:{:.2}",
-                                                market_display, second_leg_side, second_leg_price, qty2
+                                                "⏱️ 倒计时策略第二腿下单(市价) | 市场:{} | {} 市场价格:{:.2} | 触发条件:{:.2} | 金额:1美元",
+                                                market_display, second_leg_side, second_leg_price, first_leg_price - dec!(0.1)
                                             );
 
                                             if is_live {
