@@ -903,8 +903,8 @@ async fn main() -> Result<()> {
 
                                 {
                                     let is_live = is_running.load(Ordering::Relaxed);
-                                    let entry_trigger_secs_to_end_max: i64 = 280;
-                                    let entry_trigger_secs_to_end_min: i64 = 260;
+                                    let entry_trigger_secs_to_end_max: i64 = 240;
+                                    let entry_trigger_secs_to_end_min: i64 = 220;
                                     let total_price_cap = dec!(0.95);
                                     let first_leg_min_price = dec!(0.60);
                                     let high_first_leg_min = dec!(0.90);
@@ -1166,112 +1166,7 @@ async fn main() -> Result<()> {
                                                     }
                                                 };
 
-                                                if limit_price < first_leg_min_price {
-                                                    strategy_state.insert(market_id, 4);
-                                                    first_leg_price_map.remove(&market_id);
-                                                    first_leg_qty_map.remove(&market_id);
-                                                    first_leg_side_key_map.remove(&market_id);
-                                                    let keys: Vec<String> = sim_open_orders
-                                                        .iter()
-                                                        .filter(|e| e.value().market_id == market_id)
-                                                        .map(|e| e.key().clone())
-                                                        .collect();
-                                                    for k in keys {
-                                                        sim_open_orders.remove(&k);
-                                                    }
-                                                    if !is_live {
-                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                        use chrono::Utc;
-                                                        use rust_decimal::prelude::ToPrimitive;
-                                                        add_trade(TradeRecord {
-                                                            id: format!("SIM-{}", uuid::Uuid::new_v4()),
-                                                            market_id: market_id.to_string(),
-                                                            market_slug: market_display.clone(),
-                                                            side: side_name.clone(),
-                                                            price: limit_price.to_f64().unwrap_or(0.0),
-                                                            size: 0.0,
-                                                            timestamp: Utc::now().timestamp(),
-                                                            status: "SimSkipped".to_string(),
-                                                            profit: None,
-                                                            buy_countdown: Some(countdown_str.clone()),
-                                                            sell_countdown: Some("价格过低".to_string()),
-                                                        });
-                                                    }
-                                                    continue;
-                                                }
-
-                                                if limit_price > high_first_leg_max {
-                                                    strategy_state.insert(market_id, 4);
-                                                    first_leg_price_map.remove(&market_id);
-                                                    first_leg_qty_map.remove(&market_id);
-                                                    first_leg_side_key_map.remove(&market_id);
-                                                    let keys: Vec<String> = sim_open_orders
-                                                        .iter()
-                                                        .filter(|e| e.value().market_id == market_id)
-                                                        .map(|e| e.key().clone())
-                                                        .collect();
-                                                    for k in keys {
-                                                        sim_open_orders.remove(&k);
-                                                    }
-                                                    if !is_live {
-                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                        use chrono::Utc;
-                                                        use rust_decimal::prelude::ToPrimitive;
-                                                        add_trade(TradeRecord {
-                                                            id: format!("SIM-{}", uuid::Uuid::new_v4()),
-                                                            market_id: market_id.to_string(),
-                                                            market_slug: market_display.clone(),
-                                                            side: side_name.clone(),
-                                                            price: limit_price.to_f64().unwrap_or(0.0),
-                                                            size: 0.0,
-                                                            timestamp: Utc::now().timestamp(),
-                                                            status: "SimSkipped".to_string(),
-                                                            profit: None,
-                                                            buy_countdown: Some(countdown_str.clone()),
-                                                            sell_countdown: Some("价格过高".to_string()),
-                                                        });
-                                                    }
-                                                    continue;
-                                                }
-                                                if limit_price < high_first_leg_min {
-                                                    let second_leg_candidate = (total_price_cap - limit_price).round_dp(2);
-                                                    if second_leg_candidate < second_leg_low_price {
-                                                        strategy_state.insert(market_id, 4);
-                                                        first_leg_price_map.remove(&market_id);
-                                                        first_leg_qty_map.remove(&market_id);
-                                                        first_leg_side_key_map.remove(&market_id);
-                                                        let keys: Vec<String> = sim_open_orders
-                                                            .iter()
-                                                            .filter(|e| e.value().market_id == market_id)
-                                                            .map(|e| e.key().clone())
-                                                            .collect();
-                                                        for k in keys {
-                                                            sim_open_orders.remove(&k);
-                                                        }
-                                                        if !is_live {
-                                                            use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                            use chrono::Utc;
-                                                            use rust_decimal::prelude::ToPrimitive;
-                                                            add_trade(TradeRecord {
-                                                                id: format!("SIM-{}", uuid::Uuid::new_v4()),
-                                                                market_id: market_id.to_string(),
-                                                                market_slug: market_display.clone(),
-                                                                side: side_name.clone(),
-                                                                price: limit_price.to_f64().unwrap_or(0.0),
-                                                                size: 0.0,
-                                                                timestamp: Utc::now().timestamp(),
-                                                                status: "SimSkipped".to_string(),
-                                                                profit: None,
-                                                                buy_countdown: Some(countdown_str.clone()),
-                                                                sell_countdown: Some(format!(
-                                                                    "总价>0.95(P2:{:.2})",
-                                                                    second_leg_candidate.to_f64().unwrap_or(0.0)
-                                                                )),
-                                                            });
-                                                        }
-                                                        continue;
-                                                    }
-                                                }
+                                               
 
                                                 let base_qty = dec!(5.0);
                                                 let trades = crate::utils::trade_history::get_trades();
