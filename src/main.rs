@@ -956,66 +956,12 @@ async fn main() -> Result<()> {
 
                                     let state = strategy_state.get(&market_id).map(|v| *v).unwrap_or(0);
 
-                                    let prev_sec = drawdown_last_sec_to_end
-                                        .insert(market_id, sec_to_end_nonneg)
-                                        .unwrap_or(sec_to_end_nonneg + 1000);
-                                    let mut mask = drawdown_trigger_mask
-                                        .get(&market_id)
-                                        .map(|v| *v)
-                                        .unwrap_or(0u8);
-
-                                    let mut should_check_drawdown = false;
-                                    for (t, bit) in [(55i64, 1u8), (50i64, 2u8), (45i64, 4u8), (40i64, 8u8)] {
-                                        if mask & bit != 0 {
-                                            continue;
-                                        }
-                                        if prev_sec > t && sec_to_end_nonneg <= t {
-                                            mask |= bit;
-                                            should_check_drawdown = true;
-                                        }
-                                    }
-                                    if should_check_drawdown {
-                                        drawdown_trigger_mask.insert(market_id, mask);
-                                    }
-
-                                    if should_check_drawdown && !is_live {
-                                        let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
-                                        let buy_side_key = first_leg_side_key_map
-                                            .get(&market_id)
-                                            .map(|v| *v)
-                                            .or_else(|| if state == 1 { Some(0u8) } else if state == 2 { Some(1u8) } else { None });
-                                        let buy_side_name = buy_side_key
-                                            .map(|k| if k == 0 { "YES" } else { "NO" })
-                                            .unwrap_or("--");
-                                        let current_price = if buy_side_key == Some(0u8) {
-                                            yes_best_ask.map(|(p, _)| p.round_dp(2))
-                                        } else if buy_side_key == Some(1u8) {
-                                            no_best_ask.map(|(p, _)| p.round_dp(2))
-                                        } else {
-                                            None
-                                        };
-                                        let has_book_price = current_price.is_some();
-                                        let cmp = match (buy_price, current_price) {
-                                            (Some(b), Some(c)) => {
-                                                if c < b {
-                                                    "当前<买入(卖出)"
-                                                } else {
-                                                    "当前>=买入(不卖)"
-                                                }
-                                            }
-                                            _ => "无法比较",
-                                        };
-                                        info!(
-                                            "🧪 模拟回撤触发点 | 市场:{} | 秒:{} | state:{} | 买入方向:{} | 买入:{:?} | 当前:{:?} | 有盘口:{} | {}",
-                                            market_display, sec_to_end_nonneg, state, buy_side_name, buy_price, current_price, has_book_price, cmp
-                                        );
-                                    }
-
                                     let buy_side_key = first_leg_side_key_map
                                         .get(&market_id)
                                         .map(|v| *v)
                                         .or_else(|| if state == 1 { Some(0u8) } else if state == 2 { Some(1u8) } else { None });
-                                    if should_check_drawdown && buy_side_key.is_some() && state != 4 {
+
+                                    if buy_side_key.is_some() && state != 4 {
                                         let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
                                         let current_price = if buy_side_key == Some(0u8) {
                                             yes_best_ask.map(|(p, _)| p.round_dp(2))
@@ -1027,9 +973,15 @@ async fn main() -> Result<()> {
 
                                         if let (Some(buy_price), Some(cur_price)) = (buy_price, current_price) {
                                             if !is_live {
+                                                let buy_side_name = buy_side_key.map(|k| if k == 0 { "YES" } else { "NO" }).unwrap_or("--");
+                                                let cmp = if cur_price < buy_price {
+                                                    "当前<买入(卖出)"
+                                                } else {
+                                                    "当前>=买入(不卖)"
+                                                };
                                                 info!(
-                                                    "🧪 模拟回撤校验 | 市场:{} | 秒:{} | 买入:{:.2} | 当前:{:.2}",
-                                                    market_display, sec_to_end_nonneg, buy_price, cur_price
+                                                    "🧪 模拟回撤触发点 | 市场:{} | 秒:{} | state:{} | 买入方向:{} | 买入:{:.2} | 当前:{:.2} | {}",
+                                                    market_display, sec_to_end_nonneg, state, buy_side_name, buy_price, cur_price, cmp
                                                 );
                                             }
                                             if cur_price >= buy_price + dec!(0.2) || cur_price < buy_price {
@@ -1138,20 +1090,14 @@ async fn main() -> Result<()> {
                                                 market_display, sec_to_end_nonneg
                                             );
                                         }
-                                    } else if should_check_drawdown && !is_live {
-                                        info!(
-                                            "🧪 模拟回撤未执行 | 市场:{} | 秒:{} | 原因: 未记录第一腿买入方向/尚未买入或已跳过",
-                                            market_display, sec_to_end_nonneg
-                                        );
                                     }
+
                                     if sec_to_end > 0 {
                                         if state == 0 {
                                             let yes_ask = yes_best_ask.map(|(p, _)| p.round_dp(2));
                                             let no_ask = no_best_ask.map(|(p, _)| p.round_dp(2));
 
-                                            if sec_to_end_nonneg <= entry_trigger_secs_to_end_max
-                                                && sec_to_end_nonneg >= entry_trigger_secs_to_end_min
-                                            {
+                                            
                                                 let (side_key, token_id, side_name, limit_price) = match (yes_ask, no_ask) {
                                                     (Some(yp), Some(np)) => {
                                                         if yp >= np {
@@ -1313,7 +1259,7 @@ async fn main() -> Result<()> {
                                                         market_display, sec_to_end_nonneg, side_for_log, limit_price, qty
                                                     );
                                                 }
-                                            }
+                                         
                                         } else if state == 1 || state == 2 {
                                             if first_leg_price_map.get(&market_id).is_none() {
                                                 strategy_state.insert(market_id, 0u8);
