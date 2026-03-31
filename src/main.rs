@@ -2,6 +2,7 @@ mod config;
 mod market;
 mod monitor;
 mod risk;
+mod strategy;
 mod trading;
 mod utils;
 mod web_server;
@@ -18,6 +19,7 @@ use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
@@ -248,7 +250,7 @@ async fn main() -> Result<()> {
     // 初始化日志
     utils::logger::init_logger()?;
 
-    tracing::info!("Polymarket 5分钟套利机器人启动");
+    tracing::info!("5分钟");
 
     // 许可证校验：须存在有效 license.key，删除许可证将无法运行
     poly_5min_bot::trial::check_license()?;
@@ -390,6 +392,7 @@ async fn main() -> Result<()> {
     let market_data_server = market_data.clone();
     let executor_server = Some(executor.clone());
     let countdown_settings_server = countdown_settings.clone();
+
     tokio::spawn(async move {
         web_server::start_server(
             is_running_server,
@@ -466,57 +469,15 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 创建仓位平衡器
-    let position_balancer = Arc::new(PositionBalancer::new(
-        clob_client.clone(),
-        _risk_manager.position_tracker(),
-        &config,
-    ));
-
-    // 定时持仓同步任务：每N秒从API获取最新持仓，覆盖本地缓存
-    let position_sync_interval = config.position_sync_interval_secs;
-    if position_sync_interval > 0 {
-        let position_tracker_sync = _risk_manager.position_tracker();
-        tokio::spawn(async move {
-            let interval = Duration::from_secs(position_sync_interval);
-            loop {
-                match position_tracker_sync.sync_from_api().await {
-                    Ok(_) => {
-                        // 持仓信息已在 sync_from_api 中打印
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "持仓同步失败，将在下次循环重试");
-                    }
-                }
-                sleep(interval).await;
-            }
-        });
-        info!(
-            interval_secs = position_sync_interval,
-            "已启动定时持仓同步任务，每 {} 秒从API获取最新持仓覆盖本地缓存", position_sync_interval
-        );
-    } else {
-        warn!("POSITION_SYNC_INTERVAL_SECS=0，持仓同步已禁用");
-    }
-
-    // 定时仓位平衡任务：每N秒检查持仓和挂单，取消多余挂单
-    // 注意：由于需要市场映射，平衡任务将在主循环中调用
-    let balance_interval = config.position_balance_interval_secs;
-    if balance_interval > 0 {
-        info!(
-            interval_secs = balance_interval,
-            "仓位平衡任务将在主循环中每 {} 秒执行一次", balance_interval
-        );
-    } else {
-        info!("定时仓位平衡未启用（POSITION_BALANCE_INTERVAL_SECS=0）");
-    }
+  
 
     // 收尾进行中标志：定时 merge 会检查并跳过，避免与收尾 merge 竞争
     let wind_down_in_progress = Arc::new(AtomicBool::new(false));
     let countdown_in_progress = Arc::new(AtomicBool::new(false));
 
     // 定时 Merge：每 N 分钟根据持仓执行 merge，仅对 YES+NO 双边都持仓的市场
-    let merge_interval = config.merge_interval_minutes;
+    // let merge_interval = config.merge_interval_minutes;
+     let merge_interval = 0;
     if merge_interval > 0 {
         if let Some(proxy) = config.proxy_address {
             let private_key = config.private_key.clone();
@@ -612,16 +573,7 @@ async fn main() -> Result<()> {
             .map(|m| (m.market_id, (m.yes_token_id, m.no_token_id)))
             .collect();
 
-        // 创建定时仓位平衡定时器
-        let balance_interval = config.position_balance_interval_secs;
-        let mut balance_timer = if balance_interval > 0 {
-            let mut timer = tokio::time::interval(Duration::from_secs(balance_interval));
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            timer.tick().await; // 立即触发第一次
-            Some(timer)
-        } else {
-            None
-        };
+ 
 
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
@@ -629,6 +581,10 @@ async fn main() -> Result<()> {
         let first_leg_price_map: Arc<DashMap<B256, Decimal>> = Arc::new(DashMap::new());
         let first_leg_qty_map: Arc<DashMap<B256, Decimal>> = Arc::new(DashMap::new());
         let first_leg_side_key_map: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
+        let yes_greater_than_no_counters: DashMap<B256, u32> = DashMap::new();
+        let last_check_timestamps: DashMap<B256, i64> = DashMap::new();
+        let current_larger_side: DashMap<B256, Option<bool>> = DashMap::new(); // None: no data, Some(true): yes larger, Some(false): no larger
+        let order_status: Arc<Mutex<HashMap<String, bool>>> = Arc::new(Mutex::new(HashMap::new()));
         #[derive(Clone)]
         struct SimOrderInfo {
             market_id: B256,
@@ -647,15 +603,15 @@ async fn main() -> Result<()> {
         loop {
             let now_all = Utc::now();
             let seconds_until_end_all = (window_end - now_all).num_seconds();
-            // 在窗口结束前1分钟开始尝试领取，而不是等到完全结束
-            if seconds_until_end_all <= 60 && !post_end_claim_done {
+            // 在窗口开始前4分钟开始尝试领取，而不是等到完全结束
+            if seconds_until_end_all >= 260 && !post_end_claim_done {
                 post_end_claim_done = true;
                 let config_claim = config.clone();
                 tokio::spawn(async move {
                     if let Some(proxy) = config_claim.proxy_address {
                         // 循环尝试领取，直到窗口结束一段时间后，以确保所有结算都完成
-                        // 尝试5次，每次间隔30秒
-                        for i in 0..5 {
+                        // 尝试2次，每次间隔30秒
+                        for i in 0..2 {
                             if i > 0 {
                                 info!("自动领取：第 {} 次尝试...", i + 1);
                             }
@@ -707,120 +663,6 @@ async fn main() -> Result<()> {
             }
             // 收尾检查：距窗口结束 <= N 分钟时执行一次收尾（不跳出，继续监控直到窗口结束由下方「新窗口检测」自然切换）
             // 使用秒级精度，5分钟窗口下 num_minutes() 截断可能导致漏检
-            if config.wind_down_before_window_end_minutes > 0 && !wind_down_done {
-                let now = Utc::now();
-                let seconds_until_end = (window_end - now).num_seconds();
-                let threshold_seconds = config.wind_down_before_window_end_minutes as i64 * 60;
-
-                // 如果时间到了，或者已经过期（比如窗口已经结束），都应该触发收尾
-                // 注意：如果窗口已经结束(seconds_until_end <= 0)，也应该执行收尾
-                if seconds_until_end <= threshold_seconds {
-                    info!("🛑 触发收尾 | 距窗口结束 {} 秒", seconds_until_end);
-                    wind_down_done = true;
-                    wind_down_in_progress.store(true, Ordering::Relaxed);
-
-                    // 收尾在独立任务中执行，不阻塞订单簿；各市场 merge 之间间隔 30 秒
-                    let executor_wd = executor.clone();
-                    let config_wd = config.clone();
-                    let risk_manager_wd = _risk_manager.clone();
-                    let wind_down_flag = wind_down_in_progress.clone();
-
-                    // 克隆 one_dollar_attempted 以便在收尾时清理倒计时策略的持仓
-                    // 注意：DashMap本身是并发安全的，但这里我们需要它的引用，而 tokio::spawn 需要 'static
-                    // 所以我们需要将 one_dollar_attempted 包装在 Arc 中，或者在 main 函数开始时就用 Arc<DashMap>
-                    // 由于目前 one_dollar_attempted 是局部变量，我们无法直接传给 'static 任务
-                    // 临时的解决方案：我们在收尾任务中不直接操作 one_dollar_attempted，
-                    // 而是通过 get_positions() 获取所有持仓并卖出，这自然涵盖了倒计时策略的持仓。
-                    // 下面的代码已经包含了 "3. 市价卖出剩余单腿持仓"，这应该已经满足了需求。
-
-                    tokio::spawn(async move {
-                        const MERGE_INTERVAL: Duration = Duration::from_secs(30);
-
-                        // 1. 取消所有挂单
-                        if let Err(e) = executor_wd.cancel_all_orders().await {
-                            warn!(error = %e, "收尾：取消所有挂单失败，继续执行 Merge 与卖出");
-                        } else {
-                            info!("✅ 收尾：已取消所有挂单");
-                        }
-
-                        // 取消后等 10 秒再 Merge，避免取消前刚成交的订单尚未上链更新持仓
-                        const DELAY_AFTER_CANCEL: Duration = Duration::from_secs(10);
-                        sleep(DELAY_AFTER_CANCEL).await;
-
-                        // 2. Merge 双边持仓（每完成一个市场后等 30 秒再合并下一个）并更新敞口
-                        let position_tracker = risk_manager_wd.position_tracker();
-                        let mut did_any_merge = false;
-                        if let Some(proxy) = config_wd.proxy_address {
-                            match get_positions().await {
-                                Ok(positions) => {
-                                    let condition_ids = condition_ids_with_both_sides(&positions);
-                                    let merge_info = merge_info_with_both_sides(&positions);
-                                    let n = condition_ids.len();
-                                    for (i, condition_id) in condition_ids.iter().enumerate() {
-                                        match merge::merge_max(
-                                            *condition_id,
-                                            proxy,
-                                            &config_wd.private_key,
-                                            None,
-                                        )
-                                        .await
-                                        {
-                                            Ok(tx) => {
-                                                did_any_merge = true;
-                                                info!("✅ 收尾：Merge 完成 | condition_id={:#x} | tx={}", condition_id, tx);
-                                                if let Some((yes_token, no_token, merge_amt)) =
-                                                    merge_info.get(condition_id)
-                                                {
-                                                    position_tracker.update_exposure_cost(
-                                                        *yes_token,
-                                                        dec!(0),
-                                                        -*merge_amt,
-                                                    );
-                                                    position_tracker.update_exposure_cost(
-                                                        *no_token,
-                                                        dec!(0),
-                                                        -*merge_amt,
-                                                    );
-                                                    position_tracker
-                                                        .update_position(*yes_token, -*merge_amt);
-                                                    position_tracker
-                                                        .update_position(*no_token, -*merge_amt);
-                                                    info!("💰 收尾：Merge 已扣减敞口 | condition_id={:#x} | 数量:{}", condition_id, merge_amt);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                warn!(condition_id = %condition_id, error = %e, "收尾：Merge 失败");
-                                            }
-                                        }
-                                        // 每完成一个市场的 merge 后等 30 秒再处理下一个，给链上时间
-                                        if i + 1 < n {
-                                            info!("收尾：等待 30 秒后合并下一市场");
-                                            sleep(MERGE_INTERVAL).await;
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "收尾：获取持仓失败，跳过 Merge");
-                                }
-                            }
-                        } else {
-                            warn!("收尾：未配置 POLYMARKET_PROXY_ADDRESS，跳过 Merge");
-                        }
-
-                        // 若有执行过 Merge，等半分钟再卖出单腿，给链上处理时间；无 Merge 则不等
-                        if did_any_merge {
-                            sleep(MERGE_INTERVAL).await;
-                        }
-
-                        // 3. 市价卖出剩余单腿持仓（这也将覆盖倒计时策略建立的持仓）
-                        // 已根据需求移除：只保留 Merge 操作，不进行强制卖出
-                        info!("🧹 收尾：已完成 Merge 操作，跳过单腿卖出（根据策略配置）");
-
-                        info!("🛑 收尾完成，继续监控至窗口结束");
-                        wind_down_flag.store(false, Ordering::Relaxed);
-                    });
-                }
-            }
 
             tokio::select! {
                 // 处理订单簿更新
@@ -904,14 +746,7 @@ async fn main() -> Result<()> {
 
                                 {
                                     let is_live = is_running.load(Ordering::Relaxed);
-                                    let entry_trigger_secs_to_end_max: i64 = 60;
-                                    let entry_trigger_secs_to_end_min: i64 = 40;
-                                    let total_price_cap = dec!(0.95);
-                                    let first_leg_min_price = dec!(0.60);
-                                    let high_first_leg_min = dec!(0.90);
-                                    let high_first_leg_max = dec!(0.97);
-                                    let second_leg_low_price = dec!(0.05);
-                                    let second_leg_high_price = dec!(0.01);
+                                  
 
                                     if !is_live {
                                         let mut to_fill: Vec<String> = Vec::new();
@@ -953,453 +788,137 @@ async fn main() -> Result<()> {
                                             }
                                         }
                                     }
+                                
+                                 }
 
-                                    let state = strategy_state.get(&market_id).map(|v| *v).unwrap_or(0);
-
-                                    let prev_sec = drawdown_last_sec_to_end
-                                        .insert(market_id, sec_to_end_nonneg)
-                                        .unwrap_or(sec_to_end_nonneg + 1000);
-                                    let mut mask = drawdown_trigger_mask
-                                        .get(&market_id)
-                                        .map(|v| *v)
-                                        .unwrap_or(0u8);
-
-                                    let mut should_check_drawdown = false;
-                                    for (t, bit) in [(55i64, 1u8), (50i64, 2u8), (45i64, 4u8), (40i64, 8u8)] {
-                                        if mask & bit != 0 {
-                                            continue;
-                                        }
-                                        if prev_sec > t && sec_to_end_nonneg <= t {
-                                            mask |= bit;
-                                            should_check_drawdown = true;
-                                        }
-                                    }
-                                    if should_check_drawdown {
-                                        drawdown_trigger_mask.insert(market_id, mask);
-                                    }
-
-                                    if should_check_drawdown && !is_live {
-                                        let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
-                                        let buy_side_key = first_leg_side_key_map
-                                            .get(&market_id)
-                                            .map(|v| *v)
-                                            .or_else(|| if state == 1 { Some(0u8) } else if state == 2 { Some(1u8) } else { None });
-                                        let buy_side_name = buy_side_key
-                                            .map(|k| if k == 0 { "YES" } else { "NO" })
-                                            .unwrap_or("--");
-                                        let current_price = if buy_side_key == Some(0u8) {
-                                            yes_best_ask.map(|(p, _)| p.round_dp(2))
-                                        } else if buy_side_key == Some(1u8) {
-                                            no_best_ask.map(|(p, _)| p.round_dp(2))
+                                // 1、获取yes和no的实时卖价并进行比较，选择较大的一边，并记录是yes还是no，本轮市场进行计数，每秒加1，过程中较大的一边比较小的一边小时，计数置零，如果计数和等于60的时候，进行下单购买,并计数置零。
+                                // 初始化或获取市场计数器
+                                let mut counter = yes_greater_than_no_counters.entry(market_id).or_insert(0);
+                                let mut last_check_timestamp = last_check_timestamps.entry(market_id).or_insert(0);
+                                let mut larger_side = current_larger_side.entry(market_id).or_insert(None);
+                                
+                                // 获取当前时间戳（秒）
+                                let current_timestamp = Utc::now().timestamp();
+                                
+                                // 确保每秒只检查一次
+                                if current_timestamp > *last_check_timestamp {
+                                    // 更新最后检查时间戳
+                                    *last_check_timestamp = current_timestamp;
+                                    
+                                    // 检查yes和no的卖价
+                                    if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
+                                        let is_yes_larger = yes_price > no_price;
+                                        let is_no_larger = no_price > yes_price;
+                                        
+                                        // 确定当前较大的一边
+                                        let current_larger = if is_yes_larger {
+                                            Some(true) // yes较大
+                                        } else if is_no_larger {
+                                            Some(false) // no较大
                                         } else {
-                                            None
+                                            None // 价格相等
                                         };
-                                        let has_book_price = current_price.is_some();
-                                        let cmp = match (buy_price, current_price) {
-                                            (Some(b), Some(c)) => {
-                                                if c < b {
-                                                    "当前<买入(卖出)"
-                                                } else {
-                                                    "当前>=买入(不卖)"
-                                                }
-                                            }
-                                            _ => "无法比较",
-                                        };
-                                        info!(
-                                            "🧪 模拟回撤触发点 | 市场:{} | 秒:{} | state:{} | 买入方向:{} | 买入:{:?} | 当前:{:?} | 有盘口:{} | {}",
-                                            market_display, sec_to_end_nonneg, state, buy_side_name, buy_price, current_price, has_book_price, cmp
-                                        );
-                                    }
-
-                                    let buy_side_key = first_leg_side_key_map
-                                        .get(&market_id)
-                                        .map(|v| *v)
-                                        .or_else(|| if state == 1 { Some(0u8) } else if state == 2 { Some(1u8) } else { None });
-                                    let current_price = if buy_side_key == Some(0u8) {
-                                        yes_best_ask.map(|(p, _)| p.round_dp(2))
-                                    } else if buy_side_key == Some(1u8) {
-                                        no_best_ask.map(|(p, _)| p.round_dp(2))
-                                    } else {
-                                        None
-                                    };
-                                    let should_check_take_profit = current_price
-                                        .map(|p| p >= dec!(0.98))
-                                        .unwrap_or(false);
-                                    if (should_check_drawdown || should_check_take_profit)
-                                        && buy_side_key.is_some()
-                                        && state != 4
-                                    {
-                                        let buy_price = first_leg_price_map.get(&market_id).map(|v| *v);
-
-                                        if let (Some(buy_price), Some(cur_price)) = (buy_price, current_price) {
-                                            let take_profit_price = dec!(0.98);
-                                            let should_take_profit = cur_price >= take_profit_price;
-                                            let should_drawdown_sell = cur_price < buy_price;
-                                            if !is_live {
-                                                info!(
-                                                    "🧪 模拟持仓校验 | 市场:{} | 秒:{} | 买入:{:.2} | 当前:{:.2}",
-                                                    market_display, sec_to_end_nonneg, buy_price, cur_price
-                                                );
-                                            }
-                                            if should_take_profit || should_drawdown_sell {
-                                                let qty_sell = first_leg_qty_map
-                                                    .get(&market_id)
-                                                    .map(|v| *v)
-                                                    .unwrap_or(dec!(5.0));
-
-                                                let bid_price = if buy_side_key == Some(0u8) {
-                                                    pair.yes_book.bids.last().map(|b| b.price.round_dp(2))
-                                                } else {
-                                                    pair.no_book.bids.last().map(|b| b.price.round_dp(2))
-                                                }
-                                                .unwrap_or(dec!(0.01));
-
-                                                strategy_state.insert(market_id, 4);
-                                                first_leg_price_map.remove(&market_id);
-                                                first_leg_qty_map.remove(&market_id);
-                                                first_leg_side_key_map.remove(&market_id);
-                                                let keys: Vec<String> = sim_open_orders
-                                                    .iter()
-                                                    .filter(|e| e.value().market_id == market_id)
-                                                    .map(|e| e.key().clone())
-                                                    .collect();
-                                                for k in keys {
-                                                    sim_open_orders.remove(&k);
-                                                }
-
-                                                let profit_dec = (bid_price - buy_price) * qty_sell;
-                                                if is_live {
-                                                    let exec_sell = executor.clone();
-                                                    let pt = _risk_manager.position_tracker();
-                                                    let losing_streak_count_clone =
-                                                        losing_streak_count.clone();
-                                                    let token_id_sell = if buy_side_key == Some(0u8) {
-                                                        pair.yes_book.asset_id
-                                                    } else {
-                                                        pair.no_book.asset_id
-                                                    };
-                                                    let market_id_str = market_id.to_string();
-                                                    let market_display_str = market_display.clone();
-                                                    let sell_countdown = Some(countdown_str.clone());
-                                                    use rust_decimal::prelude::ToPrimitive;
-                                                    let price_f64 = bid_price.to_f64().unwrap_or(0.0);
-                                                    let profit_f64 = profit_dec.to_f64();
-                                                    let is_win = profit_dec >= dec!(0);
-                                                    let trigger_reason = if should_take_profit {
-                                                        "止盈"
-                                                    } else {
-                                                        "回撤"
-                                                    };
-                                                    tokio::spawn(async move {
-                                                        match exec_sell.sell_at_price(token_id_sell, bid_price, qty_sell).await {
-                                                            Ok(resp) => {
-                                                                pt.update_position(token_id_sell, -qty_sell);
-                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                                use chrono::Utc;
-                                                                if is_win {
-                                                                    losing_streak_count_clone.store(1, Ordering::Relaxed);
-                                                                } else {
-                                                                    losing_streak_count_clone.fetch_add(1, Ordering::Relaxed);
-                                                                }
-                                                                add_trade(TradeRecord {
-                                                                    id: resp.order_id.clone(),
-                                                                    market_id: market_id_str,
-                                                                    market_slug: market_display_str,
-                                                                    side: if buy_side_key == Some(0u8) { "YES".to_string() } else { "NO".to_string() },
-                                                                    price: price_f64,
-                                                                    size: qty_sell.to_f64().unwrap_or(0.0),
-                                                                    timestamp: Utc::now().timestamp(),
-                                                                    status: "Sold".to_string(),
-                                                                    profit: profit_f64,
-                                                                    buy_countdown: None,
-                                                                    sell_countdown,
-                                                                });
-                                                            }
-                                                            Err(e) => {
-                                                                warn!(
-                                                                    "❌ 倒计时策略{}卖出失败 | 秒:{} | error:{}",
-                                                                    trigger_reason,
-                                                                    sec_to_end_nonneg,
-                                                                    e
-                                                                );
-                                                            }
-                                                        }
-                                                    });
-                                                } else {
-                                                    let trigger_reason = if should_take_profit {
-                                                        "止盈"
-                                                    } else {
-                                                        "回撤"
-                                                    };
-                                                    info!(
-                                                        "🧪 模拟{}卖出 | 市场:{} | 秒:{} | 卖价:{:.2} | 份额:{:.2}",
-                                                        trigger_reason, market_display, sec_to_end_nonneg, bid_price, qty_sell
-                                                    );
-                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                    use chrono::Utc;
-                                                    use rust_decimal::prelude::ToPrimitive;
-                                                    add_trade(TradeRecord {
-                                                        id: format!("SIM-{}", uuid::Uuid::new_v4()),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: if buy_side_key == Some(0u8) { "YES".to_string() } else { "NO".to_string() },
-                                                        price: bid_price.to_f64().unwrap_or(0.0),
-                                                        size: qty_sell.to_f64().unwrap_or(0.0),
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "SimSold".to_string(),
-                                                        profit: profit_dec.to_f64(),
-                                                        buy_countdown: None,
-                                                        sell_countdown: Some(countdown_str.clone()),
-                                                    });
-                                                    if profit_dec >= dec!(0) {
-                                                        losing_streak_count.store(1, Ordering::Relaxed);
-                                                    } else {
-                                                        losing_streak_count.fetch_add(1, Ordering::Relaxed);
-                                                    }
-                                                }
-                                                continue;
-                                            } else if !is_live {
-                                                info!(
-                                                    "🧪 模拟持仓不卖 | 市场:{} | 秒:{} | 当前:{:.2} >= 买入:{:.2}",
-                                                    market_display, sec_to_end_nonneg, cur_price, buy_price
-                                                );
-                                            }
-                                        } else if !is_live {
+                                        
+                                        // 检查较大的一边是否发生变化
+                                        if *larger_side != current_larger {
+                                            // 较大的一边发生变化，重置计数器
+                                            *counter = 0;
+                                            *larger_side = current_larger;
                                             info!(
-                                                "🧪 模拟持仓校验跳过 | 市场:{} | 秒:{} | 买入价/盘口缺失",
-                                                market_display, sec_to_end_nonneg
+                                                "{} | 较大边变化 | 新较大边: {:?} | Yes:A{:.4} No:A{:.4}",
+                                                market_display, current_larger, yes_price, no_price
                                             );
-                                        }
-                                    } else if should_check_drawdown && !is_live {
-                                        info!(
-                                            "🧪 模拟回撤未执行 | 市场:{} | 秒:{} | 原因: 未记录第一腿买入方向/尚未买入或已跳过",
-                                            market_display, sec_to_end_nonneg
-                                        );
-                                    }
-                                    if sec_to_end > 0 {
-                                        if state == 0 {
-                                            let yes_ask =
-                                                yes_best_ask.map(|(p, _)| p.round_dp(2));
-                                            let no_ask = no_best_ask.map(|(p, _)| p.round_dp(2));
-
-                                            let trigger_price = dec!(0.80);
-                                            let streak_count =
-                                                losing_streak_count.load(Ordering::Relaxed).max(1);
-                                            let usd_amount = Decimal::from(
-                                                i64::try_from(streak_count).unwrap_or(i64::MAX),
-                                            )
-                                            .max(dec!(1));
-
-                                            let first_side_key = match (yes_ask, no_ask) {
-                                                (Some(yp), Some(np)) => {
-                                                    let yes_hit = yp >= trigger_price;
-                                                    let no_hit = np >= trigger_price;
-                                                    if yes_hit && no_hit {
-                                                        Some(if yp >= np { 0u8 } else { 1u8 })
-                                                    } else if yes_hit {
-                                                        Some(0u8)
-                                                    } else if no_hit {
-                                                        Some(1u8)
-                                                    } else {
-                                                        None
-                                                    }
-                                                }
-                                                (Some(yp), None) => {
-                                                    if yp >= trigger_price {
-                                                        Some(0u8)
-                                                    } else {
-                                                        None
-                                                    }
-                                                }
-                                                (None, Some(np)) => {
-                                                    if np >= trigger_price {
-                                                        Some(1u8)
-                                                    } else {
-                                                        None
-                                                    }
-                                                }
-                                                (None, None) => None,
-                                            };
-
-                                            if let Some(first_side_key) = first_side_key {
-                                                let first_reference_ask = if first_side_key == 0u8 {
-                                                    yes_ask.unwrap()
+                                        } else if current_larger.is_some() {
+                                            // 较大的一边未变化，计数加1
+                                            *counter += 1;
+                                            let side_str = if current_larger == Some(true) { "Yes" } else { "No" };
+                                            info!(
+                                                "{} | {}价格大于另一方 | 计数: {} | Yes:A{:.4} No:A{:.4}",
+                                                market_display, side_str, *counter, yes_price, no_price
+                                            );
+                                            
+                                            
+                                            // 当计数达到60时，下单购买较大的一边
+                                            if *counter == 60 {
+                                                // 确定要购买的token和价格
+                                                let (token_id, price, side_name) = if current_larger == Some(true) {
+                                                    (pair.yes_book.asset_id, yes_price, "Yes")
                                                 } else {
-                                                    no_ask.unwrap()
+                                                    (pair.no_book.asset_id, no_price, "No")
                                                 };
-                                                let (first_token_id, _second_token_id) =
-                                                    if first_side_key == 0u8 {
-                                                        (
-                                                            pair.yes_book.asset_id,
-                                                            pair.no_book.asset_id,
-                                                        )
+                                                
+                                                // jia2检查倒计时时间是否在120秒内，并且较大一边的价格大于0.7
+                                                let countdown_within_120 = sec_to_end_nonneg <= 120 && sec_to_end_nonneg >= 0;
+                                                let price_greater_than_07 = price > dec!(0.7);
+                                                
+                                                if countdown_within_120 && price_greater_than_07 {
+                                                    info!("{} | 计数达到60，开始下单购买较大边 | 倒计时: {}秒 | 价格: {:.4}", market_display, sec_to_end_nonneg, price);
+                                                    //jia3 如果较大一边价格大于等于0.97，买较小的一边1美元，否则买较大的一边
+                                                    let price_less_than_097 = price < dec!(0.97);
+                                                    let order_size = if price_less_than_097 {
+                                                        dec!(10) // 购买10美元
                                                     } else {
-                                                        (
-                                                            pair.no_book.asset_id,
-                                                            pair.yes_book.asset_id,
-                                                        )
-                                                    };
-                                                let (first_side_name, _second_side_name) =
-                                                    if first_side_key == 0u8 {
-                                                        ("YES".to_string(), "NO".to_string())
-                                                    } else {
-                                                        ("NO".to_string(), "YES".to_string())
+                                                        dec!(1) // 购买1美元
                                                     };
 
-                                                info!(
-                                                    "⏱️ 倒计时策略触发 | 市场:{} | 秒:{} | 先到:{}>=0.80 | 连输:{} | 本次下单:${}市价意图",
-                                                    market_display,
-                                                    sec_to_end_nonneg,
-                                                    first_side_name,
-                                                    streak_count,
-                                                    usd_amount
-                                                );
-
-                                                if is_live {
-                                                    strategy_state.insert(market_id, 9);
-                                                    let exec = executor.clone();
-                                                    let pt = _risk_manager.position_tracker();
-                                                    let state_map = strategy_state.clone();
-                                                    let first_leg_price_map_clone =
-                                                        first_leg_price_map.clone();
-                                                    let first_leg_qty_map_clone =
-                                                        first_leg_qty_map.clone();
-                                                    let first_leg_side_key_map_clone =
-                                                        first_leg_side_key_map.clone();
-                                                    let drawdown_trigger_mask_clone =
-                                                        drawdown_trigger_mask.clone();
-                                                    let market_id_key = market_id;
-                                                    let market_id_str = market_id.to_string();
-                                                    let market_display_str = market_display.clone();
-                                                    let buy_countdown = Some(countdown_str.clone());
-                                                    use rust_decimal::prelude::ToPrimitive;
-                                                    let first_ask_f64 = first_reference_ask
-                                                        .to_f64()
-                                                        .unwrap_or(0.0);
-                                                    tokio::spawn(async move {
-                                                        use crate::utils::trade_history::{
-                                                            add_trade, TradeRecord,
-                                                        };
-                                                        use chrono::Utc;
-
-                                                        let mut first_size = (usd_amount
-                                                            / first_reference_ask
-                                                            * dec!(100.0))
-                                                            .floor()
-                                                            / dec!(100.0);
-                                                        if first_size < dec!(0.01) {
-                                                            first_size = dec!(0.01);
+                                                    tokio::spawn({
+                                                        let executor = executor.clone();
+                                                        let market_display = market_display.clone();
+                                                        let side_name = side_name.to_string();
+                                                        let order_status = order_status.clone();
+                                                        async move {
+                                                            match executor.buy_at_price(token_id, price, order_size).await {
+                                                                Ok(response) => {
+                                                                    //jia4加一个全局的map存储当前市场是否下单
+                                                                    order_status.lock().await.insert(market_display.clone(), true);
+                                                                    info!("{} | 下单成功 | 订单ID: {:?} | 购买: {}", market_display, response.order_id, side_name);
+                                                                }
+                                                                Err(e) => {
+                                                                    error!("{} | 下单失败: {:?} | 购买: {}", market_display, e, side_name);
+                                                                }
+                                                            }
                                                         }
-
-                                                        let first_res = exec
-                                                            .buy_market_usd(
-                                                                first_token_id,
-                                                                first_reference_ask,
-                                                                usd_amount,
-                                                            )
-                                                            .await;
-                                                        let first_ok = first_res.is_ok();
-
-                                                        if let Ok(resp) = first_res {
-                                                            pt.update_exposure_cost(
-                                                                first_token_id,
-                                                                first_reference_ask,
-                                                                first_size,
-                                                            );
-                                                            pt.update_position(
-                                                                first_token_id,
-                                                                first_size,
-                                                            );
-                                                            add_trade(TradeRecord {
-                                                                id: resp.order_id.clone(),
-                                                                market_id: market_id_str.clone(),
-                                                                market_slug: market_display_str
-                                                                    .clone(),
-                                                                side: first_side_name.clone(),
-                                                                price: first_ask_f64,
-                                                                size: first_size
-                                                                    .to_f64()
-                                                                    .unwrap_or(0.0),
-                                                                timestamp: Utc::now().timestamp(),
-                                                                status: "Bought".to_string(),
-                                                                profit: None,
-                                                                buy_countdown:
-                                                                    buy_countdown.clone(),
-                                                                sell_countdown: None,
-                                                            });
-                                                            first_leg_price_map_clone
-                                                                .insert(market_id_key, first_reference_ask);
-                                                            first_leg_qty_map_clone
-                                                                .insert(market_id_key, first_size);
-                                                            first_leg_side_key_map_clone
-                                                                .insert(market_id_key, first_side_key);
-                                                            drawdown_trigger_mask_clone
-                                                                .remove(&market_id_key);
-                                                        }
-
-                                                        if !first_ok {
-                                                            state_map.insert(market_id_key, 0u8);
-                                                            return;
-                                                        }
-
-                                                        state_map.insert(
-                                                            market_id_key,
-                                                            if first_side_key == 0u8 {
-                                                                1u8
-                                                            } else {
-                                                                2u8
-                                                            },
-                                                        );
                                                     });
+
+
+
+
+
                                                 } else {
-                                                    use crate::utils::trade_history::{
-                                                        add_trade, TradeRecord,
-                                                    };
-                                                    use chrono::Utc;
-                                                    use rust_decimal::prelude::ToPrimitive;
-                                                    let buy_countdown = Some(countdown_str.clone());
-
-                                                    let first_order_id =
-                                                        format!("SIM-{}", uuid::Uuid::new_v4());
-                                                    let mut first_size = (usd_amount
-                                                        / first_reference_ask
-                                                        * dec!(100.0))
-                                                        .floor()
-                                                        / dec!(100.0);
-                                                    if first_size < dec!(0.01) {
-                                                        first_size = dec!(0.01);
-                                                    }
-                                                    add_trade(TradeRecord {
-                                                        id: first_order_id.clone(),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: first_side_name.clone(),
-                                                        price: first_reference_ask
-                                                            .to_f64()
-                                                            .unwrap_or(0.0),
-                                                        size: first_size.to_f64().unwrap_or(0.0),
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "SimBought".to_string(),
-                                                        profit: None,
-                                                        buy_countdown: buy_countdown.clone(),
-                                                        sell_countdown: None,
-                                                    });
-                                                    first_leg_price_map
-                                                        .insert(market_id, first_reference_ask);
-                                                    first_leg_qty_map.insert(market_id, first_size);
-                                                    first_leg_side_key_map
-                                                        .insert(market_id, first_side_key);
-                                                    drawdown_trigger_mask.remove(&market_id);
-                                                    strategy_state.insert(
-                                                        market_id,
-                                                        if first_side_key == 0u8 { 1u8 } else { 2u8 },
-                                                    );
+                                                    info!("{} | 计数达到60，但条件不满足 | 倒计时: {}秒 | 价格: {:.4} | 条件: 倒计时<=120秒({}) && 价格>0.7({})", 
+                                                         market_display, sec_to_end_nonneg, price, countdown_within_120, price_greater_than_07);
                                                 }
+                                                
+                                                // 重置计数器
+                                                *counter = 0;
+                                            }else{
+                                                //jia3当倒计时秒数在30秒内，且较大一边的价格大于0.7，进行下单购买较大的一边
+                                                let price = if current_larger == Some(true) {
+                                                    yes_price
+                                                } else {
+                                                    no_price
+                                                };
+                                                let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg >= 0;
+                                                let price_greater_than_07 = price > dec!(0.77);
+                                                if countdown_within_30 && price_greater_than_07 {
+                                                     order_status.lock().await.insert(market_display.clone(), true);
+                                                    info!("{} | 计数达到60，开始下单购买较大边 | 倒计时: {}秒 | 价格: {:.4}", market_display, sec_to_end_nonneg, price);
+                                                } else {
+                                                    info!("{} | 计数达到60，但条件不满足 | 倒计时: {}秒 | 价格: {:.4} | 条件: 倒计时<=30秒({}) && 价格>0.7({})", 
+                                                         market_display, sec_to_end_nonneg, price, countdown_within_30, price_greater_than_07);
+                                                }
+
+
+
                                             }
                                         }
+                                    } else {
+                                        // 无数据，重置计数器和较大边记录
+                                        *counter = 0;
+                                        *larger_side = None;
                                     }
                                 }
-
+                                
                                 let (prefix, spread_info) = total_ask_price
                                     .map(|t| {
                                         if t < dec!(1.0) {
@@ -1458,6 +977,7 @@ async fn main() -> Result<()> {
                                     (None, None) => "No:无".to_string(),
                                 };
 
+                                //doublejia输出日志
                                 info!(
                                     "{} {} | {}分{:02}秒 | {} | {} | {}",
                                     prefix,
@@ -1489,22 +1009,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-
-                // 定时仓位平衡任务
-                _ = async {
-                    if let Some(ref mut timer) = balance_timer {
-                        timer.tick().await;
-                        if !countdown_in_progress.load(Ordering::Relaxed) {
-                            if let Err(e) = position_balancer.check_and_balance_positions(&market_token_map).await {
-                                warn!(error = %e, "仓位平衡检查失败");
-                            }
-                        }
-                    } else {
-                        futures::future::pending::<()>().await;
-                    }
-                } => {
-                    // 仓位平衡任务已执行
-                }
+ 
 
                 // 定期检查：1) 是否进入新的5分钟窗口 2) 收尾触发（5分钟窗口需更频繁检查）
                 _ = sleep(Duration::from_secs(1)) => {

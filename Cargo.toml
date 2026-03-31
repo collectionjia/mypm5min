@@ -5,7 +5,7 @@ edition = "2021"
 default-run = "poly_5min_bot"
 
 [dependencies]
-polymarket-client-sdk = { version = "0.4.1", features = ["clob", "ctf", "data", "gamma", "ws", "tracing"] }
+polymarket-client-sdk = { version = "0.4.4", features = ["clob", "ctf", "data", "gamma", "ws", "tracing"] }
 lazy_static = "1.5"
 tokio = { version = "1.49", features = ["full"] }
 anyhow = "1.0"

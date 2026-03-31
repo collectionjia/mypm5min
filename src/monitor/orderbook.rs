@@ -46,10 +46,20 @@ pub struct OrderBookPair {
 
 impl OrderBookMonitor {
     pub fn new() -> Self {
+        let ws_url = std::env::var("WS_PROXY_URL")
+            .unwrap_or_else(|_| "wss://ws-subscriptions-clob.polymarket.com".to_string());
+        info!(ws_url = %ws_url, "WebSocket 客户端连接地址");
+
+        let ws_client = WsClient::new(
+            &ws_url,
+            polymarket_client_sdk::ws::config::Config::default(),
+        )
+        .expect("创建 WsClient 失败");
+
         Self {
             // 使用未认证的客户端：订单簿订阅不需要认证，这是公开数据
             // 只有订阅用户数据（如用户订单、交易等）才需要认证
-            ws_client: WsClient::default(),
+            ws_client,
             books: DashMap::new(),
             market_map: HashMap::new(),
         }
