@@ -23,12 +23,6 @@ use tokio::sync::Mutex;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
-use lazy_static::lazy_static;
-
-lazy_static! {
-    /// 全局变量：存储上一局的 slug，用于当局结束后计算上局的输赢
-    static ref LAST_SLUG_MAP: DashMap<String, String> = DashMap::new();
-}
 
 use crate::config::Config;
 use crate::market::{MarketDiscoverer, MarketInfo, MarketScheduler};
@@ -573,38 +567,6 @@ async fn main() -> Result<()> {
         let market_map: HashMap<B256, &MarketInfo> =
             markets.iter().map(|m| (m.market_id, m)).collect();
 
-        info!("market_map: {:?}", market_map);
-        if let Some(market_info) = market_map.values().next() {
-           let slug = &market_info.slug;
-           
-           // 获取上局的 slug 并计算输赢
-           if let Some(last_ref) = LAST_SLUG_MAP.iter().next() {
-               let last_slug_key = last_ref.key().clone();
-               let last_slug = last_ref.value().clone();
-               let url = format!("https://gamma-api.polymarket.com/markets?slug={}", last_slug);
-               let resp = reqwest::get(&url).await?;
-               let json: serde_json::Value = resp.json().await?;
-               if let Some(market) = json.as_array().and_then(|arr| arr.first()) {
-                   if let Some(outcome_prices_str) = market.get("outcomePrices").and_then(|v| v.as_str()) {
-                       let prices: Vec<&str> = serde_json::from_str(outcome_prices_str).unwrap_or_default();
-                       if let Some(second_price) = prices.get(1) {
-                           let last_is_up = *second_price == "1";
-                           info!("last_slug: {}, last_slug_key: {}, outcome_prices: {:?}, last_is_up: {}", last_slug, last_slug_key, prices, last_is_up);
-                           // 可以在这里根据 last_is_up 进行后续处理
-                       }
-                   }
-               }
-               LAST_SLUG_MAP.remove(&last_slug_key);
-           } else {
-               info!("上把没有存slug");
-           }
-           
-           // 保存当前的 slug
-           LAST_SLUG_MAP.insert(slug.clone(), slug.clone());
-           info!("current slug saved: {}", slug);
-        }
-
-
         // 创建市场映射（condition_id -> (yes_token_id, no_token_id)）用于仓位平衡
         let market_token_map: HashMap<B256, (U256, U256)> = markets
             .iter()
@@ -641,6 +603,9 @@ async fn main() -> Result<()> {
         let lostcount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new()); // 记录每个市场的输的次数
         let wincount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());   // 记录每个市场的赢的次数
         let loststate: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());  // 记录输了几次后进行赢的
+
+        // 存储上一局的市场信息，用于在下一局开始时判断结果
+        let last_round_info: Arc<Mutex<Option<(B256, String, String, String, Decimal)>>> = Arc::new(Mutex::new(None)); // (market_id, market_display, order_side_name, order_token_id, order_price)
 
         // 计算投注金额的函数
         fn calculate_order_size(market: &str, lostcount: &Arc<DashMap<String, u64>>, wincount: &Arc<DashMap<String, u64>>, loststate: &Arc<DashMap<String, u64>>) -> Decimal {
@@ -768,7 +733,6 @@ async fn main() -> Result<()> {
                                 let total_ask_price = yes_best_ask.and_then(|(p, _)| no_best_ask.map(|(np, _)| p + np));
 
                                 let market_id = pair.market_id;
-                                // info!(market_id = %market_id, "处理市场数据");
 
                                 // 与上一拍比较得到涨跌方向（↑涨 ↓跌 −平），首拍无箭头
                                 let (yes_dir, no_dir) = match (yes_best_ask, no_best_ask) {
@@ -1103,10 +1067,101 @@ async fn main() -> Result<()> {
                                          }
 
 
+                                    // 倒计时0秒，当前局结束，保存信息用于下一局判断
+                                    if countdown_within_00 && is_ordered {
+                                        let mut last_round_lock = last_round_info.lock().await;
+                                        *last_round_lock = Some((market_id, market_display.clone(), order_side_name.clone(), order_token_id.clone(), order_price.parse().unwrap_or(dec!(0))));
+                                        info!("{} | 倒计时0秒 | 保存上一局信息 | 方向: {} | 价格: {}", market_display, order_side_name, order_price);
                                     }
-                                
+
+                                    // 下一局开始的前10秒，判断上一局结果
+                                    if sec_to_end_nonneg > 290 && sec_to_end_nonneg <= 300 {
+                                        let mut last_round_lock = last_round_info.lock().await;
+                                        if let Some((last_market_id, last_market_display, last_order_side, last_order_token_id, last_order_price)) = last_round_lock.take() {
+                                            // 在异步任务中调用API判断上一局结果
+                                            let client = reqwest::Client::new();
+                                            let market_id_str = format!("{:?}", last_market_id);
+                                            let url = format!("https://gamma-api.polymarket.com/markets/{}", market_id_str);
+                                            
+                                            tokio::spawn({
+                                                let market_display = last_market_display.clone();
+                                                let order_side = last_order_side.clone();
+                                                let order_price = last_order_price;
+                                                let lostcount = lostcount.clone();
+                                                let wincount = wincount.clone();
+                                                let loststate = loststate.clone();
+                                                async move {
+                                                    match client.get(&url).send().await {
+                                                        Ok(response) => {
+                                                            if response.status().is_success() {
+                                                                match response.json::<serde_json::Value>().await {
+                                                                    Ok(json) => {
+                                                                        // 解析API响应，判断赢输
+                                                                        if let Some(outcome_prices) = json.get("outcomePrices").and_then(|p| p.as_array()) {
+                                                                            // outcomePrices格式: ["0.99", "0.01"] 或类似
+                                                                            // 第一个通常是Yes的价格，第二个是No的价格
+                                                                            let yes_price = outcome_prices.get(0)
+                                                                                .and_then(|p| p.as_str())
+                                                                                .and_then(|s| s.parse::<f64>().ok())
+                                                                                .unwrap_or(0.0);
+                                                                            let no_price = outcome_prices.get(1)
+                                                                                .and_then(|p| p.as_str())
+                                                                                .and_then(|s| s.parse::<f64>().ok())
+                                                                                .unwrap_or(0.0);
+
+                                                                            // 判断哪边赢了
+                                                                            let won_side = if yes_price > 0.99 {
+                                                                                "Yes"
+                                                                            } else if no_price > 0.99 {
+                                                                                "No"
+                                                                            } else {
+                                                                                "Unknown"
+                                                                            };
+
+                                                                            // 检查是否赢了
+                                                                            let is_win = order_side == won_side;
+                                                                            if is_win {
+                                                                                info!("{} | 上一局赢了 | 下注方向: {} | 结果: {}赢 | Yes价格: {:.4} No价格: {:.4}",
+                                                                                    market_display, order_side, won_side, yes_price, no_price);
+                                                                                // 更新赢的计数
+                                                                                let mut count = wincount.entry(market_display.clone()).or_insert(0);
+                                                                                *count += 1;
+                                                                                info!("{} | 赢次数: {}", market_display, *count);
+                                                                            } else {
+                                                                                info!("{} | 上一局输了 | 下注方向: {} | 结果: {}赢 | Yes价格: {:.4} No价格: {:.4}",
+                                                                                    market_display, order_side, won_side, yes_price, no_price);
+                                                                                // 更新输的计数
+                                                                                let mut count = lostcount.entry(market_display.clone()).or_insert(0);
+                                                                                *count += 1;
+                                                                                // 更新loststate
+                                                                                let mut state = loststate.entry(market_display.clone()).or_insert(0);
+                                                                                *state = if *count % 3 == 0 { 2 } else { 1 };
+                                                                                info!("{} | 输次数: {} | 输状态: {}", market_display, *count, *state);
+                                                                                // 重置赢次数
+                                                                                wincount.insert(market_display.clone(), 0);
+                                                                            }
+                                                                        } else {
+                                                                            error!("{} | API响应中未找到outcomePrices", market_display);
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        error!("{} | 解析API响应失败: {}", market_display, e);
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                error!("{} | API请求失败: {}", market_display, response.status());
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            error!("{} | 调用API失败: {}", market_display, e);
+                                                        }
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
                                 }
-                                } // end last_check_ts block
+                            } // end last_check_ts block
 
 
 
