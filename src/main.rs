@@ -253,7 +253,7 @@ async fn main() -> Result<()> {
     tracing::info!("5分钟");
 
     // 许可证校验：须存在有效 license.key，删除许可证将无法运行
-    poly_5min_bot::trial::check_license()?;
+    // poly_5min_bot::trial::check_license()?;
 
     // 加载配置
     let config = Config::from_env()?;
@@ -599,6 +599,7 @@ async fn main() -> Result<()> {
         let drawdown_last_sec_to_end: Arc<DashMap<B256, i64>> = Arc::new(DashMap::new());
         let drawdown_trigger_mask: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
         let losing_streak_count = Arc::new(AtomicU64::new(1));
+
         let lostcount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new()); // 记录每个市场的输的次数
         let wincount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());   // 记录每个市场的赢的次数
         let loststate: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());  // 记录输了几次后进行赢的
@@ -999,9 +1000,14 @@ async fn main() -> Result<()> {
                                                             }
                                                         }
                                                     } else {
-                                                        info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, side_name, order_size);
-                                                        if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }//计数置零
-                                                        order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.clone()));
+                                                          if *is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
+                                                                info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了");    
+                                                          }else{
+                                                            info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, side_name, order_size);
+                                                            if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }//计数置零
+                                                            order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.clone()));
+                                                          }
+                                                        
                                                     }
                                                 }
                                             });
