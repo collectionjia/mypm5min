@@ -1223,24 +1223,24 @@ async fn main() -> Result<()> {
                                 };
 
                                 //doublejia输出日志
-                                info!(
-                                    "{} {} | {}分{:02}秒 | {} | {} | {}",
-                                    prefix,
-                                    market_display,
-                                    countdown_minutes,
-                                    countdown_seconds,
-                                    yes_info,
-                                    no_info,
-                                    spread_info
-                                );
+                                // info!(
+                                //     "{} {} | {}分{:02}秒 | {} | {} | {}",
+                                //     prefix,
+                                //     market_display,
+                                //     countdown_minutes,
+                                //     countdown_seconds,
+                                //     yes_info,
+                                //     no_info,
+                                //     spread_info
+                                // );
 
                                 // 保留原有的结构化日志用于调试（可选）
-                                debug!(
-                                    market_id = %pair.market_id,
-                                    yes_token = %pair.yes_book.asset_id,
-                                    no_token = %pair.no_book.asset_id,
-                                    "订单簿对详细信息"
-                                );
+                                // debug!(
+                                //     market_id = %pair.market_id,
+                                //     yes_token = %pair.yes_book.asset_id,
+                                //     no_token = %pair.no_book.asset_id,
+                                //     "订单簿对详细信息"
+                                // );
                             }
                         }
                         Some(Err(e)) => {
