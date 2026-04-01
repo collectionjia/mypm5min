@@ -584,7 +584,8 @@ async fn main() -> Result<()> {
         let yes_greater_than_no_counters: DashMap<B256, u32> = DashMap::new();
         let last_check_timestamps: DashMap<B256, i64> = DashMap::new();
         let current_larger_side: DashMap<B256, Option<bool>> = DashMap::new(); // None: no data, Some(true): yes larger, Some(false): no larger
-        let order_status: Arc<Mutex<HashMap<String, (bool, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+        //订单存储(市场id,是否下单,下单yes/no,下单的tokenid,未下单的tokenid,下单的数量)
+        let order_status: Arc<Mutex<HashMap<String, (bool, String, String, String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
         #[derive(Clone)]
         struct SimOrderInfo {
             market_id: B256,
@@ -843,326 +844,247 @@ async fn main() -> Result<()> {
                                  }
 
                                 // 1、获取yes和no的实时卖价并进行比较，选择较大的一边，并记录是yes还是no，本轮市场进行计数，每秒加1，过程中较大的一边比较小的一边小时，计数置零，如果计数和等于60的时候，进行下单购买,并计数置零。
-                                // 初始化或获取市场计数器
-                                let mut counter = yes_greater_than_no_counters.entry(market_id).or_insert(0);
-                                let mut last_check_timestamp = last_check_timestamps.entry(market_id).or_insert(0);
-                                let mut larger_side = current_larger_side.entry(market_id).or_insert(None);
-                                
+                            
+
+
                                 // 获取当前时间戳（秒）
                                 let current_timestamp = Utc::now().timestamp();
-                                
-                                // 确保每秒只检查一次
-                                if current_timestamp > *last_check_timestamp {
-                                    // 更新最后检查时间戳
-                                    *last_check_timestamp = current_timestamp;
+                                {
+                                    let mut last_check_ts = last_check_timestamps.entry(market_id).or_insert(0);
+                                    if current_timestamp > *last_check_ts {
+                                        // 更新最后检查时间戳
+                                        *last_check_ts = current_timestamp;
+
+
+
+
+    // 检查yes和no的卖价
+                                if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
+                                    let is_yes_larger = yes_price > no_price;
+                                    let is_no_larger = no_price > yes_price;
                                     
-                                    // 检查yes和no的卖价
-                                    if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
-                                        let is_yes_larger = yes_price > no_price;
-                                        let is_no_larger = no_price > yes_price;
-                                        
-                                        // 确定当前较大的一边
-                                        let current_larger = if is_yes_larger {
-                                            Some(true) // yes较大
-                                        } else if is_no_larger {
-                                            Some(false) // no较大
-                                        } else {
-                                            None // 价格相等
-                                        };
-                                        
+                                    // 确定当前较大的一边
+                                    let current_larger = if is_yes_larger {
+                                        Some(true) // yes较大
+                                    } else if is_no_larger {
+                                        Some(false) // no较大
+                                    } else {
+                                        None // 价格相等
+                                    };
 
 
-                                        //jia5 如果在倒计时最后30秒内，较大一边已经建仓，但是价格方向发生了反转，立马卖出建仓的一边，再买入未建仓的一边
-                                        let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg >= 0;
-                                        if countdown_within_30 {
-                                            // 检查是否已经建仓
-                                            if let (Some(built_side_key), Some(built_size)) = (
-                                                first_leg_side_key_map.get(&market_id),
-                                                first_leg_qty_map.get(&market_id)
-                                            ) {
-                                                // 检查当前较大的一边是否与已建仓的边相反
-                                                let built_side_is_yes = *built_side_key == 0;
-                                                if current_larger.is_some() {
-                                                    let current_larger_is_yes = current_larger == Some(true);
-                                                    if built_side_is_yes != current_larger_is_yes {
-                                                        // 价格方向发生了反转，需要进行操作
-                                                        info!(
-                                                            "{} | 价格方向反转 | 已建仓: {:?} | 当前较大: {:?} | 执行反向操作",
-                                                            market_display, built_side_is_yes, current_larger
-                                                        );
-                                                        
-                                                        // 卖出已建仓的一边
-                                                        let token_id_to_sell = if built_side_is_yes {
-                                                            pair.yes_book.asset_id
-                                                        } else {
-                                                            pair.no_book.asset_id
-                                                        };
-                                                        let price_to_sell = if built_side_is_yes {
-                                                            yes_best_ask.map(|(p, _)| p).unwrap_or(dec!(0.5))
-                                                        } else {
-                                                            no_best_ask.map(|(p, _)| p).unwrap_or(dec!(0.5))
-                                                        };
-                                                        
-                                                        // 买入未建仓的一边
-                                                        let token_id_to_buy = if current_larger_is_yes {
-                                                            pair.yes_book.asset_id
-                                                        } else {
-                                                            pair.no_book.asset_id
-                                                        };
-                                                        let price_to_buy = if current_larger_is_yes {
-                                                            yes_best_ask.map(|(p, _)| p).unwrap_or(dec!(0.5))
-                                                        } else {
-                                                            no_best_ask.map(|(p, _)| p).unwrap_or(dec!(0.5))
-                                                        };
-                                                        
-                                                        let executor = executor.clone();
-                                                        let market_display = market_display.clone();
-                                                        let built_side_name = if built_side_is_yes { "Yes" } else { "No" };
-                                                        let new_side_name = if current_larger_is_yes { "Yes".to_string() } else { "No".to_string() };
-                                                        let size = *built_size;
-                                                        
-                                                        let order_status_clone = order_status.clone();
-                                                        let is_running_clone = is_running.clone();
-                                                        tokio::spawn(async move {
-                                                            // 先卖出已建仓的一边
-                                                            info!("{} | 开始卖出已建仓的 {} | 价格: {:.4} | 数量: {:.2}", market_display, built_side_name, price_to_sell, size);
-                                                            let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                            if is_live {
-                                                                match executor.sell_at_price(token_id_to_sell, price_to_sell, size).await {
-                                                                    Ok(response) => {
-                                                                        info!("{} | 卖出成功 | 订单ID: {:?} | 卖出: {}", market_display, response.order_id, built_side_name);
-                                                                    
-                                                                        // 再买入未建仓的一边
-                                                                        info!("{} | 开始买入新的较大边 {} | 价格: {:.4} | 数量: {:.2}", market_display, new_side_name, price_to_buy, size);
-                                                                        if is_live {
-                                                                            match executor.buy_at_price(token_id_to_buy, price_to_buy, size).await {
-                                                                                Ok(response) => {
-                                                                                    order_status_clone.lock().await.insert(market_display.clone(), (true, new_side_name.clone()));
-                                                                                    info!("{} | 买入成功 | 订单ID: {:?} | 买入: {}", market_display, response.order_id, new_side_name);
-                                                                                }
-                                                                                Err(e) => {
-                                                                                    error!("{} | 买入失败 | 错误: {}", market_display, e);
-                                                                                }
-                                                                            }
-                                                                        } else {
-                                                                            info!("{} | 模拟买入 | 买入: {}", market_display, new_side_name);
-                                                                            order_status_clone.lock().await.insert(market_display.clone(), (true, new_side_name.clone()));
-                                                                        }
-                                                                    }
-                                                                    Err(e) => {
-                                                                        error!("{} | 卖出失败 | 错误: {}", market_display, e);
-                                                                    }
-                                                                }
-                                                            } else {
-                                                                info!("{} | 模拟卖出 | 卖出: {}", market_display, built_side_name);
-                                                                // 再模拟买入未建仓的一边
-                                                                info!("{} | 模拟买入 | 买入: {}", market_display, new_side_name);
-                                                                order_status_clone.lock().await.insert(market_display.clone(), (true, new_side_name.clone()));
-                                                            }
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                        }
+                                    // 读取并更新计数器（短生命周期引用，立即释放）
+                                    {
+                                        let mut counter = yes_greater_than_no_counters.entry(market_id).or_insert(0);
+                                        let mut larger_side = current_larger_side.entry(market_id).or_insert(None);
 
- 
-                                        //jia6 在倒计时00:00的时，哪边价格为无，就是赢的一方，与下订单的方向比较，如果方向一致，代表本局赢，如果方向不一致，代表本局输    
-                                        let countdown_within_00 = sec_to_end_nonneg <= 0;
-                                        if countdown_within_00 { 
-                                                // 创建默认值
-                                                let default = (false, "".to_string());
-                                                let order_status_lock = order_status.lock().await;
-                                                let (is_ordered, side_name) = order_status_lock.get(&market_display).unwrap_or(&default);
-                                                if *is_ordered {
-                                                    // 检查哪边价格为无
-                                                    let winning_side = match (yes_best_ask, no_best_ask) {
-                                                        (None, Some(_)) => "Yes", // No价格为无，Yes赢
-                                                        (Some(_), None) => "No",  // Yes价格为无，No赢
-                                                        _ => "Unknown" // 两边都有价格或都无价格
-                                                    };
-                                                    info!("{} | 赢方: {}", market_display, winning_side);
-                                                    if winning_side != "Unknown" {
-                                                        //jia6 检查下单方向是否一致
-                                                        if side_name == winning_side {
-                                                            //jia6 下单方向一致，代表本局赢
-                                                            // jia7 赢了就累加wincount，重置lostcount和loststate
-                                                            let win_count = wincount.get(&market_display).map(|v| *v).unwrap_or(0) + 1;
-                                                            wincount.insert(market_display.clone(), win_count);
-                                                            lostcount.remove(&market_display);
-                                                            loststate.remove(&market_display);
-                                                            info!("{} | 下单方向一致，代表本局赢 | 下单方向: {} | 赢方: {} | 连续赢: {}", market_display, side_name, winning_side, win_count);
-                                                        } else {
-                                                            //jia6 下单方向不一致，代表本局输
-                                                            //jia7 输了就累加lostcount，重置wincount，如果输的次数大于1，设置loststate
-                                                            let lose_count = lostcount.get(&market_display).map(|v| *v).unwrap_or(0) + 1;
-                                                            lostcount.insert(market_display.clone(), lose_count);
-                                                            wincount.remove(&market_display);
-                                                            if lose_count > 1 {
-                                                                loststate.insert(market_display.clone(), lose_count);
-                                                            }
-                                                            info!("{} | 下单方向不一致，代表本局输 | 下单方向: {} | 赢方: {} | 连续输: {}", market_display, side_name, winning_side, lose_count);
-                                                        }
-                                                    } else {
-                                                        info!("{} | 无法判断赢方，两边都有价格或都无价格", market_display);
-                                                    }
-                                                }
-
-
-
-                                                
-
-
-                                        }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                                        // 检查较大的一边是否发生变化
                                         if *larger_side != current_larger {
                                             // 较大的一边发生变化，重置计数器
                                             *counter = 0;
                                             *larger_side = current_larger;
                                             info!(
-                                                "{} | 较大边变化 | 新较大边: {:?} | Yes:A{:.4} No:A{:.4}",
+                                                "{} | jiajiajia较大边变化 | 新较大边: {:?} | Yes:A{:.4} No:A{:.4}",
                                                 market_display, current_larger, yes_price, no_price
                                             );
                                         } else if current_larger.is_some() {
                                             // 较大的一边未变化，计数加1
+                                            if *counter == 60 {
+                                                *counter = 0;
+                                            }
                                             *counter += 1;
                                             let side_str = if current_larger == Some(true) { "Yes" } else { "No" };
                                             info!(
-                                                "{} | {}价格大于另一方 | 计数: {} | Yes:A{:.4} No:A{:.4}",
-                                                market_display, side_str, *counter, yes_price, no_price
+                                                "{}分{:02}秒 | {} | {}价格大于另一方 | 计数: {} | Yes:A{:.4} No:A{:.4}",
+                                               countdown_minutes,countdown_seconds, market_display, side_str, *counter, yes_price, no_price
                                             );
-                                            
-                                            
-                                            // 当计数达到60时，下单购买较大的一边
-                                            if *counter == 60 {
-                                                // 确定要购买的token和价格
-                                                let (token_id, price, side_name) = if current_larger == Some(true) {
-                                                    (pair.yes_book.asset_id, yes_price, "Yes")
-                                                } else {
-                                                    (pair.no_book.asset_id, no_price, "No")
-                                                };
-                                                
-                                                // jia2检查倒计时时间是否在120秒内，并且较大一边的价格大于0.7
-                                                let countdown_within_120 = sec_to_end_nonneg <= 120 && sec_to_end_nonneg >= 0;
-                                                let price_greater_than_07 = price > dec!(0.7);
-                                                
-                                                if countdown_within_120 && price_greater_than_07 {
-                                                    // 计算投注金额
-                                                    let order_size = calculate_order_size(&market_display, &lostcount, &wincount, &loststate);
-                                                    info!("{} | 计数达到60，开始下单购买较大边 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, price, order_size);
-
-                                                    tokio::spawn({
-                                                        let executor = executor.clone();
-                                                        let market_display = market_display.clone();
-                                                        let side_name = side_name.to_string();
-                                                        let order_status = order_status.clone();
-                                                        let is_running_clone = is_running.clone();
-                                                        async move {
-                                                            let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                            if is_live {
-                                                                match executor.buy_market_usd(token_id, price, order_size).await {
-                                                                    Ok(response) => {
-                                                                        //jia4加一个全局的map存储当前市场是否下单和下单方向
-                                                                        order_status.lock().await.insert(market_display.clone(), (true, side_name.clone()));
-                                                                        info!("{} | 下单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, side_name, order_size);
-                                                                    }
-                                                                    Err(e) => {
-                                                                        error!("{} | 下单失败: {:?} | 购买: {}", market_display, e, side_name);
-                                                                    }
-                                                                }
-                                                            } else {
-                                                                info!("{} | 模拟下单 | 购买: {} | 金额: {:.2}美元", market_display, side_name, order_size);
-                                                                order_status.lock().await.insert(market_display.clone(), (true, side_name.clone()));
-                                                            }
-                                                        }
-                                                    });
-
-
-
-
-
-                                                } else {
-                                                    info!("{} | 计数达到60，但条件不满足 | 倒计时: {}秒 | 价格: {:.4} | 条件: 倒计时<=120秒({}) && 价格>0.7({})", 
-                                                         market_display, sec_to_end_nonneg, price, countdown_within_120, price_greater_than_07);
-                                                }
-                                                
-                                                // 重置计数器
-                                                *counter = 0;
-                                            }else{
-                                                //jia3当倒计时秒数在30秒内，且较大一边的价格大于0.7，进行下单购买较大的一边
-                                                let (price, side_name) = if current_larger == Some(true) {
-                                                    (yes_price, "Yes".to_string())
-                                                } else {
-                                                    (no_price, "No".to_string())
-                                                };
-                                                let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg >= 0;
-                                                let price_greater_than_07 = price > dec!(0.77);
-                                                if countdown_within_30 && price_greater_than_07 {
-                                                    // 计算投注金额
-                                                    let order_size = calculate_order_size(&market_display, &lostcount, &wincount, &loststate);
-                                                    
-                                                    tokio::spawn({
-                                                        let executor = executor.clone();
-                                                        let market_display = market_display.clone();
-                                                        let side_name = side_name.clone();
-                                                        let order_status = order_status.clone();
-                                                        let is_running_clone = is_running.clone();
-                                                        let token_id = if current_larger == Some(true) {
-                                                            pair.yes_book.asset_id
-                                                        } else {
-                                                            pair.no_book.asset_id
-                                                        };
-                                                        async move {
-                                                            let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                            if is_live {
-                                                                match executor.buy_market_usd(token_id, price, order_size).await {
-                                                                    Ok(response) => {
-                                                                        order_status.lock().await.insert(market_display.clone(), (true, side_name.clone()));
-                                                                        info!("{} | 下单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, side_name, order_size);
-                                                                    }
-                                                                    Err(e) => {
-                                                                        error!("{} | 下单失败: {:?} | 购买: {}", market_display, e, side_name);
-                                                                    }
-                                                                }
-                                                            } else {
-                                                                info!("{} | 模拟下单 | 购买: {} | 金额: {:.2}美元", market_display, side_name, order_size);
-                                                                order_status.lock().await.insert(market_display.clone(), (true, side_name.clone()));
-                                                            }
-                                                        }
-                                                    });
-                                                    
-                                                    info!("{} | 计数达到60，开始下单购买较大边 | 倒计时: {}秒 | 价格: {:.4} | 方向: {} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, price, side_name, order_size);
-                                                } else {
-                                                    info!("{} | 计数达到60，但条件不满足 | 倒计时: {}秒 | 价格: {:.4} | 条件: 倒计时<=30秒({}) && 价格>0.7({})", 
-                                                         market_display, sec_to_end_nonneg, price, countdown_within_30, price_greater_than_07);
-                                                }
-
-
-
-                                            }
                                         }
-                                    } else {
-                                        // 无数据，重置计数器和较大边记录
-                                        *counter = 0;
-                                        *larger_side = None;
+                                    } // counter 和 larger_side 引用在此释放
+
+
+
+
+
+
+
+                                        // 确定要购买的token和价格
+                                        let (token_id, price, side_name) = if current_larger == Some(true) {
+                                            (pair.yes_book.asset_id, yes_price, "Yes")
+                                        } else {
+                                            (pair.no_book.asset_id, no_price, "No")
+                                        };
+
+
+                                        // 确定小的一边要购买的token和价格
+                                        let (low_token_id, low_price, low_side_name) = if current_larger == Some(false) {
+                                            (pair.yes_book.asset_id, yes_price, "Yes")
+                                        } else {
+                                            (pair.no_book.asset_id, no_price, "No")
+                                        };
+
+
+                                        let countdown_within_180 = sec_to_end_nonneg <= 180 && sec_to_end_nonneg > 30;
+                                        let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg > 0;
+                                        let countdown_within_00 = sec_to_end_nonneg <=1 && sec_to_end_nonneg >= 0;
+                                        let price_greater_than_07 = price > dec!(0.7);
+                                        let price_greater_than_97 = price > dec!(0.97);
+
+                                        
+                                        let counter_val = yes_greater_than_no_counters.get(&market_id).map(|r| *r).unwrap_or(0);
+                                        let price_greater_count = counter_val == 60;
+                                        let default = (false, "".to_string(),"".to_string(),"".to_string(),"".to_string());
+                                        let order_status_lock = order_status.lock().await;
+                                        let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size) = order_status_lock.get(&market_display).unwrap_or(&default);
+                                    if countdown_within_180 &&  price_greater_than_07 && price_greater_count{
+                                        info!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
+                                        let order_size = calculate_order_size(&market_display, &lostcount, &wincount, &loststate);
+                                        let order_size_str = order_size.to_string();
+                                        if price_greater_than_97 {//大于0.97的那侧
+                                            info!("{} | 倒计时120秒内，价格大于0.97以上，反向买单 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, price, order_size);
+                                            tokio::spawn({
+                                                let executor = executor.clone();
+                                                let market_display = market_display.clone();
+                                                let token_id = token_id;
+                                                let low_side_name = low_side_name.to_string();
+                                                let low_token_id = low_token_id;
+                                                let order_status = order_status.clone();
+                                                let mid = market_id;
+                                                let counters = yes_greater_than_no_counters.clone();
+                                                let order_size_str = order_size_str.clone();
+                                                let order_size = order_size;
+                                                let is_running_clone = is_running.clone();
+                                                async move {
+                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
+                                                    if is_live {
+                                                        match executor.buy_market_usd(token_id, price, order_size).await {
+                                                            Ok(response) => {
+                                                                //jia4加一个全局的map存储当前市场是否下单和下单方向
+                                                                order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),low_token_id.to_string(),token_id.to_string(),order_size_str.clone()));
+                                                                info!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, low_side_name, order_size);
+                                                            }
+                                                            Err(e) => {
+                                                                error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, low_side_name);
+                                                            }
+                                                        }
+                                                    } else {
+                                                        info!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
+                                                        if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }//计数置零
+                                                        order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),low_token_id.to_string(),token_id.to_string(),order_size_str.clone()));
+                                                    }
+                                                }
+                                            });
+                                        }else{//大于0.7小于0.97的那侧
+                                            tokio::spawn({
+                                                let executor = executor.clone();
+                                                let market_display = market_display.clone();
+                                                let side_name = side_name.to_string();
+                                                let order_status = order_status.clone();
+                                                let token_id = token_id;
+                                                let low_token_id = low_token_id;
+                                                let is_running_clone = is_running.clone();
+                                                let mid = market_id;
+                                                let counters = yes_greater_than_no_counters.clone();
+                                                let order_size_str = order_size_str.clone();
+                                                let order_size = order_size;
+                                                async move {
+                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
+                                                    if is_live {
+                                                        match executor.buy_market_usd(token_id, price, order_size).await {
+                                                            Ok(response) => {
+                                                                //jia4加一个全局的map存储当前市场是否下单和下单方向
+                                                                order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.clone()));
+                                                                info!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, side_name, order_size);
+                                                            }
+                                                            Err(e) => {
+                                                                error!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, side_name);
+                                                            }
+                                                        }
+                                                    } else {
+                                                        info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, side_name, order_size);
+                                                        if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }//计数置零
+                                                        order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.clone()));
+                                                    }
+                                                }
+                                            });
+                                        }
+
+                                    }else if countdown_within_30 && price_greater_than_07{
+                                        // info!("{} | 倒计时30秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
+                                        let side_name = side_name.to_string();
+                                        let low_side_name = low_side_name.to_string();
+                                        // let (is_ordered, order_side_name,order_token_id,unorder_token_id) = order_status_lock.get(&market_display).unwrap_or(&default);
+                                         if *is_ordered && *order_side_name != *side_name {//如果已经建仓,价格发生了反转,则先卖后买
+                                            tokio::spawn({
+                                                let executor = executor.clone();
+                                                let market_display = market_display.clone();
+                                                let order_status = order_status.clone();
+                                                let order_token_id = order_token_id.clone();
+                                                let unorder_token_id = unorder_token_id.clone();
+                                                let ordered_size = ordered_size.clone();
+                                                let low_price = low_price;
+                                                let price = price;
+                                                let low_side_name = low_side_name.clone();
+                                                let is_running_clone = is_running.clone();
+                                                async move {
+                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
+                                                    // 先卖出已建仓的一边
+                                                    if is_live {
+                                                        let order_token_u256: U256 = order_token_id.parse().unwrap();
+                                                        let ordered_size_dec: Decimal = ordered_size.parse().unwrap();
+                                                        match executor.sell_at_price(order_token_u256, low_price, ordered_size_dec).await {
+                                                            Ok(response) => {
+                                                                info!("{} | 倒计时30秒内 价格反转 卖出成功 | 订单ID: {:?} | 卖出: {}", market_display, response.order_id, ordered_size);
+                                                            
+                                                                // 再买入未建仓的一边
+                                                                let unorder_token_u256: U256 = unorder_token_id.parse().unwrap();
+                                                                info!("{} |  倒计时30秒内 价格反转  开始买入新的较大边 {} | 价格: {:.4} | 数量: {:.2}", market_display, low_side_name, price, ordered_size);
+                                                                match executor.buy_at_price(unorder_token_u256, price, ordered_size_dec).await {
+                                                                    Ok(response) => {
+                                                                        order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),unorder_token_id.clone(),order_token_id.clone(),ordered_size.clone()));
+                                                                        info!("{} | 买入成功 | 订单ID: {:?} | 买入: {}", market_display, response.order_id, low_side_name);
+                                                                    }
+                                                                    Err(e) => {
+                                                                        error!("{} | 买入失败 | 错误: {}", market_display, e);
+                                                                    }
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                error!("{} | 卖出失败 | 错误: {}", market_display, e);
+                                                            }
+                                                        }
+                                                    } else {
+                                                        info!("{} | 模拟卖出 | 卖出: {}", market_display, side_name);
+                                                        // 再模拟买入未建仓的一边
+                                                        info!("{} | 模拟买入 | 买入: {}", market_display, low_side_name);
+                                                        order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),unorder_token_id.clone(),order_token_id.clone(),ordered_size.clone()));
+                                                    }
+                                                }
+                                            });
+                                         }
+
+
+                                    }else if countdown_within_00 {
+                                        info!("{} | 开始判断哪局赢 倒计时0秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
+                                        
                                     }
+                                
                                 }
+                                } // end last_check_ts block
+
+
+
+
+
+
+
+                                }
+
+                                
+
+ 
+
+
+                                
+                               
                                 
                                 let (prefix, spread_info) = total_ask_price
                                     .map(|t| {

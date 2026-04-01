@@ -79,7 +79,10 @@ async def proxy_handler(client_ws):
 async def main():
     print(f"[*] WebSocket 代理监听 ws://0.0.0.0:{LISTEN_PORT}")
     print(f"[*] 转发目标: {POLYMARKET_WS_BASE} (via {PROXY})")
-    async with websockets.serve(proxy_handler, "0.0.0.0", LISTEN_PORT):
+    async with websockets.serve(
+        proxy_handler, "0.0.0.0", LISTEN_PORT,
+        ping_interval=None, ping_timeout=None,
+    ):
         await asyncio.Future()  # 永久运行
 
 
