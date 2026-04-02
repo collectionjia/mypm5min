@@ -480,7 +480,7 @@ async fn main() -> Result<()> {
     let lostcount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new()); // 记录每个市场的输的次数
     let wincount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());   // 记录每个市场的赢的次数
     let loststate: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());  // 记录输了几次后进行赢的
-    let marketrecord: Arc<DashMap<String, bool>> = Arc::new(DashMap::new());  // 记录mark有存过记录没(为一个map,key是市场id,值是true还是false)
+    let marketrecord: Arc<DashMap<B256, bool>> = Arc::new(DashMap::new());
 
     // 定时 Merge：每 N 分钟根据持仓执行 merge，仅对 YES+NO 双边都持仓的市场
     // let merge_interval = config.merge_interval_minutes;
@@ -1132,12 +1132,12 @@ async fn main() -> Result<()> {
                                             if *is_ordered {
                                                 info!("xxxxxxxxxxxx222222");
                                                 let my_result = if order_side_name == "No" { "盈" } else { "亏" };
-                                                info!("No赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
+                                                // info!("No赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
                                                 if my_result == "盈" {
                                                     info!("xxxxxxxxxxxx333333");
                                                 
                                                 //先进行市场id,在marketrecord查询,如果为true,就不更新记录,否则更新记录,并且将marketrecord中的值设为true
-                                                if let Some(record) = marketrecord.get(&market_display) {
+                                                if let Some(record) = marketrecord.get(&market_id) {
                                                     if *record {
                                                         continue;
                                                     }
@@ -1146,19 +1146,13 @@ async fn main() -> Result<()> {
                                                              info!("{} | 订单状态: {:?}", market_display, order_status_lock);
                                                           info!("No赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
                                                     wincount.insert(market_display.clone(), current_wincount + 1);
-                                                  lostcount.insert(market_display.clone(), 0);
-                                                  loststate.insert(market_display.clone(), current_wincount + 1);
-                                                  settled_markets.insert(market_display.clone(), true);
-                                                    marketrecord.insert(market_display.clone(), true);
+                                                    lostcount.insert(market_display.clone(), 0);
+                                                    marketrecord.insert(market_id.clone(), true);
                                                 }
 
-
-                                                
-                                          
-                                      
                                                 }else{
 
-                                            if let Some(record) = marketrecord.get(&market_display) {
+                                            if let Some(record) = marketrecord.get(&market_id) {
                                                     if *record {
                                                         continue;
                                                     }
@@ -1168,7 +1162,7 @@ async fn main() -> Result<()> {
                                                   lostcount.insert(market_display.clone(), current_lostcount + 1);
                                                   wincount.insert(market_display.clone(), 0);
                                                   loststate.insert(market_display.clone(), current_lostcount + 1);
-                                                  settled_markets.insert(market_display.clone(), true);
+                                                    marketrecord.insert(market_id.clone(), true);
                                                 }
  
                                               
@@ -1191,10 +1185,10 @@ async fn main() -> Result<()> {
                                             if *is_ordered  {
                                                 info!("xxxxxxxxxxxx555555");
                                                 let my_result = if order_side_name == "Yes" { "盈" } else { "亏" };
-                                                info!("Yes赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
+                                                // info!("Yes赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
                                                 if my_result == "盈" {
                                                     info!("xxxxxxxxxxxx666666");
-                                                if let Some(record) = marketrecord.get(&market_display) {
+                                                if let Some(record) = marketrecord.get(&market_id) {
                                                     if *record {
                                                         continue;
                                                     }
@@ -1204,8 +1198,8 @@ async fn main() -> Result<()> {
                                                   info!("Yes赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
                                                   wincount.insert(market_display.clone(), current_wincount + 1);
                                                   lostcount.insert(market_display.clone(), 0);
-                                                  loststate.insert(market_display.clone(), current_wincount + 1);
-                                                  settled_markets.insert(market_display.clone(), true);
+                                                  
+                                                    marketrecord.insert(market_id.clone(), true);
                                                 }
 
 
@@ -1213,7 +1207,7 @@ async fn main() -> Result<()> {
                                               
 
 
-                                        if let Some(record) = marketrecord.get(&market_display) {
+                                        if let Some(record) = marketrecord.get(&market_id) {
                                                     if *record {
                                                         continue;
                                                     }
@@ -1223,7 +1217,7 @@ async fn main() -> Result<()> {
                                                   lostcount.insert(market_display.clone(), current_lostcount + 1);
                                                   wincount.insert(market_display.clone(), 0);
                                                   loststate.insert(market_display.clone(), current_lostcount + 1);
-                                                  settled_markets.insert(market_display.clone(), true);
+                                                    marketrecord.insert(market_id.clone(), true);
                                                 }
 
                                                 }
