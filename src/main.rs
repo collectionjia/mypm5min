@@ -536,6 +536,9 @@ async fn main() -> Result<()> {
         // 新一轮开始：重置风险敞口，使本轮从 0 敞口重新累计
         _risk_manager.position_tracker().reset_exposure();
 
+        // 获取持仓跟踪器，用于显示盈亏
+        let position_tracker = _risk_manager.position_tracker();
+
         // 初始化订单簿监控器
         let mut monitor = OrderBookMonitor::new();
 
@@ -552,6 +555,20 @@ async fn main() -> Result<()> {
             Err(e) => {
                 error!(error = %e, "创建订单簿流失败");
                 continue;
+            }
+        };
+
+        // 创建市场解决事件流
+        let mut resolutions_stream: Option<_> = match monitor.create_market_resolutions_stream() {
+            Ok(stream) => {
+                info!("市场解决事件流创建成功，将监听 market_resolved 事件");
+                let pinned = Box::pin(stream);
+                Some(pinned)
+            }
+            Err(e) => {
+                warn!(error = %e, "创建市场解决事件流失败，将不监听市场解决事件");
+                warn!("提示: market_resolved 事件需要服务器端启用 custom_features_enabled 标志");
+                None
             }
         };
 
@@ -573,45 +590,12 @@ async fn main() -> Result<()> {
         let market_map: HashMap<B256, &MarketInfo> =
             markets.iter().map(|m| (m.market_id, m)).collect();
 
-        info!("market_map: {:?}", market_map);
-        if let Some(market_info) = market_map.values().next() {
-           let slug = &market_info.slug;
-           
-           // 获取上局的 slug 并计算输赢
-           if let Some(last_ref) = LAST_SLUG_MAP.iter().next() {
-               let last_slug_key = last_ref.key().clone();
-               let last_slug = last_ref.value().clone();
-               let url = format!("https://gamma-api.polymarket.com/markets?slug={}", last_slug);
-               let resp = reqwest::get(&url).await?;
-               let json: serde_json::Value = resp.json().await?;
-               if let Some(market) = json.as_array().and_then(|arr| arr.first()) {
-                   if let Some(outcome_prices_str) = market.get("outcomePrices").and_then(|v| v.as_str()) {
-                       let prices: Vec<&str> = serde_json::from_str(outcome_prices_str).unwrap_or_default();
-                       if let Some(second_price) = prices.get(1) {
-                           let last_is_up = *second_price == "1";
-                           info!("last_slug: {}, last_slug_key: {}, outcome_prices: {:?}, last_is_up: {}", last_slug, last_slug_key, prices, last_is_up);
-                           // 可以在这里根据 last_is_up 进行后续处理
-                       }
-                   }
-               }
-               LAST_SLUG_MAP.remove(&last_slug_key);
-           } else {
-               info!("上把没有存slug");
-           }
-           
-           // 保存当前的 slug
-           LAST_SLUG_MAP.insert(slug.clone(), slug.clone());
-           info!("current slug saved: {}", slug);
-        }
-
-
         // 创建市场映射（condition_id -> (yes_token_id, no_token_id)）用于仓位平衡
         let market_token_map: HashMap<B256, (U256, U256)> = markets
             .iter()
             .map(|m| (m.market_id, (m.yes_token_id, m.no_token_id)))
             .collect();
 
- 
 
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
@@ -677,15 +661,21 @@ async fn main() -> Result<()> {
                             _ => dec!(2)
                         }
                     },
+                    4 => {
+                        match win_count {
+                            1 => dec!(5),
+                            2 => dec!(10),
+                            _ => dec!(32) // 3以上时32美元
+                        }
+                    },
                     _ => dec!(10) // 默认10美元
                 }
             } else {
                 // 没有loststate，使用lostcount
                 let lose_count = lostcount.get(market).map(|v| *v).unwrap_or(0);
                 match lose_count {
-                    1 => dec!(5),
-                    2 => dec!(10),
-                    _ => dec!(32) // 3以上时32美元
+                    1 => dec!(2),
+                    _ => dec!(2) //初始化
                 }
             }
         }
@@ -756,6 +746,48 @@ async fn main() -> Result<()> {
             // 使用秒级精度，5分钟窗口下 num_minutes() 截断可能导致漏检
 
             tokio::select! {
+                // 处理市场解决事件
+                resolved_result = async {
+                    if let Some(ref mut s) = resolutions_stream {
+                        s.as_mut().next().await
+                    } else {
+                        futures::future::pending().await
+                    }
+                } => {
+                    match resolved_result {
+                        Some(Ok(mr)) => {
+                            // 打印收到的 MarketResolved（用于调试）
+                            debug!("MarketResolved: {:?}", mr);
+                            // 判断涨跌：Yes = 涨，No = 跌
+                            let (result_str, result_color) = match mr.winning_outcome.as_str() {
+                                "Yes" => ("涨", "\x1b[32m"),
+                                "No"  => ("跌", "\x1b[31m"),
+                                _     => ("未知", "\x1b[33m"),
+                            };
+                            info!(
+                                "{}{} | 市场结束 | 结果: {}{}\x1b[0m",
+                                result_color,
+                                mr.slug.as_deref().unwrap_or("未知市场"),
+                                result_str,
+                                if mr.winning_outcome == "Yes" { " ↑" } else if mr.winning_outcome == "No" { " ↓" } else { "" }
+                            );
+                        }
+                        Some(Err(e)) => {
+                            warn!(error = %e, "接收市场解决事件失败");
+                        }
+                        None => {
+                            info!("市场解决事件流已结束");
+                        }
+                    }
+                }
+
+                // 心跳：确认市场解决事件流仍在监听（每60秒）
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                    if resolutions_stream.is_some() {
+                        debug!("市场解决事件流心跳：仍在监听 market_resolved 事件...");
+                    }
+                }
+
                 // 处理订单簿更新
                 book_result = stream.next() => {
                     match book_result {
@@ -933,13 +965,12 @@ async fn main() -> Result<()> {
                                             }
                                             *counter += 1;
                                             let side_str = if current_larger == Some(true) { "Yes" } else { "No" };
-                                            // info!(
-                                            //     "{}分{:02}秒 | {} | {}价格大于另一方 | 计数: {} | Yes:A{:.4} No:A{:.4}",
-                                            //    countdown_minutes,countdown_seconds, market_display, side_str, *counter, yes_price, no_price
-                                            // );
+                                            error!(
+                                                "{}分{:02}秒 | {} | {}价格大于另一方 | 计数: {} | Yes:A{:.4} No:A{:.4}",
+                                               countdown_minutes,countdown_seconds, market_display, side_str, *counter, yes_price, no_price
+                                            );
                                         }
-                                    } // counter 和 larger_side 引用在此释放
-
+                                        } // counter 和 larger_side 引用在此释放
  
 
                                         // 确定要购买的token和价格
@@ -960,7 +991,7 @@ async fn main() -> Result<()> {
 
                                         let countdown_within_180 = sec_to_end_nonneg <= 180 && sec_to_end_nonneg > 30;
                                         let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg > 0;
-                                        let countdown_within_00 = sec_to_end_nonneg <=1 && sec_to_end_nonneg >= 0;
+                                        
                                         let price_greater_than_07 = price > dec!(0.7);
                                         let price_greater_than_97 = price > dec!(0.97);
 
@@ -971,11 +1002,11 @@ async fn main() -> Result<()> {
                                         let order_status_lock = order_status.lock().await;
                                         let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size,order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
                                     if countdown_within_180 &&  price_greater_than_07 && price_greater_count{
-                                        info!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
+                                        error!("\x1b[34m{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}\x1b[0m", market_display, counter_val, yes_price, no_price);
                                         let order_size = calculate_order_size(&market_display, &lostcount, &wincount, &loststate);
                                         let order_size_str = order_size.to_string();
                                         if price_greater_than_97 {//大于0.97的那侧
-                                            info!("{} | 倒计时120秒内，价格大于0.97以上，反向买单 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, price, order_size);
+                                            error!("{} | 倒计时120秒内，价格大于0.97以上，反向买单 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, price, order_size);
                                             tokio::spawn({
                                                 let executor = executor.clone();
                                                 let market_display = market_display.clone();
@@ -995,14 +1026,14 @@ async fn main() -> Result<()> {
                                                             Ok(response) => {
                                                                 //jia4加一个全局的map存储当前市场是否下单和下单方向
                                                                 order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),low_token_id.to_string(),token_id.to_string(),order_size_str.clone(),price.to_string()));
-                                                                info!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, low_side_name, order_size);
+                                                                error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, low_side_name, order_size);
                                                             }
                                                             Err(e) => {
                                                                 error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, low_side_name);
                                                             }
                                                         }
                                                     } else {
-                                                        info!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
+                                                        error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
                                                         if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }//计数置零
                                                         order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),low_token_id.to_string(),token_id.to_string(),order_size_str.clone(),price.to_string()));
                                                     }
@@ -1155,6 +1186,28 @@ async fn main() -> Result<()> {
                                     String::new()
                                 };
 
+                                //如果有订单,订单中的方向和市场结果比对,如果一直就赢了,如果不一致就输了
+                                let (result_info, pnl_info) = match (yes_best_ask, no_best_ask) {
+                                    (Some(_), None) => {
+                                        // No赢，判断持仓盈亏
+                                        let yes_pos = position_tracker.get_position(pair.yes_book.asset_id);
+                                        let no_pos = position_tracker.get_position(pair.no_book.asset_id);
+                                        let my_result = if yes_pos > dec!(0) { "亏" } else if no_pos > dec!(0) { "盈" } else { "" };
+                                        let pnl = if my_result.is_empty() { String::new() } else { format!("(我{})", my_result) };
+                                        ("【No赢】".to_string(), pnl)
+                                    }
+                                    (None, Some(_)) => {
+                                        // Yes赢，判断持仓盈亏
+                                        let yes_pos = position_tracker.get_position(pair.yes_book.asset_id);
+                                        let no_pos = position_tracker.get_position(pair.no_book.asset_id);
+                                        let my_result = if no_pos > dec!(0) { "亏" } else if yes_pos > dec!(0) { "盈" } else { "" };
+                                        let pnl = if my_result.is_empty() { String::new() } else { format!("(我{})", my_result) };
+                                        ("【Yes赢】".to_string(), pnl)
+                                    }
+                                    (Some(_), Some(_)) => (String::new(), String::new()), // 两边都有价，市场未结算
+                                    (None, None) => (String::new(), String::new()),
+                                };
+                                
                                 let yes_info = match yes_best_ask {
                                     Some((ap, asz)) => format!("Yes:A{:.4}({:.2}){}", ap, asz, yes_arrow),
                                     None => "Yes:A:无".to_string(),
@@ -1163,42 +1216,16 @@ async fn main() -> Result<()> {
                                     Some((ap, asz)) => format!("No:A{:.4}({:.2}){}", ap, asz, no_arrow),
                                     None => "No:A:无".to_string(),
                                 };
-
-                                // 判断是否赢了：卖单变无且与订单方向一致
-                                {
-                                    let order_status_lock = order_status.lock().await;
-                                    let default = (false, "".to_string(),"".to_string(),"".to_string(),"".to_string(),"".to_string());
-                                    let (is_ordered, order_side_name, _order_token_id, _unorder_token_id, ordered_size, order_price) = 
-                                        order_status_lock.get(&market_display).unwrap_or(&default).clone();
-                                    if is_ordered {
-                                        let win_status = if order_side_name == "Yes" && yes_best_ask.is_none() {
-                                            Some("🎉赢-Yes卖单已无")
-                                        } else if order_side_name == "No" && no_best_ask.is_none() {
-                                            Some("🎉赢-No卖单已无")
-                                        } else {
-                                            None
-                                        };
-
-                                        if let Some(status) = win_status {
-                                            info!("{} | {} | 买入价格: {} | 买入数量: {}",
-                                                market_display, status, order_price, ordered_size);
-                                            // 可以在这里添加赢的后续处理，比如更新统计数据等
-                                            
-                                        }
-                                    }
-                                }
-
-
-
-                                //doublejia输出日志
-                                info!(
-                                    "{} {} | {}分{:02}秒 | {} | {} | {}",
+                                
+                                info!("{} {} | {}分{:02}秒 | {} | {} | {}{}{}",
                                     prefix,
                                     market_display,
                                     countdown_minutes,
                                     countdown_seconds,
                                     yes_info,
                                     no_info,
+                                    result_info,
+                                    pnl_info,
                                     spread_info
                                 );
 
@@ -1350,8 +1377,9 @@ async fn main() -> Result<()> {
                             });
                         }
 
-                        // 先drop stream以释放对monitor的借用，然后清理旧的订阅
+                        // 先drop stream和resolutions_stream以释放对monitor的借用，然后清理旧的订阅
                         drop(stream);
+                        drop(resolutions_stream);
                         monitor.clear();
                         break;
                     }

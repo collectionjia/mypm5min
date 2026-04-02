@@ -2,7 +2,7 @@ use anyhow::Result;
 use dashmap::DashMap;
 use futures::Stream;
 use futures::StreamExt;
-use polymarket_client_sdk::clob::ws::{types::response::BookUpdate, Client as WsClient};
+use polymarket_client_sdk::clob::ws::{types::response::{BookUpdate, MarketResolved}, Client as WsClient};
 use polymarket_client_sdk::types::{B256, U256};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -104,6 +104,32 @@ impl OrderBookMonitor {
         // subscribe_orderbook 不需要认证，使用未认证客户端即可
         let stream = self.ws_client.subscribe_orderbook(token_ids)?;
         // 将 SDK 的 Error 转换为 anyhow::Error
+        let stream = stream.map(|result| result.map_err(|e| anyhow::anyhow!("{}", e)));
+        Ok(Box::pin(stream))
+    }
+
+    /// 创建市场解决事件订阅流
+    ///
+    /// 当市场 resolved 时推送 "market_resolved" 事件，包含 winning_outcome ("Yes" 或 "No")
+    /// 需要 `custom_features_enabled` 标志
+    pub fn create_market_resolutions_stream(
+        &self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<MarketResolved>> + Send + '_>>> {
+        // 收集所有需要订阅的 token_id
+        let token_ids: Vec<U256> = self
+            .market_map
+            .values()
+            .flat_map(|(yes, no)| [*yes, *no])
+            .collect();
+
+        if token_ids.is_empty() {
+            return Err(anyhow::anyhow!("没有市场需要订阅"));
+        }
+
+        info!(token_count = token_ids.len(), "创建市场解决事件订阅流");
+
+        // subscribe_market_resolutions 需要 custom_features_enabled
+        let stream = self.ws_client.subscribe_market_resolutions(token_ids)?;
         let stream = stream.map(|result| result.map_err(|e| anyhow::anyhow!("{}", e)));
         Ok(Box::pin(stream))
     }
