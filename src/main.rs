@@ -23,12 +23,8 @@ use tokio::sync::Mutex;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
-use lazy_static::lazy_static;
 
-lazy_static! {
-    /// 全局变量：存储上一局的 slug，用于当局结束后计算上局的输赢
-    static ref LAST_SLUG_MAP: DashMap<String, String> = DashMap::new();
-}
+
 
 use crate::config::Config;
 use crate::market::{MarketDiscoverer, MarketInfo, MarketScheduler};
@@ -481,6 +477,11 @@ async fn main() -> Result<()> {
     let wind_down_in_progress = Arc::new(AtomicBool::new(false));
     let countdown_in_progress = Arc::new(AtomicBool::new(false));
 
+    let lostcount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new()); // 记录每个市场的输的次数
+    let wincount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());   // 记录每个市场的赢的次数
+    let loststate: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());  // 记录输了几次后进行赢的
+    let marketrecord: Arc<DashMap<String, bool>> = Arc::new(DashMap::new());  // 记录mark有存过记录没(为一个map,key是市场id,值是true还是false)
+
     // 定时 Merge：每 N 分钟根据持仓执行 merge，仅对 YES+NO 双边都持仓的市场
     // let merge_interval = config.merge_interval_minutes;
      let merge_interval = 0;
@@ -608,6 +609,8 @@ async fn main() -> Result<()> {
         let current_larger_side: DashMap<B256, Option<bool>> = DashMap::new(); // None: no data, Some(true): yes larger, Some(false): no larger
         //订单存储(市场id,是否下单,下单yes/no,下单的tokenid,未下单的tokenid,下单的数量)
         let order_status: Arc<Mutex<HashMap<String, (bool, String, String, String, String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+        // 追踪已结算的市场，确保每局只执行一次计数器更新
+        let settled_markets: Arc<DashMap<String, bool>> = Arc::new(DashMap::new());
         #[derive(Clone)]
         struct SimOrderInfo {
             market_id: B256,
@@ -622,12 +625,14 @@ async fn main() -> Result<()> {
         let drawdown_trigger_mask: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
         let losing_streak_count = Arc::new(AtomicU64::new(1));
 
-        let lostcount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new()); // 记录每个市场的输的次数
-        let wincount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());   // 记录每个市场的赢的次数
-        let loststate: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());  // 记录输了几次后进行赢的
+
 
         // 计算投注金额的函数
         fn calculate_order_size(market: &str, lostcount: &Arc<DashMap<String, u64>>, wincount: &Arc<DashMap<String, u64>>, loststate: &Arc<DashMap<String, u64>>) -> Decimal {
+            let lc = lostcount.get(market).map(|v| *v).unwrap_or(0);
+            let wc = wincount.get(market).map(|v| *v).unwrap_or(0);
+            let ls = loststate.get(market).map(|v| *v).unwrap_or(0);
+            info!("market: {}, lostcount: {}, wincount: {}, loststate: {}", market, lc, wc, ls);
             // 检查是否有loststate
             if let Some(state) = loststate.get(market) {
                 let win_count = wincount.get(market).map(|v| *v).unwrap_or(0);
@@ -1002,7 +1007,7 @@ async fn main() -> Result<()> {
                                         let order_status_lock = order_status.lock().await;
                                         let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size,order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
                                     if countdown_within_180 &&  price_greater_than_07 && price_greater_count{
-                                        error!("\x1b[34m{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}\x1b[0m", market_display, counter_val, yes_price, no_price);
+                                        error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
                                         let order_size = calculate_order_size(&market_display, &lostcount, &wincount, &loststate);
                                         let order_size_str = order_size.to_string();
                                         if price_greater_than_97 {//大于0.97的那侧
@@ -1078,83 +1083,13 @@ async fn main() -> Result<()> {
                                                 }
                                             });
                                         }
-
-                                    }else if countdown_within_30 && price_greater_than_07{
-                                        // info!("{} | 倒计时30秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
-                                        let side_name = side_name.to_string();
-                                        let low_side_name = low_side_name.to_string();
-                                        // let (is_ordered, order_side_name,order_token_id,unorder_token_id) = order_status_lock.get(&market_display).unwrap_or(&default);
-                                         if is_ordered && order_side_name != *side_name {//如果已经建仓,价格发生了反转,则先卖后买
-                                            tokio::spawn({
-                                                let executor = executor.clone();
-                                                let market_display = market_display.clone();
-                                                let order_status = order_status.clone();
-                                                let order_token_id = order_token_id.clone();
-                                                let unorder_token_id = unorder_token_id.clone();
-                                                let ordered_size = ordered_size.clone();
-                                                let low_price = low_price;
-                                                let price = price;
-                                                let low_side_name = low_side_name.clone();
-                                                let is_running_clone = is_running.clone();
-                                                async move {
-                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                    // 先卖出已建仓的一边
-                                                    if is_live {
-                                                        let order_token_u256: U256 = order_token_id.parse().unwrap();
-                                                        let ordered_size_dec: Decimal = ordered_size.parse().unwrap();
-                                                        match executor.sell_at_price(order_token_u256, low_price, ordered_size_dec).await {
-                                                            Ok(response) => {
-                                                                info!("{} | 倒计时30秒内 价格反转 卖出成功 | 订单ID: {:?} | 卖出: {}", market_display, response.order_id, ordered_size);
-                                                            
-                                                                // 再买入未建仓的一边
-                                                                let unorder_token_u256: U256 = unorder_token_id.parse().unwrap();
-                                                                info!("{} |  倒计时30秒内 价格反转  开始买入新的较大边 {} | 价格: {:.4} | 数量: {:.2}", market_display, low_side_name, price, ordered_size);
-                                                                match executor.buy_at_price(unorder_token_u256, price, ordered_size_dec).await {
-                                                                    Ok(response) => {
-                                                                        order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),unorder_token_id.clone(),order_token_id.clone(),ordered_size.clone(),price.to_string()));
-                                                                        info!("{} | 买入成功 | 订单ID: {:?} | 买入: {}", market_display, response.order_id, low_side_name);
-                                                                    }
-                                                                    Err(e) => {
-                                                                        error!("{} | 买入失败 | 错误: {}", market_display, e);
-                                                                    }
-                                                                }
-                                                            }
-                                                            Err(e) => {
-                                                                error!("{} | 卖出失败 | 错误: {}", market_display, e);
-                                                            }
-                                                        }
-                                                    } else {
-                                                        info!("{} | 模拟卖出 | 卖出: {}", market_display, side_name);
-                                                        // 再模拟买入未建仓的一边
-                                                        info!("{} | 模拟买入 | 买入: {}", market_display, low_side_name);
-                                                        order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),unorder_token_id.clone(),order_token_id.clone(),ordered_size.clone(),price.to_string()));
-                                                    }
-                                                }
-                                            });
-                                         }
-
-
                                     }
                                 
                                 }
                                 } // end last_check_ts block
 
-
-
-
-
-
-
                                 }
 
-                                
-
- 
-
-
-                                
-                               
-                                
                                 let (prefix, spread_info) = total_ask_price
                                     .map(|t| {
                                         if t < dec!(1.0) {
@@ -1189,20 +1124,117 @@ async fn main() -> Result<()> {
                                 //如果有订单,订单中的方向和市场结果比对,如果一直就赢了,如果不一致就输了
                                 let (result_info, pnl_info) = match (yes_best_ask, no_best_ask) {
                                     (Some(_), None) => {
-                                        // No赢，判断持仓盈亏
-                                        let yes_pos = position_tracker.get_position(pair.yes_book.asset_id);
-                                        let no_pos = position_tracker.get_position(pair.no_book.asset_id);
-                                        let my_result = if yes_pos > dec!(0) { "亏" } else if no_pos > dec!(0) { "盈" } else { "" };
-                                        let pnl = if my_result.is_empty() { String::new() } else { format!("(我{})", my_result) };
-                                        ("【No赢】".to_string(), pnl)
+                                        // No赢，判断下单盈亏
+                                        let order_status_lock = order_status.lock().await;
+                                   
+                                        if let Some((is_ordered, order_side_name, _, _, ordered_size, _)) = order_status_lock.get(&market_display) {
+                                            info!("xxxxxxxxxxxx111111");
+                                            if *is_ordered {
+                                                info!("xxxxxxxxxxxx222222");
+                                                let my_result = if order_side_name == "No" { "盈" } else { "亏" };
+                                                info!("No赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
+                                                if my_result == "盈" {
+                                                    info!("xxxxxxxxxxxx333333");
+                                                
+                                                //先进行市场id,在marketrecord查询,如果为true,就不更新记录,否则更新记录,并且将marketrecord中的值设为true
+                                                if let Some(record) = marketrecord.get(&market_display) {
+                                                    if *record {
+                                                        continue;
+                                                    }
+                                                }else {
+                                                        let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
+                                                             info!("{} | 订单状态: {:?}", market_display, order_status_lock);
+                                                          info!("No赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
+                                                    wincount.insert(market_display.clone(), current_wincount + 1);
+                                                  lostcount.insert(market_display.clone(), 0);
+                                                  loststate.insert(market_display.clone(), current_wincount + 1);
+                                                  settled_markets.insert(market_display.clone(), true);
+                                                    marketrecord.insert(market_display.clone(), true);
+                                                }
+
+
+                                                
+                                          
+                                      
+                                                }else{
+
+                                            if let Some(record) = marketrecord.get(&market_display) {
+                                                    if *record {
+                                                        continue;
+                                                    }
+                                                }else {
+                                                   let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
+                                                  info!("No赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
+                                                  lostcount.insert(market_display.clone(), current_lostcount + 1);
+                                                  wincount.insert(market_display.clone(), 0);
+                                                  loststate.insert(market_display.clone(), current_lostcount + 1);
+                                                  settled_markets.insert(market_display.clone(), true);
+                                                }
+ 
+                                              
+                                                }
+                                                let pnl = format!("(我{})", my_result);
+                                                ("【No赢】".to_string(), pnl)
+                                            } else {
+                                                ("【No赢】".to_string(), String::new())
+                                            }
+                                        } else {
+                                            ("【No赢】".to_string(), String::new())
+                                        }
                                     }
                                     (None, Some(_)) => {
-                                        // Yes赢，判断持仓盈亏
-                                        let yes_pos = position_tracker.get_position(pair.yes_book.asset_id);
-                                        let no_pos = position_tracker.get_position(pair.no_book.asset_id);
-                                        let my_result = if no_pos > dec!(0) { "亏" } else if yes_pos > dec!(0) { "盈" } else { "" };
-                                        let pnl = if my_result.is_empty() { String::new() } else { format!("(我{})", my_result) };
-                                        ("【Yes赢】".to_string(), pnl)
+                                        // Yes赢，判断下单盈亏
+                                        let order_status_lock = order_status.lock().await;
+                                    
+                                        if let Some((is_ordered, order_side_name, _, _, ordered_size, _)) = order_status_lock.get(&market_display) {
+                                            info!("xxxxxxxxxxxx444444");
+                                            if *is_ordered  {
+                                                info!("xxxxxxxxxxxx555555");
+                                                let my_result = if order_side_name == "Yes" { "盈" } else { "亏" };
+                                                info!("Yes赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
+                                                if my_result == "盈" {
+                                                    info!("xxxxxxxxxxxx666666");
+                                                if let Some(record) = marketrecord.get(&market_display) {
+                                                    if *record {
+                                                        continue;
+                                                    }
+                                                }else {
+                                                   let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
+                                                       info!("{} | 订单状态: {:?}", market_display, order_status_lock);
+                                                  info!("Yes赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
+                                                  wincount.insert(market_display.clone(), current_wincount + 1);
+                                                  lostcount.insert(market_display.clone(), 0);
+                                                  loststate.insert(market_display.clone(), current_wincount + 1);
+                                                  settled_markets.insert(market_display.clone(), true);
+                                                }
+
+
+                                                }else{
+                                              
+
+
+                                        if let Some(record) = marketrecord.get(&market_display) {
+                                                    if *record {
+                                                        continue;
+                                                    }
+                                                }else {
+                                                    let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
+                                                  info!("Yes赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
+                                                  lostcount.insert(market_display.clone(), current_lostcount + 1);
+                                                  wincount.insert(market_display.clone(), 0);
+                                                  loststate.insert(market_display.clone(), current_lostcount + 1);
+                                                  settled_markets.insert(market_display.clone(), true);
+                                                }
+
+                                                }
+                                                let pnl = format!("(我{})", my_result);
+                                                ("【Yes赢】".to_string(), pnl)
+                                            } else {
+                                                ("【Yes赢】".to_string(), String::new())
+                                            }
+                                        } else {
+                                            ("【Yes赢】".to_string(), String::new())
+                                        }
                                     }
                                     (Some(_), Some(_)) => (String::new(), String::new()), // 两边都有价，市场未结算
                                     (None, None) => (String::new(), String::new()),
@@ -1217,7 +1249,15 @@ async fn main() -> Result<()> {
                                     None => "No:A:无".to_string(),
                                 };
                                 
-                                info!("{} {} | {}分{:02}秒 | {} | {} | {}{}{}",
+
+                                let order_status_lock = order_status.lock().await;
+                                //获取订单的第二个参数
+                                let order_second_param = order_status_lock
+                                    .get(&market_display)
+                                    .map(|(_, side, _, _, _, _)| side.clone())
+                                    .unwrap_or_else(|| "未下单".to_string());
+                                
+                                info!("{} {} | {}分{:02}秒 | {} | {} | {}{}{}|{}",
                                     prefix,
                                     market_display,
                                     countdown_minutes,
@@ -1226,7 +1266,8 @@ async fn main() -> Result<()> {
                                     no_info,
                                     result_info,
                                     pnl_info,
-                                    spread_info
+                                    spread_info,
+                                    order_second_param
                                 );
 
                                 // 保留原有的结构化日志用于调试（可选）
