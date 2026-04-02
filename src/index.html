@@ -574,10 +574,13 @@
                             cashflow = amount;
                             runningSimBalance += amount;
                         } else if (t.status === 'Won') {
-                            // 结算赢，计算利润并添加
-                            // 利润公式：(1-买入单价)*买入数量
+                            // 结算赢，返还本金并计算利润
+                            // 本金：price * size
+                            // 利润：(1-买入单价)*买入数量
+                            const principal = price * size;
                             const profit = (1 - price) * size;
-                            runningSimBalance += profit;
+                            runningSimBalance += principal; // 返还本金
+                            runningSimBalance += profit; // 添加利润
                         } else if (t.status === 'Lost') {
                             // 结算输，损失投入金额
                             // 已经扣过了，不需要再处理
@@ -658,6 +661,20 @@
                             statusClass = p >= 0 ? 'status-won' : 'status-lost';
                             statusText = p >= 0 ? '赢' : '输';
                         }
+                    } else if (trade.status === 'Won') {
+                        // 结算赢，计算利润
+                        const price = toNumber(trade.price);
+                        const size = toNumber(trade.size);
+                        if (price != null && size != null) {
+                            const profit = (1 - price) * size;
+                            displayPnl = profit;
+                            statusClass = 'status-won';
+                            statusText = '赢';
+                        }
+                    } else if (trade.status === 'Lost') {
+                        // 结算输，显示损失
+                        statusClass = 'status-lost';
+                        statusText = '输';
                     }
 
                     const simBalance = simBalanceById.get(trade.id);

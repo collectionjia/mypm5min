@@ -1011,9 +1011,9 @@ async fn main() -> Result<()> {
                                         let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size,order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
                                     if  price_greater_than_07 && price_greater_count{
                                         error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
-                                        let order_price_usd = calculate_order_price(&market_display, &lostcount, &wincount, &loststate);
-                                        let order_size = (order_price_usd / price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
                                         if price_greater_than_97 {//大于0.97的那侧
+                                            let order_price_usd = Decimal::ONE;
+                                            let order_size = (order_price_usd / price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
                                             error!("{} | 倒计时120秒内，价格大于0.97以上，反向买单 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, price, order_price_usd);
                                             let countdown_for_trade = countdown_str.clone();
                                             tokio::spawn({
@@ -1091,6 +1091,8 @@ async fn main() -> Result<()> {
                                                 }
                                             });
                                         }else{//大于0.7小于0.97的那侧
+                                            let order_price_usd = calculate_order_price(&market_display, &lostcount, &wincount, &loststate);
+                                            let order_size = (order_price_usd / price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
                                             let countdown_for_trade = countdown_str.clone();
                                             tokio::spawn({
                                                 let executor = executor.clone();
