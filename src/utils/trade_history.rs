@@ -9,6 +9,7 @@ pub struct TradeRecord {
     pub market_id: String,
     pub market_slug: String, // 市场名称/显示名
     pub side: String,        // "YES" or "NO"
+    pub order_price: f64,//订单价格
     pub price: f64,
     pub size: f64,
     pub timestamp: i64,      // Unix timestamp

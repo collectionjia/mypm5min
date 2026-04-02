@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     response::{Html, IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -89,6 +89,21 @@ struct BuyRequest {
     market_id: String,
     side: String,
     qty: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct TradesQueryParams {
+    page: Option<usize>,
+    page_size: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct TradesResponse {
+    trades: Vec<crate::utils::trade_history::TradeRecord>,
+    total: usize,
+    page: usize,
+    page_size: usize,
+    total_pages: usize,
 }
 
 #[derive(Serialize)]
@@ -525,6 +540,7 @@ async fn buy_handler(
             market_id: payload.market_id.clone(),
             market_slug: market.name.clone(),
             side: side.clone(),
+            order_price: price.to_f64().unwrap_or(0.0),
             price: price.to_f64().unwrap_or(0.0),
             size: size.to_f64().unwrap_or(0.0),
             timestamp: Utc::now().timestamp(),
@@ -565,6 +581,7 @@ async fn buy_handler(
                 market_id: payload.market_id.clone(),
                 market_slug: market.name.clone(),
                 side: side.clone(),
+                order_price: price.to_f64().unwrap_or(0.0),
                 price: price.to_f64().unwrap_or(0.0),
                 size: size.to_f64().unwrap_or(0.0),
                 timestamp: Utc::now().timestamp(),
@@ -611,11 +628,13 @@ async fn logs_handler() -> impl IntoResponse {
     Json(logs)
 }
 
-async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn trades_handler(
+    State(state): State<AppState>,
+    Query(params): Query<TradesQueryParams>,
+) -> impl IntoResponse {
     use crate::utils::trade_history;
     let mut trades = trade_history::get_trades();
 
-    // 更新交易状态（基于最新市场价格）
     for trade in &mut trades {
         if trade.status == "Won"
             || trade.status == "Lost"
@@ -652,7 +671,22 @@ async fn trades_handler(State(state): State<AppState>) -> impl IntoResponse {
         }
     }
 
-    Json(trades)
+    let total = trades.len();
+    let page_size = params.page_size.unwrap_or(10).max(1).min(100);
+    let page = params.page.unwrap_or(1).max(1);
+    let start = (page - 1) * page_size;
+    let end = start + page_size;
+
+    let paged_trades: Vec<_> = trades.into_iter().skip(start).take(page_size).collect();
+    let total_pages = (total + page_size - 1) / page_size;
+
+    Json(TradesResponse {
+        trades: paged_trades,
+        total,
+        page,
+        page_size,
+        total_pages,
+    })
 }
 
 async fn clear_trades_handler() -> impl IntoResponse {

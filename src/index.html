@@ -272,18 +272,24 @@
                             <th>市场</th>
                             <th>方向</th>
                             <th>价格</th>
+                            <th>金额</th>
                             <th>数量</th>
                             <th>结果</th>
                             <th>下单倒计时</th>
                             <th>卖出倒计时</th>
                             <th>资金变化</th>
-                            <th>余额估算</th>
+                            <th>模拟余额</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr><td colspan="10" style="text-align:center">暂无交易记录</td></tr>
                     </tbody>
                 </table>
+                <div id="trades-pagination" style="display: flex; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 0.5rem; padding: 0.5rem 0;">
+                    <button class="btn" style="padding: 0.15rem 0.5rem; font-size: 0.8rem; width: 80px;" onclick="changePage(-1)">上一页</button>
+                    <span id="page-info" style="font-size: 0.85rem; color: #666; min-width: 60px; text-align: center;">1 / 1</span>
+                    <button class="btn" style="padding: 0.15rem 0.5rem; font-size: 0.8rem; width: 80px;" onclick="changePage(1)">下一页</button>
+                </div>
             </div>
         </div>
     </div>
@@ -293,6 +299,9 @@
         const API_BASE = window.location.origin;
         let isRunning = false;
         let lastTradeCount = -1;
+        let currentPage = 1;
+        let totalPages = 1;
+        let totalTrades = 0;
         let initialUsdcBalance = null;
         let currentUsdcBalance = null;
         let latestMarketMap = new Map();
@@ -404,25 +413,30 @@
             const ordered = [...trades].reverse();
 
             for (const t of ordered) {
-                if (t.status === 'SimBought') {
+                if (t.status === 'Bought' || t.status === 'SimBought') {
                     if (!appliedBuys.has(t.id)) {
                         const price = toNumber(t.price);
                         const size = toNumber(t.size);
                         if (price != null && size != null) {
-                            bal -= price * size;
+                            const cost = price * size;
+                            bal -= cost;
                         }
                         appliedBuys.add(t.id);
                     }
 
                     const outcome = getSimOutcome(t);
                     if (outcome && !appliedSettles.has(t.id)) {
+                        const price = toNumber(t.price);
                         const size = toNumber(t.size);
-                        if (outcome === 'win' && size != null) {
-                            bal += size;
+                        if (outcome === 'win' && price != null && size != null) {
+                            // 结算赢，计算利润并添加
+                            // 利润公式：(1-买入单价)*买入数量
+                            const profit = (1 - price) * size;
+                            bal += profit;
                         }
                         appliedSettles.add(t.id);
                     }
-                } else if (t.status === 'SimSold') {
+                } else if (t.status === 'Sold' || t.status === 'SimSold') {
                     if (!appliedSells.has(t.id)) {
                         const price = toNumber(t.price);
                         const size = toNumber(t.size);
@@ -455,15 +469,22 @@
 
         async function updateTrades() {
             try {
-                const response = await fetch(`${API_BASE}/api/trades`);
-                const trades = await response.json();
+                const response = await fetch(`${API_BASE}/api/trades?page=${currentPage}&page_size=10`);
+                const data = await response.json();
+                const trades = data.trades || [];
+                console.log("交易信息"+trades)
+                totalTrades = data.total || 0;
+                totalPages = data.total_pages || 1;
+                currentPage = data.page || 1;
+
+                document.getElementById('page-info').textContent = `${currentPage} / ${totalPages}`;
                 
                 // Check if we need to refresh portfolio
-                if (trades.length !== lastTradeCount) {
+                if (totalTrades !== lastTradeCount) {
                     if (lastTradeCount !== -1) {
                         updatePortfolio();
                     }
-                    lastTradeCount = trades.length;
+                    lastTradeCount = totalTrades;
                 }
 
                 applySimBalance(trades);
@@ -533,10 +554,14 @@
                     return;
                 }
 
-                const ordered = [...trades].reverse();
+                // 按时间正序计算余额（从最早到最新）
+                const sortedTrades = [...trades].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
                 let cumulativeCashflow = 0;
                 const cashflowById = new Map();
-                for (const t of ordered) {
+                // 计算每行交易后的模拟余额（从当前模拟余额开始）
+                let runningSimBalance = getSimBalance();
+                const simBalanceById = new Map();
+                for (const t of sortedTrades) {
                     const price = toNumber(t.price);
                     const size = toNumber(t.size);
                     let cashflow = 0;
@@ -544,12 +569,23 @@
                         const amount = price * size;
                         if (t.status === 'Bought' || t.status === 'SimBought') {
                             cashflow = -amount;
+                            runningSimBalance -= amount;
                         } else if (t.status === 'Sold' || t.status === 'SimSold') {
                             cashflow = amount;
+                            runningSimBalance += amount;
+                        } else if (t.status === 'Won') {
+                            // 结算赢，计算利润并添加
+                            // 利润公式：(1-买入单价)*买入数量
+                            const profit = (1 - price) * size;
+                            runningSimBalance += profit;
+                        } else if (t.status === 'Lost') {
+                            // 结算输，损失投入金额
+                            // 已经扣过了，不需要再处理
                         }
                     }
                     cumulativeCashflow += cashflow;
                     cashflowById.set(t.id, { cashflow, cumulativeCashflow });
+                    simBalanceById.set(t.id, runningSimBalance);
                 }
 
                 const pairInfoByMarket = new Map();
@@ -599,6 +635,7 @@
 
                     const price = toNumber(trade.price);
                     const size = toNumber(trade.size);
+                    const amount = price != null && size != null ? price * size : null;
                     const flow = cashflowById.get(trade.id) || { cashflow: 0, cumulativeCashflow: 0 };
                     const cashflow = flow.cashflow;
 
@@ -623,10 +660,8 @@
                         }
                     }
 
-                    const estBalance = initialUsdcBalance != null ? initialUsdcBalance + flow.cumulativeCashflow : null;
-                    const estBalanceText = initialUsdcBalance != null
-                        ? formatMoney(estBalance)
-                        : `Δ${formatSignedMoney(flow.cumulativeCashflow)}`;
+                    const simBalance = simBalanceById.get(trade.id);
+                    const simBalanceText = simBalance != null ? formatMoney(simBalance) : '--';
 
                     const buyCountdown = trade.buy_countdown || '--';
                     const sellCountdown = trade.sell_countdown || '--';
@@ -637,12 +672,13 @@
                             <td>${trade.market_slug}</td>
                             <td>${trade.side}</td>
                             <td>${price != null ? price.toFixed(4) : '--'}</td>
-                            <td>${size != null ? size.toFixed(2) : '--'}</td>
+                            <td>${amount != null ? '$' + amount.toFixed(2) : '--'}</td>
+                            <td>${size != null ? size.toFixed(4) : '--'}</td>
                             <td class="${statusClass}">${statusText}</td>
                             <td>${buyCountdown}</td>
                             <td>${sellCountdown}</td>
                             <td>${formatSignedMoney(displayPnl != null ? displayPnl : cashflow)}</td>
-                            <td>${estBalanceText}</td>
+                            <td>${simBalanceText}</td>
                         </tr>
                     `;
                 }).join('');
@@ -671,7 +707,16 @@
             if (tbody) {
                 tbody.innerHTML = '<tr><td colspan="10" style="text-align:center">暂无交易记录</td></tr>';
             }
+            currentPage = 1;
             updateTrades();
+        }
+
+        function changePage(delta) {
+            const newPage = currentPage + delta;
+            if (newPage >= 1 && newPage <= totalPages) {
+                currentPage = newPage;
+                updateTrades();
+            }
         }
 
         function render() {
