@@ -171,6 +171,8 @@
         .status-sold { color: #8b5cf6; font-weight: bold; }
         .status-won { color: #10b981; font-weight: bold; }
         .status-lost { color: #ef4444; font-weight: bold; }
+        .status-sim { color: #6366f1; font-weight: bold; }
+        .sim-row { background-color: #eef2ff; }
         
         .grid-container {
             display: grid;
@@ -572,6 +574,7 @@
                     const date = new Date(trade.timestamp * 1000).toLocaleString();
                     let statusClass = 'status-pending';
                     let statusText = '进行中';
+                    const isSim = trade.status.startsWith('Sim');
                     if (trade.status === 'Won') {
                         statusClass = 'status-won';
                         statusText = '赢';
@@ -584,7 +587,15 @@
                     } else if (trade.status === 'SimPosted' || trade.status === 'BuyPosted') {
                         statusClass = 'status-pending';
                         statusText = '挂单中';
+                    } else if (trade.status === 'SimBought') {
+                        statusClass = 'status-sim';
+                        statusText = '模拟买入';
+                    } else if (trade.status === 'SimSold') {
+                        statusClass = 'status-sim';
+                        statusText = '模拟卖出';
                     }
+
+                    const rowClass = isSim ? 'sim-row' : '';
 
                     const price = toNumber(trade.price);
                     const size = toNumber(trade.size);
@@ -621,7 +632,7 @@
                     const sellCountdown = trade.sell_countdown || '--';
                     
                     return `
-                        <tr>
+                        <tr class="${rowClass}">
                             <td>${date}</td>
                             <td>${trade.market_slug}</td>
                             <td>${trade.side}</td>

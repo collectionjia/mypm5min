@@ -1257,18 +1257,18 @@ async fn main() -> Result<()> {
                                     .map(|(_, side, _, _, _, _)| side.clone())
                                     .unwrap_or_else(|| "未下单".to_string());
                                 
-                                info!("{} {} | {}分{:02}秒 | {} | {} | {}{}{}|{}",
-                                    prefix,
-                                    market_display,
-                                    countdown_minutes,
-                                    countdown_seconds,
-                                    yes_info,
-                                    no_info,
-                                    result_info,
-                                    pnl_info,
-                                    spread_info,
-                                    order_second_param
-                                );
+                                // info!("{} {} | {}分{:02}秒 | {} | {} | {}{}{}|{}",
+                                //     prefix,
+                                //     market_display,
+                                //     countdown_minutes,
+                                //     countdown_seconds,
+                                //     yes_info,
+                                //     no_info,
+                                //     result_info,
+                                //     pnl_info,
+                                //     spread_info,
+                                //     order_second_param
+                                // );
 
                                 // 保留原有的结构化日志用于调试（可选）
                                 // debug!(
