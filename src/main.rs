@@ -1128,13 +1128,13 @@ async fn main() -> Result<()> {
                                         let order_status_lock = order_status.lock().await;
                                    
                                         if let Some((is_ordered, order_side_name, _, _, ordered_size, _)) = order_status_lock.get(&market_display) {
-                                            info!("xxxxxxxxxxxx111111");
+                                            // info!("xxxxxxxxxxxx111111");
                                             if *is_ordered {
-                                                info!("xxxxxxxxxxxx222222");
+                                                // info!("xxxxxxxxxxxx222222");
                                                 let my_result = if order_side_name == "No" { "盈" } else { "亏" };
                                                 // info!("No赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
                                                 if my_result == "盈" {
-                                                    info!("xxxxxxxxxxxx333333");
+                                                    // info!("xxxxxxxxxxxx333333");
                                                 
                                                 //先进行市场id,在marketrecord查询,如果为true,就不更新记录,否则更新记录,并且将marketrecord中的值设为true
                                                 if let Some(record) = marketrecord.get(&market_id) {
@@ -1181,13 +1181,13 @@ async fn main() -> Result<()> {
                                         let order_status_lock = order_status.lock().await;
                                     
                                         if let Some((is_ordered, order_side_name, _, _, ordered_size, _)) = order_status_lock.get(&market_display) {
-                                            info!("xxxxxxxxxxxx444444");
+                                            // info!("xxxxxxxxxxxx444444");
                                             if *is_ordered  {
-                                                info!("xxxxxxxxxxxx555555");
+                                                // info!("xxxxxxxxxxxx555555");
                                                 let my_result = if order_side_name == "Yes" { "盈" } else { "亏" };
                                                 // info!("Yes赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
                                                 if my_result == "盈" {
-                                                    info!("xxxxxxxxxxxx666666");
+                                                    // info!("xxxxxxxxxxxx666666");
                                                 if let Some(record) = marketrecord.get(&market_id) {
                                                     if *record {
                                                         continue;
