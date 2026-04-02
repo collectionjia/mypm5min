@@ -633,54 +633,56 @@ async fn main() -> Result<()> {
             let wc = wincount.get(market).map(|v| *v).unwrap_or(0);
             let ls = loststate.get(market).map(|v| *v).unwrap_or(0);
             info!("market: {}, lostcount: {}, wincount: {}, loststate: {}", market, lc, wc, ls);
-            // 检查是否有loststate
-            if let Some(state) = loststate.get(market) {
-                let win_count = wincount.get(market).map(|v| *v).unwrap_or(0);
-                match *state {
-                    1 => {
-                        match win_count {
-                            1 => dec!(4),
-                            2 => dec!(3),
-                            3..=7 => dec!(2),
-                            _ => dec!(1)
-                        }
-                    },
-                    2 => {
-                        match win_count {
-                            1 => dec!(9),
-                            2 => dec!(8),
-                            3 => dec!(7),
-                            4 => dec!(5),
-                            5 => dec!(3),
-                            6..=9 => dec!(2),
-                            _ => dec!(1)
-                        }
-                    },
-                    3 => {
-                        match win_count {
-                            1 => dec!(30),
-                            2 => dec!(20),
-                            3 => dec!(20),
-                            4 => dec!(10),
-                            5 => dec!(10),
-                            _ => dec!(2)
-                        }
-                    },
-                    4 => {
-                        match win_count {
-                            1 => dec!(5),
-                            2 => dec!(10),
-                            _ => dec!(32) // 3以上时32美元
-                        }
-                    },
-                    _ => dec!(10) // 默认10美元
+            
+            // loststate 为 0 时
+            if ls == 0 {
+                if wc > 0 {
+                    dec!(2)
+                } else {
+                    dec!(2)
                 }
             } else {
-                // 没有loststate，使用lostcount
-                let lose_count = lostcount.get(market).map(|v| *v).unwrap_or(0);
-                match lose_count {
-                    1 => dec!(2),
-                    _ => dec!(2) //初始化
+                // loststate 不为 0，检查 win_count
+                if wc == 0 {
+                    // 连续输的情况
+                    match ls {
+                        1 => dec!(5),
+                        2 => dec!(10),
+                        _ => dec!(32)
+                    }
+                } else {
+                    // loststate 不为 0，win_count 不为 0
+                    match ls {
+                        1 => {
+                            match wc {
+                                1 => dec!(4),
+                                2 => dec!(3),
+                                3..=7 => dec!(2),
+                                _ => dec!(1)
+                            }
+                        },
+                        2 => {
+                            match wc {
+                                1 => dec!(9),
+                                2 => dec!(8),
+                                3 => dec!(7),
+                                4 => dec!(5),
+                                5 => dec!(3),
+                                6..=9 => dec!(2),
+                                _ => dec!(1)
+                            }
+                        },
+                        _ => {
+                            match wc {
+                                1 => dec!(30),
+                                2 => dec!(20),
+                                3 => dec!(20),
+                                4 => dec!(10),
+                                5 => dec!(10),
+                                _ => dec!(2)
+                            }
+                        }
+                    }
                 }
             }
         }
