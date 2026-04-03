@@ -1009,7 +1009,7 @@ async fn main() -> Result<()> {
                                         let default = (false, "".to_string(),"".to_string(),"".to_string(),"".to_string(),"".to_string());
                                         let order_status_lock = order_status.lock().await;
                                         let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size,order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
-                                    if  price_greater_than_07 && price_greater_count{
+                                    if  countdown_within_180 && price_greater_than_07 && price_greater_count{
                                         error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
                                         if price_greater_than_97 {//大于0.97的那侧
                                             let order_price_usd = Decimal::ONE;
@@ -1036,7 +1036,18 @@ async fn main() -> Result<()> {
                                                     if is_live {
                                                         match executor.buy_market_usd(token_id, price, order_size_dec).await {
                                                             Ok(response) => {
-                                                                order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),low_token_id.to_string(),token_id.to_string(),order_size_str.clone(),price.to_string()));
+                                                                let mut order_status_map = order_status.lock().await;
+                                                                let existing_order = order_status_map.get(&market_display);
+                                                                let updated_side_name = if let Some((_, existing_side, _, _, _, _)) = existing_order {
+                                                                    if existing_side.contains(&low_side_name) {
+                                                                        existing_side.clone()
+                                                                    } else {
+                                                                        format!("{},{}", existing_side, low_side_name)
+                                                                    }
+                                                                } else {
+                                                                    low_side_name.clone()
+                                                                };
+                                                                order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), price.to_string()));
                                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
                                                                 use chrono::Utc;
                                                                 let order_id = if response.order_id.is_empty() {
@@ -1068,7 +1079,18 @@ async fn main() -> Result<()> {
                                                     } else {
                                                         error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
                                                         if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
-                                                        order_status.lock().await.insert(market_display.clone(), (true, low_side_name.clone(),low_token_id.to_string(),token_id.to_string(),order_size_str.clone(),price.to_string()));
+                                                        let mut order_status_map = order_status.lock().await;
+                                                        let existing_order = order_status_map.get(&market_display);
+                                                        let updated_side_name = if let Some((_, existing_side, _, _, _, _)) = existing_order {
+                                                            if existing_side.contains(&low_side_name) {
+                                                                existing_side.clone()
+                                                            } else {
+                                                                format!("{},{}", existing_side, low_side_name)
+                                                            }
+                                                        } else {
+                                                            low_side_name.clone()
+                                                        };
+                                                        order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), price.to_string()));
                                                         use crate::utils::trade_history::{add_trade, TradeRecord};
                                                         use chrono::Utc;
                                                         let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
@@ -1222,7 +1244,7 @@ async fn main() -> Result<()> {
                                             // info!("xxxxxxxxxxxx111111");
                                             if *is_ordered {
                                                 // info!("xxxxxxxxxxxx222222");
-                                                let my_result = if order_side_name == "No" { "盈" } else { "亏" };
+                                                let my_result = if order_side_name.contains("No") { "盈" } else { "亏" };
                                                 // info!("No赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
                                                 if my_result == "盈" {
                                                     // info!("xxxxxxxxxxxx333333");
@@ -1309,7 +1331,7 @@ async fn main() -> Result<()> {
                                             // info!("xxxxxxxxxxxx444444");
                                             if *is_ordered  {
                                                 // info!("xxxxxxxxxxxx555555");
-                                                let my_result = if order_side_name == "Yes" { "盈" } else { "亏" };
+                                                let my_result = if order_side_name.contains("Yes") { "盈" } else { "亏" };
                                                 // info!("Yes赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
                                                 if my_result == "盈" {
                                                     // info!("xxxxxxxxxxxx666666");

@@ -469,7 +469,7 @@
 
         async function updateTrades() {
             try {
-                const response = await fetch(`${API_BASE}/api/trades?page=${currentPage}&page_size=10`);
+                const response = await fetch(`${API_BASE}/api/trades?page=${currentPage}&page_size=30`);
                 const data = await response.json();
                 const trades = data.trades || [];
                 console.log("交易信息"+trades)
