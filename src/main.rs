@@ -409,69 +409,8 @@ async fn main() -> Result<()> {
     info!("🌐 Web控制台已启动: http://localhost:3000");
     info!("🧪 默认模拟交易：在 Web 控制台可切换真实投注开关");
 
-    // 启动时自动检查并领取所有已决议市场的奖励（防止重启后无法领取）
-    {
-        info!("🚀 启动自检：检查是否有未领取的奖励...");
-        if let Some(proxy) = config.proxy_address {
-            let priv_key = config.private_key.clone();
-            // 获取所有持仓
-            match _risk_manager.position_tracker().sync_from_api().await {
-                Ok(positions) => {
-                    // 聚合 condition_id -> outcome_indexes
-                    let mut conditions_map: std::collections::HashMap<
-                        B256,
-                        std::collections::HashSet<i32>,
-                    > = std::collections::HashMap::new();
-                    for p in &positions {
-                        conditions_map
-                            .entry(p.condition_id)
-                            .or_default()
-                            .insert(p.outcome_index);
-                    }
-
-                    if !conditions_map.is_empty() {
-                        info!(
-                            "🔍 发现 {} 个相关市场，尝试执行 Redeem...",
-                            conditions_map.len()
-                        );
-                        // 启动一个异步任务来执行 Redeem，避免阻塞主线程
-                        let priv_key_clone = priv_key.clone();
-                        tokio::spawn(async move {
-                            for (condition_id, indexes_set) in conditions_map {
-                                let indexes: Vec<i32> = indexes_set.into_iter().collect();
-                                // 对每个市场尝试 Redeem（如果未决议会失败，忽略即可）
-                                match crate::merge::redeem_outcomes(
-                                    condition_id,
-                                    proxy,
-                                    &priv_key_clone,
-                                    &indexes,
-                                    None,
-                                )
-                                .await
-                                {
-                                    Ok(tx) => info!(
-                                        "✅ 启动自动领取成功 | condition_id={} | tx={}",
-                                        condition_id, tx
-                                    ),
-                                    Err(e) => {
-                                        // 大多数失败是因为市场未决议，这是正常的，使用 debug 日志
-                                        debug!("启动自动领取跳过 (可能未决议/无获胜持仓): {} | condition_id={}", e, condition_id);
-                                    }
-                                }
-                                // 稍微间隔一下，避免请求过于频繁，且等待 nonce 更新
-                                sleep(Duration::from_millis(1000)).await;
-                            }
-                            info!("✅ 启动自动领取检查完成");
-                        });
-                    } else {
-                        info!("🔍 当前无持仓，无需 Redeem");
-                    }
-                }
-                Err(e) => warn!("⚠️ 启动自检失败：无法获取持仓 ({})", e),
-            }
-        }
-    }
-
+  
+    
   
 
     // 收尾进行中标志：定时 merge 会检查并跳过，避免与收尾 merge 竞争
@@ -537,9 +476,7 @@ async fn main() -> Result<()> {
 
         // 新一轮开始：重置风险敞口，使本轮从 0 敞口重新累计
         _risk_manager.position_tracker().reset_exposure();
-
-        // 获取持仓跟踪器，用于显示盈亏
-        let position_tracker = _risk_manager.position_tracker();
+ 
 
         // 初始化订单簿监控器
         let mut monitor = OrderBookMonitor::new();
@@ -592,13 +529,6 @@ async fn main() -> Result<()> {
         let market_map: HashMap<B256, &MarketInfo> =
             markets.iter().map(|m| (m.market_id, m)).collect();
 
-        // 创建市场映射（condition_id -> (yes_token_id, no_token_id)）用于仓位平衡
-        let market_token_map: HashMap<B256, (U256, U256)> = markets
-            .iter()
-            .map(|m| (m.market_id, (m.yes_token_id, m.no_token_id)))
-            .collect();
-
-
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
         let strategy_state: DashMap<B256, u8> = DashMap::new();
@@ -610,8 +540,7 @@ async fn main() -> Result<()> {
         let current_larger_side: DashMap<B256, Option<bool>> = DashMap::new(); // None: no data, Some(true): yes larger, Some(false): no larger
         //订单存储(市场id,是否下单,下单yes/no,下单的tokenid,未下单的tokenid,下单的数量)
         let order_status: Arc<Mutex<HashMap<String, (bool, String, String, String, String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
-        // 追踪已结算的市场，确保每局只执行一次计数器更新
-        let settled_markets: Arc<DashMap<String, bool>> = Arc::new(DashMap::new());
+
         #[derive(Clone)]
         struct SimOrderInfo {
             market_id: B256,
@@ -622,11 +551,7 @@ async fn main() -> Result<()> {
             clear_first_leg_price: bool,
         }
         let sim_open_orders: Arc<DashMap<String, SimOrderInfo>> = Arc::new(DashMap::new());
-        let drawdown_last_sec_to_end: Arc<DashMap<B256, i64>> = Arc::new(DashMap::new());
         let drawdown_trigger_mask: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
-        let losing_streak_count = Arc::new(AtomicU64::new(1));
-
-
 
         // 计算投注金额的函数
         fn calculate_order_price(market: &str, lostcount: &Arc<DashMap<String, u64>>, wincount: &Arc<DashMap<String, u64>>, loststate: &Arc<DashMap<String, u64>>) -> Decimal {
@@ -754,48 +679,7 @@ async fn main() -> Result<()> {
             // 使用秒级精度，5分钟窗口下 num_minutes() 截断可能导致漏检
 
             tokio::select! {
-                // 处理市场解决事件
-                resolved_result = async {
-                    if let Some(ref mut s) = resolutions_stream {
-                        s.as_mut().next().await
-                    } else {
-                        futures::future::pending().await
-                    }
-                } => {
-                    match resolved_result {
-                        Some(Ok(mr)) => {
-                            // 打印收到的 MarketResolved（用于调试）
-                            debug!("MarketResolved: {:?}", mr);
-                            // 判断涨跌：Yes = 涨，No = 跌
-                            let (result_str, result_color) = match mr.winning_outcome.as_str() {
-                                "Yes" => ("涨", "\x1b[32m"),
-                                "No"  => ("跌", "\x1b[31m"),
-                                _     => ("未知", "\x1b[33m"),
-                            };
-                            info!(
-                                "{}{} | 市场结束 | 结果: {}{}\x1b[0m",
-                                result_color,
-                                mr.slug.as_deref().unwrap_or("未知市场"),
-                                result_str,
-                                if mr.winning_outcome == "Yes" { " ↑" } else if mr.winning_outcome == "No" { " ↓" } else { "" }
-                            );
-                        }
-                        Some(Err(e)) => {
-                            warn!(error = %e, "接收市场解决事件失败");
-                        }
-                        None => {
-                            info!("市场解决事件流已结束");
-                        }
-                    }
-                }
-
-                // 心跳：确认市场解决事件流仍在监听（每60秒）
-                _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                    if resolutions_stream.is_some() {
-                        debug!("市场解决事件流心跳：仍在监听 market_resolved 事件...");
-                    }
-                }
-
+             
                 // 处理订单簿更新
                 book_result = stream.next() => {
                     match book_result {
@@ -1511,7 +1395,6 @@ async fn main() -> Result<()> {
                         let prev_round_markets: Vec<(B256, U256, U256)> = market_map.values()
                             .map(|m| (m.market_id, m.yes_token_id, m.no_token_id))
                             .collect();
-
                         let pt = _risk_manager.position_tracker();
                         let proxy_addr = config.proxy_address.clone();
                         let priv_key = config.private_key.clone();
@@ -1519,7 +1402,7 @@ async fn main() -> Result<()> {
                         // 启动异步任务：在下一轮开始后10秒，对上一轮市场执行平仓（Merge/Redeem）
                         if !prev_round_markets.is_empty() && proxy_addr.is_some() {
                             let proxy = proxy_addr.unwrap();
-                            let settle_delay_secs = 10u64;
+                            let settle_delay_secs = 40u64;
                             info!(
                                 "🕒 已安排{}秒后对 {} 个上一轮市场执行平仓（Merge/Redeem）检查",
                                 settle_delay_secs,
@@ -1544,60 +1427,37 @@ async fn main() -> Result<()> {
 
                                 // 2. 循环尝试 Redeem（需等待决议，支持重试）
                                 let mut pending_markets: HashSet<B256> = prev_round_markets.iter().map(|(c, _, _)| *c).collect();
-                                let max_retries = 20; // 20 * 30s = 约10分钟
-
-                                for i in 0..max_retries {
                                     if pending_markets.is_empty() {
-                                        break;
-                                    }
-
-                                    if i > 0 {
-                                        info!("Redeem 重试 {}/{} | 剩余 {} 个市场等待决议...", i, max_retries, pending_markets.len());
-                                        sleep(Duration::from_secs(30)).await;
-                                    }
-
+                                      info!("🏁 上一轮市场平仓任务全部完成");
+                                    }else{
                                     let mut completed = Vec::new();
-
                                     for (condition_id, yes_token, no_token) in &prev_round_markets {
-                                        if !pending_markets.contains(condition_id) {
-                                            continue;
-                                        }
-
-                                        match merge::redeem_max(*condition_id, proxy, &priv_key, None).await {
-                                            Ok(tx) => {
-                                                info!("✅ Redeem 成功 | condition_id={} | tx={}", condition_id, tx);
-                                                // 更新本地持仓为0
-                                                let yes_bal = pt.get_position(*yes_token);
-                                                let no_bal = pt.get_position(*no_token);
-                                                pt.update_position(*yes_token, -yes_bal);
-                                                pt.update_position(*no_token, -no_bal);
-                                                completed.push(*condition_id);
-                                            },
-                                            Err(e) => {
-                                                let err_msg = e.to_string();
-                                                if err_msg.contains("无持仓") {
-                                                    debug!("Redeem 跳过: 无持仓 | condition_id={}", condition_id);
+                                            match merge::redeem_max(*condition_id, proxy, &priv_key, None).await {
+                                                Ok(tx) => {
+                                                    info!(condition_id = %condition_id, tx = %tx, "✅ Redeem 成功");
+                                                    let yes_bal = pt.get_position(*yes_token);
+                                                    let no_bal = pt.get_position(*no_token);
+                                                    pt.update_position(*yes_token, -yes_bal);
+                                                    pt.update_position(*no_token, -no_bal);
+                                                    info!(yes_token = %yes_token, no_token = %no_token, "更新持仓为0");
+                                                    info!(yes_bal = %yes_bal, no_bal = %no_bal, "持仓更新结果");
                                                     completed.push(*condition_id);
-                                                } else {
-                                                    // 其他错误（如未决议），保留重试
-                                                    // 仅在第一次或每5次打印警告，避免刷屏
-                                                    if i % 5 == 0 {
-                                                        warn!("⚠️ Redeem 暂未成功 (可能未决议) | condition_id={} | error={}", condition_id, err_msg);
+                                                },
+                                                Err(e) => {
+                                                    info!(condition_id = %condition_id, e = %e, "Redeem 失败");
+                                                    let err_msg = e.to_string();
+                                                    if err_msg.contains("无持仓") {
+                                                        debug!("Redeem 跳过: 无持仓 | condition_id={}", condition_id);
+                                                        completed.push(*condition_id);
+                                                    } else {
+                                                            warn!("⚠️ Redeem 暂未成功 (可能未决议) | condition_id={} | error={}", condition_id, err_msg);
                                                     }
                                                 }
-                                            }
                                         }
                                     }
-
                                     for c in completed {
                                         pending_markets.remove(&c);
                                     }
-                                }
-
-                                if !pending_markets.is_empty() {
-                                    warn!("⚠️ 部分市场 Redeem 超时未完成: {:?}", pending_markets);
-                                } else {
-                                    info!("🏁 上一轮市场平仓任务全部完成");
                                 }
                             });
                         }

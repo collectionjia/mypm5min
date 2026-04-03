@@ -544,7 +544,7 @@
                     }
                     marketLoseStreakCount = Math.max(1, Math.floor(marketLoseStreakCount) || 1);
                     const buyUsdAmount = Math.max(1, marketLoseStreakCount * 1);
-                    summaryEl.textContent = `总:${total} | 赢:${won} | 输:${lost} | 当前:${currentMarketResult} | 连输:${marketLoseStreakCount} | 下单金额:$${buyUsdAmount.toFixed(2)} | 跳过:${skipped} | 挂单中:${posted} | 进行中:${ongoing}`;
+                    summaryEl.textContent = `总:${total} | 赢:${won} | 输:${lost} | 当前:${currentMarketResult} | 连输:${marketLoseStreakCount} | 下单金额:$${buyUsdAmount.toFixed(2)} | 跳过:${skipped} | 挂单中:${posted} | 真实下单:${ongoing}`;
                 }
 
                 const tbody = document.querySelector('#trades-table tbody');
