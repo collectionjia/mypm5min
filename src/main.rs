@@ -1013,13 +1013,13 @@ async fn main() -> Result<()> {
                                         error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
                                         if price_greater_than_97 {//大于0.97的那侧
                                             let order_price_usd = Decimal::ONE;
-                                            let order_size = (order_price_usd / price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
-                                            error!("{} | 倒计时120秒内，价格大于0.97以上，反向买单 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, price, order_price_usd);
+                                            let order_size = (order_price_usd / low_price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
+                                            error!("{} | 倒计时120秒内，价格大于0.97以上，反向买单 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, low_price, order_price_usd);
                                             let countdown_for_trade = countdown_str.clone();
                                             tokio::spawn({
                                                 let executor = executor.clone();
                                                 let market_display = market_display.clone();
-                                                let token_id = token_id;
+                                                let token_id = low_token_id;
                                                 let low_side_name = low_side_name.to_string();
                                                 let low_token_id = low_token_id;
                                                 let order_status = order_status.clone();
@@ -1034,7 +1034,7 @@ async fn main() -> Result<()> {
                                                 async move {
                                                     let is_live = is_running_clone.load(Ordering::Relaxed);
                                                     if is_live {
-                                                        match executor.buy_market_usd(token_id, price, order_size_dec).await {
+                                                        match executor.buy_market_usd(low_token_id, low_price, order_size_dec).await {
                                                             Ok(response) => {
                                                                 let mut order_status_map = order_status.lock().await;
                                                                 let existing_order = order_status_map.get(&market_display);
@@ -1047,7 +1047,7 @@ async fn main() -> Result<()> {
                                                                 } else {
                                                                     low_side_name.clone()
                                                                 };
-                                                                order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), price.to_string()));
+                                                                order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), low_price.to_string()));
                                                                 use crate::utils::trade_history::{add_trade, TradeRecord};
                                                                 use chrono::Utc;
                                                                 let order_id = if response.order_id.is_empty() {
@@ -1061,7 +1061,7 @@ async fn main() -> Result<()> {
                                                                     market_id: market_id_str,
                                                                     market_slug: market_display.clone(),
                                                                     side: low_side_name.clone(),
-                                                                    price: price.to_string().parse().unwrap_or(0.0),
+                                                                    price: low_price.to_string().parse().unwrap_or(0.0),
                                                                     order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
                                                                     size: size,
                                                                     timestamp: Utc::now().timestamp(),
@@ -1090,18 +1090,18 @@ async fn main() -> Result<()> {
                                                         } else {
                                                             low_side_name.clone()
                                                         };
-                                                        order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), price.to_string()));
+                                                        order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), low_price.to_string()));
                                                         use crate::utils::trade_history::{add_trade, TradeRecord};
                                                         use chrono::Utc;
                                                         let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
-                                                        let size = (order_price_usd / price).to_f64().unwrap_or(0.0);
+                                                        let size = (order_price_usd / low_price).to_f64().unwrap_or(0.0);
                                                         add_trade(TradeRecord {
                                                             id: sim_order_id,
                                                             market_id: market_id_str,
                                                             market_slug: market_display.clone(),
                                                             side: low_side_name.clone(),
                                                             order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
-                                                            price: price.to_string().parse().unwrap_or(0.0),
+                                                            price: low_price.to_string().parse().unwrap_or(0.0),
                                                             size: size,
                                                             timestamp: Utc::now().timestamp(),
                                                             status: "SimBought".to_string(),
