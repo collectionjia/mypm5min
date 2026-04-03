@@ -89,32 +89,7 @@ fn merge_info_with_both_sides(positions: &[Position]) -> HashMap<B256, (U256, U2
         })
         .collect()
 }
-
-fn adjust_order_size_for_fee(entry_price: Decimal, size: Decimal) -> Decimal {
-    use rust_decimal::prelude::ToPrimitive;
-
-    if size <= dec!(0) {
-        return dec!(0);
-    }
-
-    let p = entry_price.to_f64().unwrap_or(0.0);
-    let base = p * (1.0 - p);
-    let fee_value = 100.0 * 0.25 * base.powf(2.0);
-    let fee_decimal = Decimal::try_from(fee_value).unwrap_or(dec!(0));
-
-    let available_amount = if fee_decimal >= dec!(100.0) {
-        dec!(0.01)
-    } else {
-        size * (dec!(100.0) - fee_decimal) / dec!(100.0)
-    };
-
-    let floored_size = (available_amount * dec!(100.0)).floor() / dec!(100.0);
-    if floored_size.is_zero() {
-        dec!(0.01)
-    } else {
-        floored_size
-    }
-}
+ 
 
 #[derive(Clone, Debug)]
 enum CountdownOnceState {
@@ -1332,7 +1307,7 @@ async fn main() -> Result<()> {
                         let priv_key = config.private_key.clone();
 
                         // 启动异步任务：在下一轮开始后10秒，对上一轮市场执行平仓（Merge/Redeem）
-                        if !prev_round_markets.is_empty() && proxy_addr.is_some() {
+                        if  proxy_addr.is_some() {
                             let proxy = proxy_addr.unwrap();
                             let settle_delay_secs = 40u64;
                             info!(
@@ -1342,20 +1317,20 @@ async fn main() -> Result<()> {
                             );
 
                             tokio::spawn(async move {
-                                sleep(Duration::from_secs(settle_delay_secs)).await;
-                                info!("⏰ 开始对上一轮市场执行平仓（Merge/Redeem）检查...");
+                                // sleep(Duration::from_secs(settle_delay_secs)).await;
+                                // info!("⏰ 开始对上一轮市场执行平仓（Merge/Redeem）检查...");
 
-                                // 1. 先尝试 Merge 所有市场（无需等待决议，立刻执行）
-                                for (condition_id, _, _) in &prev_round_markets {
-                                    match merge::merge_max(*condition_id, proxy, &priv_key, None).await {
-                                        Ok(tx) => info!("✅ Merge 成功 | condition_id={} | tx={}", condition_id, tx),
-                                        Err(e) => {
-                                            if !e.to_string().contains("无可用份额") {
-                                                debug!("Merge 跳过: {}", e);
-                                            }
-                                        }
-                                    }
-                                }
+                                // // 1. 先尝试 Merge 所有市场（无需等待决议，立刻执行）
+                                // for (condition_id, _, _) in &prev_round_markets {
+                                //     match merge::merge_max(*condition_id, proxy, &priv_key, None).await {
+                                //         Ok(tx) => info!("✅ Merge 成功 | condition_id={} | tx={}", condition_id, tx),
+                                //         Err(e) => {
+                                //             if !e.to_string().contains("无可用份额") {
+                                //                 debug!("Merge 跳过: {}", e);
+                                //             }
+                                //         }
+                                //     }
+                                // }
 
                                 // 2. 根据用户当前持仓进行 Redeem（需等待决议，支持重试）
                                 use poly_5min_bot::positions::get_positions;
