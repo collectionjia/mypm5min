@@ -605,69 +605,7 @@ async fn main() -> Result<()> {
         loop {
             let now_all = Utc::now();
             let seconds_until_end_all = (window_end - now_all).num_seconds();
-            // 在窗口开始前4分钟开始尝试领取，而不是等到完全结束
-            if seconds_until_end_all >= 260 && !post_end_claim_done {
-                post_end_claim_done = true;
-                let config_claim = config.clone();
-                tokio::spawn(async move {
-                    if let Some(proxy) = config_claim.proxy_address {
-                        // 循环尝试领取，直到窗口结束一段时间后，以确保所有结算都完成
-                        // 尝试2次，每次间隔30秒
-                        for i in 0..2 {
-                            if i > 0 {
-                                info!("自动领取：第 {} 次尝试...", i + 1);
-                            }
-                            match get_positions().await {
-                                Ok(positions) => {
-                                    let condition_ids = condition_ids_with_both_sides(&positions);
-                                    if condition_ids.is_empty() {
-                                        if i == 0 {
-                                            info!("自动领取：当前无双边持仓可领取");
-                                        }
-                                    } else {
-                                        info!(
-                                            "自动领取：发现 {} 个市场可领取",
-                                            condition_ids.len()
-                                        );
-                                        let n = condition_ids.len();
-                                        for (j, condition_id) in condition_ids.iter().enumerate() {
-                                            match merge::merge_max(
-                                                *condition_id,
-                                                proxy,
-                                                &config_claim.private_key,
-                                                None,
-                                            )
-                                            .await
-                                            {
-                                                Ok(tx) => {
-                                                    info!("🎁 自动领取：Merge 完成 | condition_id={:#x} | tx={}", condition_id, tx);
-                                                }
-                                                Err(e) => {
-                                                    warn!(condition_id = %condition_id, error = %e, "自动领取：Merge 失败");
-                                                }
-                                            }
-                                            if j + 1 < n {
-                                                sleep(Duration::from_secs(10)).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "自动领取：获取持仓失败，跳过");
-                                }
-                            }
-                            sleep(Duration::from_secs(30)).await;
-                        }
-                    } else {
-                        warn!("自动领取：未配置 POLYMARKET_PROXY_ADDRESS，跳过");
-                    }
-                });
-            }
-            // 收尾检查：距窗口结束 <= N 分钟时执行一次收尾（不跳出，继续监控直到窗口结束由下方「新窗口检测」自然切换）
-            // 使用秒级精度，5分钟窗口下 num_minutes() 截断可能导致漏检
-
             tokio::select! {
-             
                 // 处理订单簿更新
                 book_result = stream.next() => {
                     match book_result {
