@@ -497,19 +497,7 @@ async fn main() -> Result<()> {
             }
         };
 
-        // 创建市场解决事件流
-        let mut resolutions_stream: Option<_> = match monitor.create_market_resolutions_stream() {
-            Ok(stream) => {
-                info!("市场解决事件流创建成功，将监听 market_resolved 事件");
-                let pinned = Box::pin(stream);
-                Some(pinned)
-            }
-            Err(e) => {
-                warn!(error = %e, "创建市场解决事件流失败，将不监听市场解决事件");
-                warn!("提示: market_resolved 事件需要服务器端启用 custom_features_enabled 标志");
-                None
-            }
-        };
+    
 
         info!(market_count = markets.len(), "开始监控订单簿");
 
@@ -1431,38 +1419,52 @@ async fn main() -> Result<()> {
                                     }
                                 }
 
-                                // 2. 循环尝试 Redeem（需等待决议，支持重试）
-                                let mut pending_markets: HashSet<B256> = prev_round_markets.iter().map(|(c, _, _)| *c).collect();
-                                    if pending_markets.is_empty() {
-                                      info!("🏁 上一轮市场平仓任务全部完成");
-                                    }else{
+                                // 2. 根据用户当前持仓进行 Redeem（需等待决议，支持重试）
+                                use poly_5min_bot::positions::get_positions;
+                                
+                                let positions = match get_positions().await {
+                                    Ok(pos) => pos,
+                                    Err(e) => {
+                                        warn!("获取持仓失败：{}", e);
+                                        Vec::new()
+                                    }
+                                };
+                                
+                                let mut condition_ids: HashSet<B256> = positions.iter()
+                                    .map(|p| p.condition_id)
+                                    .collect();
+                                    
+                                if condition_ids.is_empty() {
+                                    info!("🏁 当前无持仓，无需 Redeem");
+                                } else {
+                                    info!("📋 当前持仓市场数：{}，开始 Redeem", condition_ids.len());
                                     let mut completed = Vec::new();
-                                    for (condition_id, yes_token, no_token) in &prev_round_markets {
-                                            match merge::redeem_max(*condition_id, proxy, &priv_key, None).await {
-                                                Ok(tx) => {
-                                                    info!(condition_id = %condition_id, tx = %tx, "✅ Redeem 成功");
-                                                    let yes_bal = pt.get_position(*yes_token);
-                                                    let no_bal = pt.get_position(*no_token);
-                                                    pt.update_position(*yes_token, -yes_bal);
-                                                    pt.update_position(*no_token, -no_bal);
-                                                    info!(yes_token = %yes_token, no_token = %no_token, "更新持仓为0");
-                                                    info!(yes_bal = %yes_bal, no_bal = %no_bal, "持仓更新结果");
+                                    
+                                    for condition_id in &condition_ids {
+                                        match merge::redeem_max(*condition_id, proxy, &priv_key, None).await {
+                                            Ok(tx) => {
+                                                info!(condition_id = %condition_id, tx = %tx, "✅ Redeem 成功");
+                                                completed.push(*condition_id);
+                                            },
+                                            Err(e) => {
+                                                info!(condition_id = %condition_id, e = %e, "Redeem 失败");
+                                                let err_msg = e.to_string();
+                                                if err_msg.contains("无持仓") {
+                                                    debug!("Redeem 跳过：无持仓 | condition_id={}", condition_id);
                                                     completed.push(*condition_id);
-                                                },
-                                                Err(e) => {
-                                                    info!(condition_id = %condition_id, e = %e, "Redeem 失败");
-                                                    let err_msg = e.to_string();
-                                                    if err_msg.contains("无持仓") {
-                                                        debug!("Redeem 跳过: 无持仓 | condition_id={}", condition_id);
-                                                        completed.push(*condition_id);
-                                                    } else {
-                                                            warn!("⚠️ Redeem 暂未成功 (可能未决议) | condition_id={} | error={}", condition_id, err_msg);
-                                                    }
+                                                } else {
+                                                    warn!("⚠️ Redeem 暂未成功 (可能未决议) | condition_id={} | error={}", condition_id, err_msg);
                                                 }
+                                            }
                                         }
                                     }
+                                    
                                     for c in completed {
-                                        pending_markets.remove(&c);
+                                        condition_ids.remove(&c);
+                                    }
+                                    
+                                    if !condition_ids.is_empty() {
+                                        warn!("仍有 {} 个市场未完成 Redeem", condition_ids.len());
                                     }
                                 }
                             });
@@ -1470,7 +1472,6 @@ async fn main() -> Result<()> {
 
                         // 先drop stream和resolutions_stream以释放对monitor的借用，然后清理旧的订阅
                         drop(stream);
-                        drop(resolutions_stream);
                         monitor.clear();
                         break;
                     }
