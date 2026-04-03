@@ -4,9 +4,7 @@
 
 程序已经是永久使用了，license.key就是永久的授权，不要再找我要授权凭证了。
 
-#### 5Min： https://github.com/rvenandowsley/Polymarket-crypto-5min-arbitrage-bot
-#### 15Min： https://github.com/rvenandowsley/Polymarket-crypto-15min-arbitrage-bot
-#### 1Hour： https://github.com/rvenandowsley/Polymarket-crypto-1hour-arbitrage-bot
+
 
 面向 [Polymarket](https://polymarket.com) 加密货币「涨跌」5 分钟市场（UTC 时间）的 Rust 套利机器人。监控订单簿、检测 YES+NO 价差套利机会、通过 CLOB API 下单，并可定时对可赎回持仓执行 merge。
 
