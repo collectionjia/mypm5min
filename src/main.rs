@@ -923,7 +923,10 @@ async fn main() -> Result<()> {
                                                 async move {
                                                     let is_live = is_running_clone.load(Ordering::Relaxed);
                                                     if is_live {
-                                                        match executor.buy_market_usd(low_token_id, low_price, order_price_usd).await {
+                                                          if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
+                                                            info!("{} | 已建仓,价格大于0.97不买入了 ", market_display);
+                                                          }else{//如果没有建仓,则直接下单买
+                                                            match executor.buy_market_usd(low_token_id, low_price, order_price_usd).await {
                                                             Ok(response) => {
                                                                 let mut order_status_map = order_status.lock().await;
                                                                 let existing_order = order_status_map.get(&market_display);
@@ -931,7 +934,9 @@ async fn main() -> Result<()> {
                                                                     if existing_side.contains(&low_side_name) {
                                                                         existing_side.clone()
                                                                     } else {
-                                                                        format!("{},{}", existing_side, low_side_name)
+                                                                         existing_side.clone()
+                                                                        // format!("{},{}", existing_side, low_side_name)
+                                                                        // info!("{} | 合并名称", market_display);
                                                                     }
                                                                 } else {
                                                                     low_side_name.clone()
@@ -965,6 +970,8 @@ async fn main() -> Result<()> {
                                                                 error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, low_side_name);
                                                             }
                                                         }
+                                                          }
+                                                        
                                                     } else {
                                                         error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
                                                         if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }

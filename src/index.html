@@ -612,7 +612,7 @@
                 tbody.innerHTML = trades.map(trade => {
                     const date = new Date(trade.timestamp * 1000).toLocaleString();
                     let statusClass = 'status-pending';
-                    let statusText = '进行中';
+                    let statusText = '真实下单';
                     const isSim = trade.status.startsWith('Sim');
                     if (trade.status === 'Won') {
                         statusClass = 'status-won';
