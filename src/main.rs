@@ -934,9 +934,8 @@ async fn main() -> Result<()> {
                                                                     if existing_side.contains(&low_side_name) {
                                                                         existing_side.clone()
                                                                     } else {
-                                                                         existing_side.clone()
+                                                                        low_side_name.clone()
                                                                         // format!("{},{}", existing_side, low_side_name)
-                                                                        // info!("{} | 合并名称", market_display);
                                                                     }
                                                                 } else {
                                                                     low_side_name.clone()
