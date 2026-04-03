@@ -1009,6 +1009,11 @@ async fn main() -> Result<()> {
                                         let default = (false, "".to_string(),"".to_string(),"".to_string(),"".to_string(),"".to_string());
                                         let order_status_lock = order_status.lock().await;
                                         let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size,order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
+
+
+                                        //如果有订单,而且订单中购买的token这边价格卖价在0.97,对订单进行清仓
+
+
                                     if  countdown_within_180 && price_greater_than_07 && price_greater_count{
                                         error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
                                         if price_greater_than_97 {//大于0.97的那侧
@@ -1034,7 +1039,7 @@ async fn main() -> Result<()> {
                                                 async move {
                                                     let is_live = is_running_clone.load(Ordering::Relaxed);
                                                     if is_live {
-                                                        match executor.buy_market_usd(low_token_id, low_price, order_size_dec).await {
+                                                        match executor.buy_market_usd(low_token_id, low_price, order_price_usd).await {
                                                             Ok(response) => {
                                                                 let mut order_status_map = order_status.lock().await;
                                                                 let existing_order = order_status_map.get(&market_display);
@@ -1076,8 +1081,6 @@ async fn main() -> Result<()> {
                                                                 error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, low_side_name);
                                                             }
                                                         }
-
-                                                       
                                                     } else {
                                                         error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
                                                         if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
@@ -1139,7 +1142,7 @@ async fn main() -> Result<()> {
                                                         if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
                                                             info!("{} | 下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了", market_display);    
                                                         }else{
-                                                            match executor.buy_market_usd(token_id, price, order_size_dec).await {
+                                                            match executor.buy_market_usd(token_id, price, order_price_usd).await {
                                                                 Ok(response) => {
                                                                     order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.to_string(),price.to_string().into()));
                                                                     use crate::utils::trade_history::{add_trade, TradeRecord};

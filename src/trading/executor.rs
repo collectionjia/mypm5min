@@ -215,7 +215,7 @@ impl TradingExecutor {
             .limit_order()
             .token_id(token_id)
             .side(Side::Buy)
-            .price(price)
+            .price(reference_ask)
             .size(size)
             .order_type(OrderType::FAK)
             .build()
