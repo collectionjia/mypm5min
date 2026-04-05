@@ -501,8 +501,21 @@ async fn main() -> Result<()> {
         let yes_greater_than_no_counters: DashMap<B256, u32> = DashMap::new();
         let last_check_timestamps: DashMap<B256, i64> = DashMap::new();
         let current_larger_side: DashMap<B256, Option<bool>> = DashMap::new(); // None: no data, Some(true): yes larger, Some(false): no larger
-        //订单存储(市场id,是否下单,下单yes/no,下单的tokenid,未下单的tokenid,下单的数量)
-        let order_status: Arc<Mutex<HashMap<String, (bool, String, String, String, String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+        //订单存储 (市场 id,是否下单，下单 yes/no，下单的数量)
+        let order_status_up: Arc<Mutex<HashMap<String, (bool, String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+        let order_status_down: Arc<Mutex<HashMap<String, (bool, String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+        
+        // 递增下单跟踪：market_id -> (下单次数，总金额，总数量，总成本) - UP 边和 DOWN 边分开统计（包含对冲单）
+        let ladder_order_counters_up: DashMap<B256, (u32, Decimal, Decimal, Decimal)> = DashMap::new();
+        let ladder_order_counters_down: DashMap<B256, (u32, Decimal, Decimal, Decimal)> = DashMap::new();
+        // 全局资金跟踪：初始$500，每局利润会追加到本金上
+        let global_balance: Arc<Mutex<Decimal>> = Arc::new(Mutex::new(dec!(1000)));
+        // 总预算跟踪：market_id -> (总投入金额)，用于控制两边合计不超过当前全局资金
+        let total_budget_used: DashMap<B256, Decimal> = DashMap::new();
+        // 上次下单时间戳，用于 5 秒间隔控制：market_id -> timestamp
+        let last_order_timestamps: DashMap<B256, i64> = DashMap::new();
+        // 利润计算跟踪：market_id -> (是否已结算，获胜边，利润金额)
+        let profit_calculation: DashMap<B256, (bool, String, Decimal)> = DashMap::new();
 
         #[derive(Clone)]
         struct SimOrderInfo {
@@ -720,287 +733,504 @@ async fn main() -> Result<()> {
                                         // 更新最后检查时间戳
                                         *last_check_ts = current_timestamp;
 
-
-
-
-                                // 检查yes和no的卖价
-                                if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
-                                    let is_yes_larger = yes_price > no_price;
-                                    let is_no_larger = no_price > yes_price;
-                                    
-                                    // 确定当前较大的一边
-                                    let current_larger = if is_yes_larger {
-                                        Some(true) // yes较大
-                                    } else if is_no_larger {
-                                        Some(false) // no较大
-                                    } else {
-                                        None // 价格相等
-                                    };
-
-
-                                    // 读取并更新计数器（短生命周期引用，立即释放）
-                                    {
-                                        let mut counter = yes_greater_than_no_counters.entry(market_id).or_insert(0);
-                                        let mut larger_side = current_larger_side.entry(market_id).or_insert(None);
-
-                                        if *larger_side != current_larger {
-                                            // 较大的一边发生变化，重置计数器
-                                            *counter = 0;
-                                            *larger_side = current_larger;
+                                // 递增下单策略：每 5 秒检查，价格>0.51 时下单，金额递增 ($5, $10, $15...)，总金额上限$500
+                                // UP 和 DOWN 边各自独立统计下单次数、数量和平均价格
+                                // 检查是否有一方获胜（卖价变成无）
+                                let yes_has_ask = yes_best_ask.is_some();
+                                let no_has_ask = no_best_ask.is_some();
+                                
+                                // 检查是否已结算过
+                                let already_settled = profit_calculation.get(&market_id).map(|r| r.0).unwrap_or(false);
+                                
+                                if !already_settled {
+                                    if !yes_has_ask && no_has_ask {
+                                        // Yes 边卖价为无，Yes 边获胜（即 UP 边赢）
+                                        let up_info = ladder_order_counters_up.get(&market_id).map(|r| *r).unwrap_or((0, dec!(0), dec!(0), dec!(0)));
+                                        let down_info = ladder_order_counters_down.get(&market_id).map(|r| *r).unwrap_or((0, dec!(0), dec!(0), dec!(0)));
+                                        
+                                        let (up_count, _up_total, up_qty, up_cost) = up_info;
+                                        let (down_count, _down_total, down_qty, down_cost) = down_info;
+                                        
+                                        if up_count > 0 || down_count > 0 {
+                                            // 计算利润：(1 - 赢的平均价格)*买入赢的总数量 - 输的平均价格*买入输的总数量
+                                            let up_avg_price = if up_qty > dec!(0) { up_cost / up_qty } else { dec!(0) };
+                                            let down_avg_price = if down_qty > dec!(0) { down_cost / down_qty } else { dec!(0) };
+                                            
+                                            let profit = (dec!(1) - up_avg_price) * up_qty - down_avg_price * down_qty;
+                                            
                                             info!(
-                                                "{} | jiajiajia较大边变化 | 新较大边: {:?} | Yes:A{:.4} No:A{:.4}",
-                                                market_display, current_larger, yes_price, no_price
+                                                "🎉 {} | {}分{:02}秒 | Yes 边获胜 (UP 赢) | UP:数量{:.2} 均价{:.4} DOWN:数量{:.2} 均价{:.4} | 利润:${:.2}",
+                                                market_display, countdown_minutes, countdown_seconds, up_qty, up_avg_price, down_qty, down_avg_price, profit
                                             );
-                                        } else if current_larger.is_some() {
-                                            // 较大的一边未变化，计数加1
-                                            if *counter == 60 {
-                                                *counter = 0;
+                                            
+                                            // 标记为已结算
+                                            profit_calculation.insert(market_id, (true, "UP".to_string(), profit));
+                                            
+                                            // 清空计数器（包含主力单和对冲单）
+                                            ladder_order_counters_up.remove(&market_id);
+                                            ladder_order_counters_down.remove(&market_id);
+                                            
+                                            // 将利润追加到全局资金
+                                            {
+                                                let mut balance_guard = global_balance.lock().await;
+                                                *balance_guard += profit;
+                                                info!("💰 全局资金更新：${:.2} → ${:.2} (利润:${:.2})", *balance_guard - profit, *balance_guard, profit);
                                             }
-                                            *counter += 1;
-                                            let side_str = if current_larger == Some(true) { "Yes" } else { "No" };
-                                            error!(
-                                                "{}分{:02}秒 | {} | {}价格大于另一方 | 计数: {} | Yes:A{:.4} No:A{:.4}",
-                                               countdown_minutes,countdown_seconds, market_display, side_str, *counter, yes_price, no_price
-                                            );
                                         }
-                                        } // counter 和 larger_side 引用在此释放
- 
-
-                                        // 确定要购买的token和价格
-                                        let (token_id, price, side_name) = if current_larger == Some(true) {
-                                            (pair.yes_book.asset_id, yes_price, "Yes")
-                                        } else {
-                                            (pair.no_book.asset_id, no_price, "No")
-                                        };
-
-
-                                        // 确定小的一边要购买的token和价格
-                                        let (low_token_id, low_price, low_side_name) = if current_larger == Some(false) {
-                                            (pair.yes_book.asset_id, yes_price, "Yes")
-                                        } else {
-                                            (pair.no_book.asset_id, no_price, "No")
-                                        };
-
-
-                                        let countdown_within_180 = sec_to_end_nonneg <= 180 && sec_to_end_nonneg > 30;
-                                        let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg > 0;
+                                    } else if !no_has_ask && yes_has_ask {
+                                        // No 边卖价为无，No 边获胜（即 DOWN 边赢）
+                                        let up_info = ladder_order_counters_up.get(&market_id).map(|r| *r).unwrap_or((0, dec!(0), dec!(0), dec!(0)));
+                                        let down_info = ladder_order_counters_down.get(&market_id).map(|r| *r).unwrap_or((0, dec!(0), dec!(0), dec!(0)));
                                         
-                                        let price_greater_than_07 = price > dec!(0.7);
-                                        let price_greater_than_97 = price > dec!(0.97);
-
+                                        let (up_count, _up_total, up_qty, up_cost) = up_info;
+                                        let (down_count, _down_total, down_qty, down_cost) = down_info;
                                         
-                                        let counter_val = yes_greater_than_no_counters.get(&market_id).map(|r| *r).unwrap_or(0);
-                                        let price_greater_count = counter_val == 60;
-                                        let default = (false, "".to_string(),"".to_string(),"".to_string(),"".to_string(),"".to_string());
-                                        let order_status_lock = order_status.lock().await;
-                                        let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size,order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
-
-
-                                        //如果有订单,而且订单中购买的token这边价格卖价在0.97,对订单进行清仓
-
-
-                                    if  countdown_within_180 && price_greater_than_07 && price_greater_count{
-                                        error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
-                                        if price_greater_than_97 {//大于0.97的那侧
-                                            let order_price_usd = Decimal::ONE;
-                                            let order_size = (order_price_usd / low_price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
-                                            error!("{} | 倒计时120秒内，价格大于0.97以上，反向买单 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, low_price, order_price_usd);
-                                            let countdown_for_trade = countdown_str.clone();
-                                            tokio::spawn({
-                                                let executor = executor.clone();
-                                                let market_display = market_display.clone();
-                                                let token_id = low_token_id;
-                                                let low_side_name = low_side_name.to_string();
-                                                let low_token_id = low_token_id;
-                                                let order_status = order_status.clone();
-                                                let order_size=order_size.clone();
-                                                let mid = market_id;
-                                                let counters = yes_greater_than_no_counters.clone();
-                                                let is_running_clone = is_running.clone();
-                                                let countdown_for_trade = countdown_for_trade.clone();
-                                                let market_id_str = market_id.to_string();
-                                                let order_size_str = order_size.to_string();
-                                                let order_size_dec = order_size.to_string().parse::<Decimal>().unwrap_or(dec!(0));
-                                                async move {
-                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                    if is_live {
-                                                          if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                            info!("{} | 已建仓,价格大于0.97不买入了 ", market_display);
-                                                          }else{//如果没有建仓,则直接下单买
-                                                            match executor.buy_market_usd(low_token_id, low_price, order_price_usd).await {
-                                                            Ok(response) => {
-                                                                let mut order_status_map = order_status.lock().await;
-                                                                let existing_order = order_status_map.get(&market_display);
-                                                                let updated_side_name = if let Some((_, existing_side, _, _, _, _)) = existing_order {
-                                                                    if existing_side.contains(&low_side_name) {
-                                                                        existing_side.clone()
-                                                                    } else {
-                                                                        low_side_name.clone()
-                                                                        // format!("{},{}", existing_side, low_side_name)
-                                                                    }
-                                                                } else {
-                                                                    low_side_name.clone()
-                                                                };
-                                                                order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), low_price.to_string()));
-                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                                use chrono::Utc;
-                                                                let order_id = if response.order_id.is_empty() {
-                                                                    format!("LIVE-{}", Utc::now().timestamp_millis())
-                                                                } else {
-                                                                    response.order_id.clone()
-                                                                };
-                                                                let size = (order_price_usd / price).to_f64().unwrap_or(0.0);
-                                                                add_trade(TradeRecord {
-                                                                    id: order_id,
-                                                                    market_id: market_id_str,
-                                                                    market_slug: market_display.clone(),
-                                                                    side: low_side_name.clone(),
-                                                                    price: low_price.to_string().parse().unwrap_or(0.0),
-                                                                    order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
-                                                                    size: size,
-                                                                    timestamp: Utc::now().timestamp(),
-                                                                    status: "Bought".to_string(),
-                                                                    profit: None,
-                                                                    buy_countdown: Some(countdown_for_trade.clone()),
-                                                                    sell_countdown: None,
-                                                                });
-                                                                error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, low_side_name, order_size);
-                                                            }
-                                                            Err(e) => {
-                                                                error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, low_side_name);
-                                                            }
-                                                        }
-                                                          }
-                                                        
-                                                    } else {
-                                                        error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
-                                                        if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
-                                                        let mut order_status_map = order_status.lock().await;
-                                                        let existing_order = order_status_map.get(&market_display);
-                                                        let updated_side_name = if let Some((_, existing_side, _, _, _, _)) = existing_order {
-                                                            if existing_side.contains(&low_side_name) {
-                                                                existing_side.clone()
-                                                            } else {
-                                                                format!("{},{}", existing_side, low_side_name)
-                                                            }
-                                                        } else {
-                                                            low_side_name.clone()
-                                                        };
-                                                        order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), low_price.to_string()));
-                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                        use chrono::Utc;
-                                                        let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
-                                                        let size = (order_price_usd / low_price).to_f64().unwrap_or(0.0);
-                                                        add_trade(TradeRecord {
-                                                            id: sim_order_id,
-                                                            market_id: market_id_str,
-                                                            market_slug: market_display.clone(),
-                                                            side: low_side_name.clone(),
-                                                            order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
-                                                            price: low_price.to_string().parse().unwrap_or(0.0),
-                                                            size: size,
-                                                            timestamp: Utc::now().timestamp(),
-                                                            status: "SimBought".to_string(),
-                                                            profit: None,
-                                                            buy_countdown: Some(countdown_for_trade.clone()),
-                                                            sell_countdown: None,
-                                                        });
-                                                    }
-                                                }
-                                            });
-                                        }else{//大于0.7小于0.97的那侧
-                                            let order_price_usd = calculate_order_price(&market_display, &lostcount, &wincount, &loststate);
-                                            let order_size = (order_price_usd / price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
-                                            let countdown_for_trade = countdown_str.clone();
-                                            tokio::spawn({
-                                                let executor = executor.clone();
-                                                let market_display = market_display.clone();
-                                                let side_name = side_name.to_string();
-                                                let order_status = order_status.clone();
-                                                let token_id = token_id;
-                                                let low_token_id = low_token_id;
-                                                let is_running_clone = is_running.clone();
-                                                let mid = market_id;
-                                                let counters = yes_greater_than_no_counters.clone();
-                                                let order_size_str = order_size.clone();
-                                                let order_price = order_price_usd;
-                                                let countdown_for_trade = countdown_for_trade.clone();
-                                                let market_id_str = market_id.to_string();
-                                                let order_size_dec = order_size.to_string().parse::<Decimal>().unwrap_or(dec!(0));
-                                                async move {
-                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                    if is_live {
-                                                        if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                            info!("{} | 下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了", market_display);    
-                                                        }else{
-                                                            match executor.buy_market_usd(token_id, price, order_price_usd).await {
-                                                                Ok(response) => {
-                                                                    order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.to_string(),price.to_string().into()));
-                                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                                    use chrono::Utc;
-                                                                    let order_id = if response.order_id.is_empty() {
-                                                                        format!("LIVE-{}", Utc::now().timestamp_millis())
-                                                                    } else {
-                                                                        response.order_id.clone()
-                                                                    };
-                                                                    let size = (order_price_usd / price).to_f64().unwrap_or(0.0);
-                                                                    add_trade(TradeRecord {
-                                                                        id: order_id,
-                                                                        market_id: market_id_str,
-                                                                        market_slug: market_display.clone(),
-                                                                        side: side_name.clone(),
-                                                                        order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
-                                                                        price: price.to_string().parse().unwrap_or(0.0),
-                                                                        size: size,
-                                                                        timestamp: Utc::now().timestamp(),
-                                                                        status: "Bought".to_string(),
-                                                                        profit: None,
-                                                                        buy_countdown: Some(countdown_for_trade.clone()),
-                                                                        sell_countdown: None,
-                                                                    });
-                                                                    info!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, side_name, order_size);
-                                                                }
-                                                                Err(e) => {
-                                                                    error!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, side_name);
-                                                                }
-                                                            }
-                                                        }
-                                                    } else {
-                                                          if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                                info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了", market_display);    
-                                                          }else{
-                                                            info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, side_name, order_size);
-                                                            if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
-                                                            order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.to_string(),price.to_string().into()));
-                                                            use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                            use chrono::Utc;
-                                                            let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
-                                                            let size = (order_price_usd / price).to_f64().unwrap_or(0.0);
-                                                            add_trade(TradeRecord {
-                                                                id: sim_order_id,
-                                                                market_id: market_id_str,
-                                                                market_slug: market_display.clone(),
-                                                                side: side_name.clone(),
-                                                                order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
-                                                                price: price.to_string().parse().unwrap_or(0.0),
-                                                                size: size,
-                                                                timestamp: Utc::now().timestamp(),
-                                                                status: "SimBought".to_string(),
-                                                                profit: None,
-                                                                buy_countdown: Some(countdown_for_trade.clone()),
-                                                                sell_countdown: None,
-                                                            });
-                                                          }
-                                                        
-                                                    }
-                                                }
-                                            });
+                                        if up_count > 0 || down_count > 0 {
+                                            // 计算利润：(1 - 赢的平均价格)*买入赢的总数量 - 输的平均价格*买入输的总数量
+                                            let up_avg_price = if up_qty > dec!(0) { up_cost / up_qty } else { dec!(0) };
+                                            let down_avg_price = if down_qty > dec!(0) { down_cost / down_qty } else { dec!(0) };
+                                            
+                                            let profit = (dec!(1) - down_avg_price) * down_qty - up_avg_price * up_qty;
+                                            
+                                            info!(
+                                                "🎉 {} | {}分{:02}秒 | No 边获胜 (DOWN 赢) | UP:数量{:.2} 均价{:.4} DOWN:数量{:.2} 均价{:.4} | 利润:${:.2}",
+                                                market_display, countdown_minutes, countdown_seconds, up_qty, up_avg_price, down_qty, down_avg_price, profit
+                                            );
+                                            
+                                            // 标记为已结算
+                                            profit_calculation.insert(market_id, (true, "DOWN".to_string(), profit));
+                                            
+                                            // 清空计数器（包含主力单和对冲单）
+                                            ladder_order_counters_up.remove(&market_id);
+                                            ladder_order_counters_down.remove(&market_id);
+                                            
+                                            // 将利润追加到全局资金
+                                            {
+                                                let mut balance_guard = global_balance.lock().await;
+                                                *balance_guard += profit;
+                                                info!("💰 全局资金更新：${:.2} → ${:.2} (利润:${:.2})", *balance_guard - profit, *balance_guard, profit);
+                                            }
                                         }
                                     }
+                                }
                                 
+                                // 继续下单逻辑（仅在未结算且有卖价时）
+                                if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
+                                    let is_live = is_running.load(Ordering::Relaxed);
+                                    let current_ts = Utc::now().timestamp();
+                                    
+                                    // 检查是否达到 5 秒间隔
+                                    if let Some(mut last_order_ts_ref) = last_order_timestamps.get_mut(&market_id).or_else(|| {
+                                        last_order_timestamps.insert(market_id, 0);
+                                        last_order_timestamps.get_mut(&market_id)
+                                    }) {
+                                        let time_since_last_order = current_ts - *last_order_ts_ref;
+                                        
+                                        if time_since_last_order >= 5 {
+                                            // 检查哪边价格大于 0.51
+                                            let target_side = if yes_price > dec!(0.51) {
+                                                Some(("Yes", pair.yes_book.asset_id, yes_price))
+                                            } else if no_price > dec!(0.51) {
+                                                Some(("No", pair.no_book.asset_id, no_price))
+                                            } else {
+                                                None
+                                            };
+                                            
+                                            if let Some((side_name, token_id, price)) = target_side {
+                                                // 根据下单的边决定是 UP 还是 DOWN：Yes=UP, No=DOWN
+                                                let is_up_side = side_name == "Yes";
+                                                
+                                                // 获取总预算使用情况
+                                                let mut total_used = total_budget_used.entry(market_id).or_insert(dec!(0));
+                                                // 使用全局资金计算剩余可用金额
+                                                let current_balance = *global_balance.lock().await;
+                                                let total_remaining = current_balance - *total_used;
+                                                
+                                                if total_remaining <= dec!(0) {
+                                                    // 总预算已用完
+                                                    info!(
+                                                        "{} | {}分{:02}秒 | 总预算已用完 | YES 价格:{:.4} | NO 价格:{:.4} | 总投入:${}",
+                                                        market_display, countdown_minutes, countdown_seconds, yes_price, no_price, *total_used
+                                                    );
+                                                } else {
+                                                    // 分别处理 UP 和 DOWN 边（避免借用冲突）
+                                                    if is_up_side {
+                                                        // UP 边逻辑
+                                                        let mut ladder_info = ladder_order_counters_up.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)));
+                                                        let (order_count, _side_amount, total_qty, total_value) = *ladder_info;
+                                                        
+                                                        // 计算本次下单金额：按照 10,8,6 循环
+                                                        let next_order_num = order_count + 1;
+                                                        let cycle_amounts = [dec!(10), dec!(8), dec!(6)];
+                                                        let theoretical_amount = cycle_amounts[(next_order_num - 1) as usize % 3];
+                                                        // 实际下单金额取理论值和总剩余预算的较小值
+                                                        let actual_amount = theoretical_amount.min(total_remaining);
+                                                        
+                                                        // 计算可购买数量 = 金额 / 价格
+                                                        let qty = actual_amount / price;
+                                                        
+                                                        // 检查是否需要给价格偏低的合约下单（主力价格>0.75 时）
+                                                        let other_price = if side_name == "Yes" { no_price } else { yes_price };
+                                                        let is_hedge_needed = price > dec!(0.65);
+                                                        
+                                                        if !is_live {
+                                                            // 模拟模式
+                                                            let new_total_qty = total_qty + qty;
+                                                            let new_total_value = total_value + (price * qty);
+                                                            let avg_price = if new_total_qty > dec!(0) { new_total_value / new_total_qty } else { dec!(0) };
+                                                            let current_profit = (dec!(1) - avg_price) * new_total_qty;
+                                                            
+                                                            // 获取 DOWN 边的成本，计算纯利润（DOWN 边已包含对冲单）
+                                                            let down_info = ladder_order_counters_down.get(&market_id).map(|r| *r).unwrap_or((0, dec!(0), dec!(0), dec!(0)));
+                                                            let down_cost = down_info.3;
+                                                            let net_profit = current_profit - down_cost;
+                                                            
+                                                            info!(
+                                                                "{} | {}分{:02}秒 | [模拟] UP 边第{}单 | 价格:{:.4} | 金额:${:.2} | 本单数量:{:.2} | 总数量:{:.2} | 累计:${:.2} | 平均:{:.4} | 总剩余:${:.2} | 利润:${:.2} | 纯利润:${:.2}",
+                                                                market_display, countdown_minutes, countdown_seconds, next_order_num, price, actual_amount, qty, new_total_qty,
+                                                                new_total_value, 
+                                                                avg_price,
+                                                                total_remaining - actual_amount,
+                                                                current_profit,
+                                                                net_profit
+                                                            );
+                                                            
+                                                            // 如果需要对冲，给价格偏低的合约下单（主力数量的 20%）
+                                                            if is_hedge_needed {
+                                                                let hedge_qty = qty * dec!(0.40);
+                                                                let hedge_amount = hedge_qty * other_price;
+                                                                let other_side_name = if side_name == "Yes" { "No" } else { "Yes" };
+                                                                
+                                                                // 对冲单合并到对应的计数器中（YES 边对冲->DOWN 计数器，NO 边对冲->UP 计数器）
+                                                                let is_hedge_up = other_side_name == "Yes";
+                                                                let mut hedge_ladder_info = if is_hedge_up {
+                                                                    ladder_order_counters_up.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)))
+                                                                } else {
+                                                                    ladder_order_counters_down.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)))
+                                                                };
+                                                                let (hedge_count, hedge_total_value, hedge_total_qty, hedge_total_cost) = *hedge_ladder_info;
+                                                                let new_hedge_qty = hedge_total_qty + hedge_qty;
+                                                                let new_hedge_value = hedge_total_value + hedge_amount;
+                                                                let hedge_avg_price = if new_hedge_qty > dec!(0) { new_hedge_value / new_hedge_qty } else { dec!(0) };
+                                                                
+                                                                // 计算对冲单的利润和纯利润
+                                                                let hedge_profit = (dec!(1) - hedge_avg_price) * new_hedge_qty;
+                                                                // 纯利润 = 对冲单利润 - 对冲单成本 - 主力单对应部分的成本
+                                                                // 主力单总成本 = total_value (主力累计投入)
+                                                                // 对冲单是主力单的 20%，所以需要减去主力单成本的对应比例
+                                                                let main_force_cost_ratio = if total_value > dec!(0) { new_hedge_value / total_value } else { dec!(0) };
+                                                                let main_force_cost_to_deduct = total_value * main_force_cost_ratio.min(dec!(1.0));
+                                                                let hedge_net_profit = hedge_profit - new_hedge_value - main_force_cost_to_deduct;
+                                                                
+                                                                info!(
+                                                                    "{} | {}分{:02}秒 | [模拟对冲] {}边第{}单 | 价格:{:.4} | 金额:${:.2} | 本单数量:{:.2} | 总数量:{:.2} | 累计:${:.2} | 平均:{:.4} | 利润:${:.2} | 纯利润:${:.2} (主力 20%)",
+                                                                    market_display, countdown_minutes, countdown_seconds, other_side_name, hedge_count + 1, other_price, hedge_amount, hedge_qty, new_hedge_qty,
+                                                                    new_hedge_value,
+                                                                    hedge_avg_price,
+                                                                    hedge_profit,
+                                                                    hedge_net_profit
+                                                                );
+                                                                
+                                                                // 更新对冲计数器
+                                                                *hedge_ladder_info = (hedge_count + 1, new_hedge_value, new_hedge_qty, new_hedge_value);
+                                                                
+                                                                // 从总预算中扣除对冲单金额
+                                                                *total_used += hedge_amount;
+                                                            }
+                                                            
+                                                            // 更新状态
+                                                            *ladder_info = (
+                                                                order_count + 1,
+                                                                new_total_value,
+                                                                new_total_qty,
+                                                                new_total_value,
+                                                            );
+                                                            *total_used += actual_amount;
+                                                            *last_order_ts_ref = current_ts;
+                                                            
+                                                            // 更新 order_status
+                                                            let mut order_status_guard = order_status_up.lock().await;
+                                                            order_status_guard.insert(
+                                                                market_display.clone(),
+                                                                (true, side_name.to_string(), format!("{:.2}", qty)),
+                                                            );
+                                                        } else {
+                                                            // 真实交易模式
+                                                            match executor.buy_market_usd(token_id, price, actual_amount).await {
+                                                                Ok(resp) => {
+                                                                    let order_qty = actual_amount / price;
+                                                                    info!(
+                                                                        "{} | UP 边第{}单成功 | 订单 ID:{} | 价格:{:.4} | 金额:${} | 数量:{:.2} | 总剩余:${}",
+                                                                        market_display, next_order_num, &resp.order_id[..8], price, actual_amount, order_qty,
+                                                                        total_remaining - actual_amount
+                                                                    );
+                                                                    
+                                                                    // 如果需要对冲，给价格偏低的合约下单（主力数量的 20%）
+                                                                    if is_hedge_needed {
+                                                                        let hedge_qty = order_qty * dec!(0.40);
+                                                                        let hedge_token_id = if side_name == "Yes" { pair.no_book.asset_id } else { pair.yes_book.asset_id };
+                                                                        let other_side_name = if side_name == "Yes" { "No" } else { "Yes" };
+                                                                        let hedge_amount = hedge_qty * other_price;
+                                                                        
+                                                                        match executor.buy_market_usd(hedge_token_id, other_price, hedge_amount).await {
+                                                                            Ok(hedge_resp) => {
+                                                                                // 对冲单合并到对应的计数器中
+                                                                                let is_hedge_up = other_side_name == "Yes";
+                                                                                let mut hedge_ladder_info = if is_hedge_up {
+                                                                                    ladder_order_counters_up.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)))
+                                                                                } else {
+                                                                                    ladder_order_counters_down.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)))
+                                                                                };
+                                                                                let (hedge_count, hedge_total_value, hedge_total_qty, hedge_total_cost) = *hedge_ladder_info;
+                                                                                let new_hedge_qty = hedge_total_qty + hedge_qty;
+                                                                                let new_hedge_value = hedge_total_value + hedge_amount;
+                                                                                let hedge_avg_price = if new_hedge_qty > dec!(0) { new_hedge_value / new_hedge_qty } else { dec!(0) };
+                                                                                
+                                                                                // 计算对冲单的利润和纯利润
+                                                                                let hedge_profit = (dec!(1) - hedge_avg_price) * new_hedge_qty;
+                                                                                let hedge_net_profit = hedge_profit - new_hedge_value;
+                                                                                
+                                                                                info!(
+                                                                                    "{} | 对冲单成功 | {}边第{}单 | 订单 ID:{} | 价格:{:.4} | 金额:${:.2} | 本单数量:{:.2} | 总数量:{:.2} | 累计:${:.2} | 平均:{:.4} | 利润:${:.2} | 纯利润:${:.2} (主力 20%)",
+                                                                                    market_display, other_side_name, hedge_count + 1, &hedge_resp.order_id[..8], other_price, hedge_amount, hedge_qty, new_hedge_qty,
+                                                                                    new_hedge_value,
+                                                                                    hedge_avg_price,
+                                                                                    hedge_profit,
+                                                                                    hedge_net_profit
+                                                                                );
+                                                                                
+                                                                                // 更新对冲计数器
+                                                                                *hedge_ladder_info = (hedge_count + 1, new_hedge_value, new_hedge_qty, new_hedge_value);
+                                                                                
+                                                                                // 从总预算中扣除对冲单金额
+                                                                                *total_used += hedge_amount;
+                                                                            }
+                                                                            Err(e) => {
+                                                                                error!(
+                                                                                    "{} | 对冲单失败 | {}边 | 价格:{:.4} | 错误:{}",
+                                                                                    market_display, other_side_name, other_price, e
+                                                                                );
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    
+                                                                    // 更新状态
+                                                                    *ladder_info = (
+                                                                        order_count + 1,
+                                                                        total_value + (price * order_qty),
+                                                                        total_qty + order_qty,
+                                                                        total_value + (price * order_qty),
+                                                                    );
+                                                                    *total_used += actual_amount;
+                                                                    *last_order_ts_ref = current_ts;
+                                                                    
+                                                                    // 更新 order_status
+                                                                    let mut order_status_guard = order_status_up.lock().await;
+                                                                    order_status_guard.insert(
+                                                                        market_display.clone(),
+                                                                        (true, side_name.to_string(), format!("{:.2}", order_qty)),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    error!(
+                                                                        "{} | UP 边第{}单失败 | 价格:{:.4} | 金额:${} | 错误:{}",
+                                                                        market_display, next_order_num, price, actual_amount, e
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        // DOWN 边逻辑
+                                                        let mut ladder_info = ladder_order_counters_down.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)));
+                                                        let (order_count, _side_amount, total_qty, total_value) = *ladder_info;
+                                                        
+                                                        // 计算本次下单金额：按照 10,8,6 循环
+                                                        let next_order_num = order_count + 1;
+                                                        let cycle_amounts = [dec!(10), dec!(8), dec!(6)];
+                                                        let theoretical_amount = cycle_amounts[(next_order_num - 1) as usize % 3];
+                                                        // 实际下单金额取理论值和总剩余预算的较小值
+                                                        let actual_amount = theoretical_amount.min(total_remaining);
+                                                        
+                                                        // 计算可购买数量 = 金额 / 价格
+                                                        let qty = actual_amount / price;
+                                                        
+                                                        // 检查是否需要给价格偏低的合约下单（主力价格>0.75 时）
+                                                        let other_price = if side_name == "Yes" { no_price } else { yes_price };
+                                                        let is_hedge_needed = price > dec!(0.65);
+                                                        
+                                                        if !is_live {
+                                                            // 模拟模式
+                                                            let new_total_qty = total_qty + qty;
+                                                            let new_total_value = total_value + (price * qty);
+                                                            let avg_price = if new_total_qty > dec!(0) { new_total_value / new_total_qty } else { dec!(0) };
+                                                            let current_profit = (dec!(1) - avg_price) * new_total_qty;
+                                                            
+                                                            // 获取 UP 边的成本，计算纯利润（UP 边已包含对冲单）
+                                                            let up_info = ladder_order_counters_up.get(&market_id).map(|r| *r).unwrap_or((0, dec!(0), dec!(0), dec!(0)));
+                                                            let up_cost = up_info.3;
+                                                            let net_profit = current_profit - up_cost;
+                                                            
+                                                            info!(
+                                                                "{} | {}分{:02}秒 | [模拟] DOWN 边第{}单 | 价格:{:.4} | 金额:${:.2} | 本单数量:{:.2} | 总数量:{:.2} | 累计:${:.2} | 平均:{:.4} | 总剩余:${:.2} | 利润:${:.2} | 纯利润:${:.2}",
+                                                                market_display, countdown_minutes, countdown_seconds, next_order_num, price, actual_amount, qty, new_total_qty,
+                                                                new_total_value, 
+                                                                avg_price,
+                                                                total_remaining - actual_amount,
+                                                                current_profit,
+                                                                net_profit
+                                                            );
+                                                            
+                                                            // 如果需要对冲，给价格偏低的合约下单（主力数量的 20%）
+                                                            if is_hedge_needed {
+                                                                let hedge_qty = qty * dec!(0.40);
+                                                                let hedge_amount = hedge_qty * other_price;
+                                                                let other_side_name = if side_name == "Yes" { "No" } else { "Yes" };
+                                                                
+                                                                // 对冲单合并到对应的计数器中
+                                                                let is_hedge_up = other_side_name == "Yes";
+                                                                let mut hedge_ladder_info = if is_hedge_up {
+                                                                    ladder_order_counters_up.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)))
+                                                                } else {
+                                                                    ladder_order_counters_down.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)))
+                                                                };
+                                                                let (hedge_count, hedge_total_value, hedge_total_qty, hedge_total_cost) = *hedge_ladder_info;
+                                                                let new_hedge_qty = hedge_total_qty + hedge_qty;
+                                                                let new_hedge_value = hedge_total_value + hedge_amount;
+                                                                let hedge_avg_price = if new_hedge_qty > dec!(0) { new_hedge_value / new_hedge_qty } else { dec!(0) };
+                                                                
+                                                                // 计算对冲单的利润和纯利润
+                                                                let hedge_profit = (dec!(1) - hedge_avg_price) * new_hedge_qty;
+                                                                // 纯利润 = 对冲单利润 - 对冲单成本 - 主力单对应部分的成本
+                                                                // 主力单总成本 = total_value (主力累计投入)
+                                                                // 对冲单是主力单的 20%，所以需要减去主力单成本的对应比例
+                                                                let main_force_cost_ratio = if total_value > dec!(0) { new_hedge_value / total_value } else { dec!(0) };
+                                                                let main_force_cost_to_deduct = total_value * main_force_cost_ratio.min(dec!(1.0));
+                                                                let hedge_net_profit = hedge_profit - new_hedge_value - main_force_cost_to_deduct;
+                                                                
+                                                                info!(
+                                                                    "{} | {}分{:02}秒 | [模拟对冲] {}边第{}单 | 价格:{:.4} | 金额:${:.2} | 本单数量:{:.2} | 总数量:{:.2} | 累计:${:.2} | 平均:{:.4} | 利润:${:.2} | 纯利润:${:.2} (主力 20%)",
+                                                                    market_display, countdown_minutes, countdown_seconds, other_side_name, hedge_count + 1, other_price, hedge_amount, hedge_qty, new_hedge_qty,
+                                                                    new_hedge_value,
+                                                                    hedge_avg_price,
+                                                                    hedge_profit,
+                                                                    hedge_net_profit
+                                                                );
+                                                                
+                                                                // 更新对冲计数器
+                                                                *hedge_ladder_info = (hedge_count + 1, new_hedge_value, new_hedge_qty, new_hedge_value);
+                                                                
+                                                                // 从总预算中扣除对冲单金额
+                                                                *total_used += hedge_amount;
+                                                            }
+                                                            
+                                                            // 更新状态
+                                                            *ladder_info = (
+                                                                order_count + 1,
+                                                                new_total_value,
+                                                                new_total_qty,
+                                                                new_total_value,
+                                                            );
+                                                            *total_used += actual_amount;
+                                                            *last_order_ts_ref = current_ts;
+                                                            
+                                                            // 更新 order_status
+                                                            let mut order_status_guard = order_status_down.lock().await;
+                                                            order_status_guard.insert(
+                                                                market_display.clone(),
+                                                                (true, side_name.to_string(), format!("{:.2}", qty)),
+                                                            );
+                                                        } else {
+                                                            // 真实交易模式
+                                                            match executor.buy_market_usd(token_id, price, actual_amount).await {
+                                                                Ok(resp) => {
+                                                                    let order_qty = actual_amount / price;
+                                                                    info!(
+                                                                        "{} | DOWN 边第{}单成功 | 订单 ID:{} | 价格:{:.4} | 金额:${} | 数量:{:.2} | 总剩余:${}",
+                                                                        market_display, next_order_num, &resp.order_id[..8], price, actual_amount, order_qty,
+                                                                        total_remaining - actual_amount
+                                                                    );
+                                                                    
+                                                                    // 如果需要对冲，给价格偏低的合约下单（主力数量的 20%）
+                                                                    if is_hedge_needed {
+                                                                        let hedge_qty = order_qty * dec!(0.3);
+                                                                        let hedge_token_id = if side_name == "Yes" { pair.no_book.asset_id } else { pair.yes_book.asset_id };
+                                                                        let other_side_name = if side_name == "Yes" { "No" } else { "Yes" };
+                                                                        let hedge_amount = hedge_qty * other_price;
+                                                                        
+                                                                        match executor.buy_market_usd(hedge_token_id, other_price, hedge_amount).await {
+                                                                            Ok(hedge_resp) => {
+                                                                                // 对冲单合并到对应的计数器中
+                                                                                let is_hedge_up = other_side_name == "Yes";
+                                                                                let mut hedge_ladder_info = if is_hedge_up {
+                                                                                    ladder_order_counters_up.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)))
+                                                                                } else {
+                                                                                    ladder_order_counters_down.entry(market_id).or_insert((0, dec!(0), dec!(0), dec!(0)))
+                                                                                };
+                                                                                let (hedge_count, hedge_total_value, hedge_total_qty, hedge_total_cost) = *hedge_ladder_info;
+                                                                                let new_hedge_qty = hedge_total_qty + hedge_qty;
+                                                                                let new_hedge_value = hedge_total_value + hedge_amount;
+                                                                                let hedge_avg_price = if new_hedge_qty > dec!(0) { new_hedge_value / new_hedge_qty } else { dec!(0) };
+                                                                                
+                                                                                // 计算对冲单的利润和纯利润
+                                                                                let hedge_profit = (dec!(1) - hedge_avg_price) * new_hedge_qty;
+                                                                                let hedge_net_profit = hedge_profit - new_hedge_value;
+                                                                                
+                                                                                info!(
+                                                                                    "{} | 对冲单成功 | {}边第{}单 | 订单 ID:{} | 价格:{:.4} | 金额:${:.2} | 本单数量:{:.2} | 总数量:{:.2} | 累计:${:.2} | 平均:{:.4} | 利润:${:.2} | 纯利润:${:.2} (主力 20%)",
+                                                                                    market_display, other_side_name, hedge_count + 1, &hedge_resp.order_id[..8], other_price, hedge_amount, hedge_qty, new_hedge_qty,
+                                                                                    new_hedge_value,
+                                                                                    hedge_avg_price,
+                                                                                    hedge_profit,
+                                                                                    hedge_net_profit
+                                                                                );
+                                                                                
+                                                                                // 更新对冲计数器
+                                                                                *hedge_ladder_info = (hedge_count + 1, new_hedge_value, new_hedge_qty, new_hedge_value);
+                                                                                
+                                                                                // 从总预算中扣除对冲单金额
+                                                                                *total_used += hedge_amount;
+                                                                            }
+                                                                            Err(e) => {
+                                                                                error!(
+                                                                                    "{} | 对冲单失败 | {}边 | 价格:{:.4} | 错误:{}",
+                                                                                    market_display, other_side_name, other_price, e
+                                                                                );
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    
+                                                                    // 更新状态
+                                                                    *ladder_info = (
+                                                                        order_count + 1,
+                                                                        total_value + (price * order_qty),
+                                                                        total_qty + order_qty,
+                                                                        total_value + (price * order_qty),
+                                                                    );
+                                                                    *total_used += actual_amount;
+                                                                    *last_order_ts_ref = current_ts;
+                                                                    
+                                                                    // 更新 order_status
+                                                                    let mut order_status_guard = order_status_down.lock().await;
+                                                                    order_status_guard.insert(
+                                                                        market_display.clone(),
+                                                                        (true, side_name.to_string(), format!("{:.2}", order_qty)),
+                                                                    );
+                                                                }
+                                                                Err(e) => {
+                                                                    error!(
+                                                                        "{} | DOWN 边第{}单失败 | 价格:{:.4} | 金额:${} | 错误:{}",
+                                                                        market_display, next_order_num, price, actual_amount, e
+                                                                    );
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 } // end last_check_ts block
-
                                 }
 
                                 let (prefix, spread_info) = total_ask_price
@@ -1034,186 +1264,7 @@ async fn main() -> Result<()> {
                                     String::new()
                                 };
 
-                                //如果有订单,订单中的方向和市场结果比对,如果一直就赢了,如果不一致就输了
-                                let (result_info, pnl_info) = match (yes_best_ask, no_best_ask) {
-                                    (Some(_), None) => {
-                                        // No赢，判断下单盈亏
-                                        let order_status_lock = order_status.lock().await;
-                                   
-                                        if let Some((is_ordered, order_side_name, _, _, ordered_size, _)) = order_status_lock.get(&market_display) {
-                                            // info!("xxxxxxxxxxxx111111");
-                                            if *is_ordered {
-                                                // info!("xxxxxxxxxxxx222222");
-                                                let my_result = if order_side_name.contains("No") { "盈" } else { "亏" };
-                                                // info!("No赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
-                                                if my_result == "盈" {
-                                                    // info!("xxxxxxxxxxxx333333");
-
-                                                //先进行市场id,在marketrecord查询,如果为true,就不更新记录,否则更新记录,并且将marketrecord中的值设为true
-                                                if let Some(record) = marketrecord.get(&market_id) {
-                                                    if *record {
-                                                        continue;
-                                                    }
-                                                }else {
-                                                        let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                             info!("{} | 订单状态: {:?}", market_display, order_status_lock);
-                                                          info!("No赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
-                                                    wincount.insert(market_display.clone(), current_wincount + 1);
-                                                    lostcount.insert(market_display.clone(), 0);
-                                                    marketrecord.insert(market_id.clone(), true);
-                                                    // 添加结算记录到交易历史
-                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                    use chrono::Utc;
-                                                    add_trade(TradeRecord {
-                                                        id: format!("SETTLE-{}", Utc::now().timestamp_millis()),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: "No赢-赢".to_string(),
-                                                        order_price: 0.0,
-                                                        price: 0.0,
-                                                        size: 0.0,
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "Won".to_string(),
-                                                        profit: Some(1.0),
-                                                        buy_countdown: None,
-                                                        sell_countdown: None,
-                                                    });
-                                                }
-
-                                                }else{
-
-                                            if let Some(record) = marketrecord.get(&market_id) {
-                                                    if *record {
-                                                        continue;
-                                                    }
-                                                }else {
-                                                   let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                  info!("No赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
-                                                  lostcount.insert(market_display.clone(), current_lostcount + 1);
-                                                  wincount.insert(market_display.clone(), 0);
-                                                  loststate.insert(market_display.clone(), current_lostcount + 1);
-                                                    marketrecord.insert(market_id.clone(), true);
-                                                    // 添加结算记录到交易历史
-                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                    use chrono::Utc;
-                                                    add_trade(TradeRecord {
-                                                        id: format!("SETTLE-{}", Utc::now().timestamp_millis()),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: "No赢-亏".to_string(),
-                                                        order_price: 0.0,
-                                                        price: 0.0,
-                                                        size: 0.0,
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "Lost".to_string(),
-                                                        profit: Some(-1.0),
-                                                        buy_countdown: None,
-                                                        sell_countdown: None,
-                                                    });
-                                                }
-
-
-                                                }
-                                                let pnl = format!("(我{})", my_result);
-                                                ("【No赢】".to_string(), pnl)
-                                            } else {
-                                                ("【No赢】".to_string(), String::new())
-                                            }
-                                        } else {
-                                            ("【No赢】".to_string(), String::new())
-                                        }
-                                    }
-                                    (None, Some(_)) => {
-                                        // Yes赢，判断下单盈亏
-                                        let order_status_lock = order_status.lock().await;
-                                    
-                                        if let Some((is_ordered, order_side_name, _, _, ordered_size, _)) = order_status_lock.get(&market_display) {
-                                            // info!("xxxxxxxxxxxx444444");
-                                            if *is_ordered  {
-                                                // info!("xxxxxxxxxxxx555555");
-                                                let my_result = if order_side_name.contains("Yes") { "盈" } else { "亏" };
-                                                // info!("Yes赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
-                                                if my_result == "盈" {
-                                                    // info!("xxxxxxxxxxxx666666");
-                                                if let Some(record) = marketrecord.get(&market_id) {
-                                                    if *record {
-                                                        continue;
-                                                    }
-                                                }else {
-                                                   let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                       info!("{} | 订单状态: {:?}", market_display, order_status_lock);
-                                                  info!("Yes赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
-                                                  wincount.insert(market_display.clone(), current_wincount + 1);
-                                                  lostcount.insert(market_display.clone(), 0);
-
-                                                    marketrecord.insert(market_id.clone(), true);
-                                                    // 添加结算记录到交易历史
-                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                    use chrono::Utc;
-                                                    add_trade(TradeRecord {
-                                                        id: format!("SETTLE-{}", Utc::now().timestamp_millis()),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: "Yes赢-赢".to_string(),
-                                                        order_price: 0.0,
-                                                        price: 0.0,
-                                                        size: 0.0,
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "Won".to_string(),
-                                                        profit: Some(1.0),
-                                                        buy_countdown: None,
-                                                        sell_countdown: None,
-                                                    });
-                                                }
-
-
-                                                }else{
-
-
-
-                                        if let Some(record) = marketrecord.get(&market_id) {
-                                                    if *record {
-                                                        continue;
-                                                    }
-                                                }else {
-                                                    let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                  info!("Yes赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
-                                                  lostcount.insert(market_display.clone(), current_lostcount + 1);
-                                                  wincount.insert(market_display.clone(), 0);
-                                                  loststate.insert(market_display.clone(), current_lostcount + 1);
-                                                    marketrecord.insert(market_id.clone(), true);
-                                                    // 添加结算记录到交易历史
-                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                    use chrono::Utc;
-                                                    add_trade(TradeRecord {
-                                                        id: format!("SETTLE-{}", Utc::now().timestamp_millis()),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: "Yes赢-亏".to_string(),
-                                                        order_price: 0.0,
-                                                        price: 0.0,
-                                                        size: 0.0,
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "Lost".to_string(),
-                                                        profit: Some(-1.0),
-                                                        buy_countdown: None,
-                                                        sell_countdown: None,
-                                                    });
-                                                }
-
-                                                }
-                                                let pnl = format!("(我{})", my_result);
-                                                ("【Yes赢】".to_string(), pnl)
-                                            } else {
-                                                ("【Yes赢】".to_string(), String::new())
-                                            }
-                                        } else {
-                                            ("【Yes赢】".to_string(), String::new())
-                                        }
-                                    }
-                                    (Some(_), Some(_)) => (String::new(), String::new()), // 两边都有价，市场未结算
-                                    (None, None) => (String::new(), String::new()),
-                                };
+                             
                                 
                                 let yes_info = match yes_best_ask {
                                     Some((ap, asz)) => format!("Yes:A{:.4}({:.2}){}", ap, asz, yes_arrow),
@@ -1224,13 +1275,7 @@ async fn main() -> Result<()> {
                                     None => "No:A:无".to_string(),
                                 };
                                 
-
-                                let order_status_lock = order_status.lock().await;
-                                //获取订单的第二个参数
-                                let order_second_param = order_status_lock
-                                    .get(&market_display)
-                                    .map(|(_, side, _, _, _, _)| side.clone())
-                                    .unwrap_or_else(|| "未下单".to_string());
+ 
                                 
                                 // info!("{} {} | {}分{:02}秒 | {} | {} | {}{}{}|{}",
                                 //     prefix,
