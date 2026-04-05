@@ -988,7 +988,10 @@ async fn main() -> Result<()> {
                                                                                 
                                                                                 // 计算对冲单的利润和纯利润
                                                                                 let hedge_profit = (dec!(1) - hedge_avg_price) * new_hedge_qty;
-                                                                                let hedge_net_profit = hedge_profit - new_hedge_value;
+                                                                                // 纯利润 = 对冲单利润 - 对冲单成本 - 主力单对应部分的成本
+                                                                                let main_force_cost_ratio = if total_value > dec!(0) { new_hedge_value / total_value } else { dec!(0) };
+                                                                                let main_force_cost_to_deduct = total_value * main_force_cost_ratio.min(dec!(1.0));
+                                                                                let hedge_net_profit = hedge_profit - new_hedge_value - main_force_cost_to_deduct;
                                                                                 
                                                                                 info!(
                                                                                     "{} | 对冲单成功 | {}边第{}单 | 订单 ID:{} | 价格:{:.4} | 金额:${:.2} | 本单数量:{:.2} | 总数量:{:.2} | 累计:${:.2} | 平均:{:.4} | 利润:${:.2} | 纯利润:${:.2} (主力 20%)",
@@ -1173,7 +1176,10 @@ async fn main() -> Result<()> {
                                                                                 
                                                                                 // 计算对冲单的利润和纯利润
                                                                                 let hedge_profit = (dec!(1) - hedge_avg_price) * new_hedge_qty;
-                                                                                let hedge_net_profit = hedge_profit - new_hedge_value;
+                                                                                // 纯利润 = 对冲单利润 - 对冲单成本 - 主力单对应部分的成本
+                                                                                let main_force_cost_ratio = if total_value > dec!(0) { new_hedge_value / total_value } else { dec!(0) };
+                                                                                let main_force_cost_to_deduct = total_value * main_force_cost_ratio.min(dec!(1.0));
+                                                                                let hedge_net_profit = hedge_profit - new_hedge_value - main_force_cost_to_deduct;
                                                                                 
                                                                                 info!(
                                                                                     "{} | 对冲单成功 | {}边第{}单 | 订单 ID:{} | 价格:{:.4} | 金额:${:.2} | 本单数量:{:.2} | 总数量:{:.2} | 累计:${:.2} | 平均:{:.4} | 利润:${:.2} | 纯利润:${:.2} (主力 20%)",
