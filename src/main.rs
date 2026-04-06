@@ -1,5 +1,6 @@
 mod config;
 mod market;
+mod market_maker;
 mod monitor;
 mod risk;
 mod strategy;
@@ -431,6 +432,20 @@ async fn main() -> Result<()> {
         info!("定时 Merge 未启用（MERGE_INTERVAL_MINUTES=0），如需启用请在 .env 中设置 MERGE_INTERVAL_MINUTES 为正数，例如 5 或 15");
     }
 
+    // 启动做市商策略
+        info!("🎯 做市商策略已启用 - 5 分钟 BTC 二进制做市");
+        info!("📊 策略规则：");
+        info!("   规则 1: 开盘试探 - 双面挂单测试流动性");
+        info!("   规则 2: 趋势跟随 - 价格移动>5% 时顺势加仓");
+        info!("   规则 3: 反转对冲 - 连续 3 笔同向后反转对冲");
+        info!("   规则 4: 时间停止 - 收盘前 30 秒停止下单");
+        info!("   规则 5: 止损 - 亏损≥$100 时全部平仓");
+        info!("   规则 6: 止盈 - 盈利≥$60 时平半仓");
+        
+        let market_maker_executor = Arc::new(tokio::sync::Mutex::new(
+            market_maker::MarketMakerManager::new(executor.clone())
+        ));
+    
     // 主循环已启用，开始监控和交易
     #[allow(unreachable_code)]
     loop {
@@ -448,6 +463,9 @@ async fn main() -> Result<()> {
             warn!("未找到任何市场，跳过当前窗口");
             continue;
         }
+
+        // 启动做市商策略任务 (在 window_end 定义后)
+        let mm_executor = market_maker_executor.clone();
 
         // 新一轮开始：重置风险敞口，使本轮从 0 敞口重新累计
         _risk_manager.position_tracker().reset_exposure();
@@ -484,11 +502,25 @@ async fn main() -> Result<()> {
         let window_end =
             chrono::DateTime::from_timestamp(current_window_timestamp + FIVE_MIN_SECS, 0)
                 .unwrap_or_else(|| Utc::now());
+        
+        // 启动做市商策略任务
+        let mm_executor = market_maker_executor.clone();
+        let markets_for_mm = markets.iter()
+            .map(|m| (m.market_id, m.title.clone(), window_end.timestamp()))
+            .collect::<Vec<_>>();
+        
+        tokio::spawn(async move {
+            let mut manager = mm_executor.lock().await;
+            for (market_id, title, end_ts) in markets_for_mm {
+                let _ = manager.run_market(market_id, &title, end_ts).await;
+            }
+        });
+
         let mut wind_down_done = false;
         let mut post_end_claim_done = false;
         let mut force_close_cancel_done = false;
 
-        // 创建市场ID到市场信息的映射
+        // 创建市场 ID 到市场信息的映射
         let market_map: HashMap<B256, &MarketInfo> =
             markets.iter().map(|m| (m.market_id, m)).collect();
 

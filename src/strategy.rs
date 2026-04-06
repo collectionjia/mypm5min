@@ -3,6 +3,7 @@ use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
+use chrono;
 
 /// 策略状态机 —— 每个市场独立维护一份状态
 ///
@@ -379,4 +380,357 @@ pub fn side_key_name(side_key: u8) -> &'static str {
     } else {
         "NO"
     }
+}
+
+// ============================================================================
+// 5 分钟 BTC 二进制做市商策略
+// ============================================================================
+
+/// 做市商策略配置
+#[derive(Debug, Clone)]
+pub struct MarketMakerConfig {
+    /// 标准份额 (USDC)
+    pub size: Decimal,
+    /// 单市场最大交易次数
+    pub max_trades_per_market: usize,
+    /// 单市场最大投入 (USDC)
+    pub max_cost_per_market: Decimal,
+    /// 最低买入价格
+    pub min_price: Decimal,
+    /// 最高买入价格
+    pub max_price: Decimal,
+    /// 价格步长
+    pub price_step: Decimal,
+    /// 单市场止损 (USDC)
+    pub stop_loss: Decimal,
+    /// 单市场止盈 (USDC)
+    pub take_profit: Decimal,
+    /// 总持仓上限 (USDC)
+    pub max_position: Decimal,
+    /// 检查间隔 (毫秒)
+    pub check_interval_ms: u64,
+    /// 最大持仓时间 (秒)
+    pub max_hold_time_secs: i64,
+}
+
+impl Default for MarketMakerConfig {
+    fn default() -> Self {
+        Self {
+            size: dec!(40),
+            max_trades_per_market: 30,
+            max_cost_per_market: dec!(500),
+            min_price: dec!(0.30),
+            max_price: dec!(0.70),
+            price_step: dec!(0.01),
+            stop_loss: dec!(-100),
+            take_profit: dec!(60),
+            max_position: dec!(1000),
+            check_interval_ms: 500,
+            max_hold_time_secs: 300,
+        }
+    }
+}
+
+/// 交易记录
+#[derive(Debug, Clone)]
+pub struct TradeRecord {
+    /// 交易方向 (0=YES/Up, 1=NO/Down)
+    pub side: u8,
+    /// 交易数量
+    pub size: Decimal,
+    /// 成交价格
+    pub price: Decimal,
+    /// 成本
+    pub cost: Decimal,
+    /// 交易时间戳 (秒)
+    pub timestamp: i64,
+}
+
+/// 做市商策略状态
+#[derive(Debug, Clone, Default)]
+pub struct MarketMakerState {
+    /// 交易记录
+    pub trades: Vec<TradeRecord>,
+    /// 总盈亏
+    pub total_pnl: Decimal,
+    /// 今日投入
+    pub daily_cost: Decimal,
+    /// 是否运行中
+    pub running: bool,
+    /// 市场结束时间戳
+    pub market_end_time: Option<i64>,
+    /// 市场结果 (0=Up, 1=Down, -1=未结算)
+    pub market_result: i32,
+}
+
+impl MarketMakerState {
+    pub fn new() -> Self {
+        Self {
+            trades: Vec::new(),
+            total_pnl: dec!(0),
+            daily_cost: dec!(0),
+            running: false,
+            market_end_time: None,
+            market_result: -1,
+        }
+    }
+
+    /// 计算当前盈亏
+    pub fn calculate_pnl(&self, config: &MarketMakerConfig) -> Decimal {
+        let total_cost: Decimal = self.trades.iter().map(|t| t.cost).sum();
+        
+        // 统计各方向的持仓
+        let up_shares: Decimal = self.trades
+            .iter()
+            .filter(|t| t.side == 0)
+            .map(|t| t.size)
+            .sum();
+        let down_shares: Decimal = self.trades
+            .iter()
+            .filter(|t| t.side == 1)
+            .map(|t| t.size)
+            .sum();
+        
+        // 根据持仓方向和市场结果计算盈亏
+        if up_shares > down_shares {
+            // 看涨方向
+            let settlement = if self.market_result == 0 { dec!(1) } else { dec!(0) };
+            let value = up_shares * settlement;
+            value - total_cost
+        } else if down_shares > up_shares {
+            // 看跌方向
+            let settlement = if self.market_result == 1 { dec!(1) } else { dec!(0) };
+            let value = down_shares * settlement;
+            value - total_cost
+        } else {
+            // 持仓相等或为空
+            -total_cost
+        }
+    }
+
+    /// 检查是否触发止损
+    pub fn check_stop_loss(&self, config: &MarketMakerConfig) -> bool {
+        let current_pnl = self.calculate_pnl(config);
+        current_pnl <= config.stop_loss
+    }
+
+    /// 检查是否触发止盈
+    pub fn check_take_profit(&self, config: &MarketMakerConfig) -> bool {
+        let current_pnl = self.calculate_pnl(config);
+        current_pnl >= config.take_profit
+    }
+
+    /// 检查是否应该停止下单（时间条件）
+    pub fn check_time_stop(&self) -> bool {
+        if let Some(end_time) = self.market_end_time {
+            let now = chrono::Utc::now().timestamp();
+            let remaining = end_time - now;
+            remaining <= 30
+        } else {
+            false
+        }
+    }
+
+    /// 获取总交易次数
+    pub fn trade_count(&self) -> usize {
+        self.trades.len()
+    }
+
+    /// 获取总成本
+    pub fn total_cost(&self) -> Decimal {
+        self.trades.iter().map(|t| t.cost).sum()
+    }
+
+    /// 添加交易记录
+    pub fn add_trade(&mut self, trade: TradeRecord) {
+        self.trades.push(trade);
+    }
+
+    /// 清空所有持仓
+    pub fn clear_all(&mut self) {
+        self.trades.clear();
+    }
+
+    /// 平掉一半仓位
+    pub fn close_half_position(&mut self) {
+        let half_len = self.trades.len() / 2;
+        self.trades.truncate(half_len);
+    }
+}
+
+/// 做市商策略引擎
+pub struct MarketMakerEngine {
+    /// 配置
+    pub config: MarketMakerConfig,
+    /// 各市场状态
+    pub states: std::collections::HashMap<B256, MarketMakerState>,
+}
+
+impl MarketMakerEngine {
+    pub fn new(config: MarketMakerConfig) -> Self {
+        Self {
+            config,
+            states: std::collections::HashMap::new(),
+        }
+    }
+
+    /// 获取或创建市场状态
+    pub fn get_or_create_state(&mut self, market_id: &B256) -> &mut MarketMakerState {
+        use std::collections::hash_map::Entry;
+        match self.states.entry(*market_id) {
+            Entry::Vacant(e) => e.insert(MarketMakerState::new()),
+            Entry::Occupied(e) => e.into_mut(),
+        }
+    }
+
+    /// 规则 1: 开盘试探
+    /// 双面挂单测试流动性
+    pub fn rule_1_initial_probe(
+        &self,
+        state: &MarketMakerState,
+        up_price: Decimal,
+        down_price: Decimal,
+    ) -> Vec<MarketMakerOrder> {
+        let mut orders = Vec::new();
+
+        // 挂 UP 单
+        if up_price <= self.config.max_price {
+            orders.push(MarketMakerOrder {
+                side: 0, // Up/YES
+                size: self.config.size,
+                price: (up_price * dec!(1.02)).round_dp(2), // 稍微提价优先成交
+            });
+        }
+
+        // 挂 DOWN 单
+        if down_price <= self.config.max_price {
+            orders.push(MarketMakerOrder {
+                side: 1, // Down/NO
+                size: self.config.size,
+                price: (down_price * dec!(1.02)).round_dp(2),
+            });
+        }
+
+        if !orders.is_empty() {
+            info!(
+                "[规则 1] 开盘试探：UP@{}, DOWN@{}",
+                up_price, down_price
+            );
+        }
+
+        orders
+    }
+
+    /// 规则 2: 趋势跟随
+    /// 价格移动>5% 时顺势加仓
+    pub fn rule_2_trend_follow(
+        &self,
+        state: &MarketMakerState,
+        last_trade: &TradeRecord,
+        new_price: Decimal,
+    ) -> Option<MarketMakerOrder> {
+        if last_trade.price == dec!(0) {
+            return None;
+        }
+
+        let price_change = (new_price - last_trade.price) / last_trade.price;
+
+        // 价格上涨且持仓 UP → 加仓 UP
+        if price_change > dec!(0.05) && last_trade.side == 0 {
+            info!("[规则 2] 趋势 UP: +{:.1}%", price_change * dec!(100));
+            return Some(MarketMakerOrder {
+                side: 0,
+                size: self.config.size,
+                price: (new_price * dec!(1.01)).round_dp(2),
+            });
+        }
+
+        // 价格下跌且持仓 DOWN → 加仓 DOWN
+        if price_change < dec!(-0.05) && last_trade.side == 1 {
+            info!("[规则 2] 趋势 DOWN: {:.1}%", price_change * dec!(100));
+            return Some(MarketMakerOrder {
+                side: 1,
+                size: self.config.size,
+                price: (new_price * dec!(0.99)).round_dp(2),
+            });
+        }
+
+        None
+    }
+
+    /// 规则 3: 反转对冲
+    /// 检测到反转信号时反向小仓位对冲
+    pub fn rule_3_reversal_hedge(
+        &self,
+        state: &MarketMakerState,
+    ) -> Option<MarketMakerOrder> {
+        if state.trades.len() < 3 {
+            return None;
+        }
+
+        // 获取最近 3 笔
+        let recent = &state.trades[state.trades.len() - 3..];
+        let outcomes: Vec<u8> = recent.iter().map(|t| t.side).collect();
+
+        // 连续同方向 3 笔后反转
+        if outcomes[0] != outcomes[1] && outcomes[1] == outcomes[2] {
+            let new_dir = if outcomes[2] == 0 { 1 } else { 0 };
+            let dir_name = if new_dir == 0 { "Up" } else { "Down" };
+            
+            info!("[规则 3] 反转对冲：{}", dir_name);
+            return Some(MarketMakerOrder {
+                side: new_dir,
+                size: self.config.size / dec!(2), // 半仓对冲
+                price: dec!(0.50), // 需要传入实际价格
+            });
+        }
+
+        None
+    }
+
+    /// 规则 4: 时间停止
+    /// 距离收盘 5 分钟前 30 秒停止下单
+    pub fn rule_4_time_stop(&self, state: &MarketMakerState) -> bool {
+        if state.check_time_stop() {
+            info!("[规则 4] 时间到，停止下单");
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 规则 5: 止损检查
+    /// 亏损>100 美元时强平
+    pub fn rule_5_stop_loss(&self, state: &MarketMakerState) -> bool {
+        if state.check_stop_loss(&self.config) {
+            let pnl = state.calculate_pnl(&self.config);
+            info!("[规则 5] 触发止损：${}", pnl);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 规则 6: 止盈检查
+    /// 盈利>60 美元时部分止盈
+    pub fn rule_6_take_profit(&self, state: &MarketMakerState) -> bool {
+        if state.check_take_profit(&self.config) {
+            let pnl = state.calculate_pnl(&self.config);
+            info!("[规则 6] 触发止盈：+${}", pnl);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// 做市商订单
+#[derive(Debug, Clone)]
+pub struct MarketMakerOrder {
+    /// 交易方向 (0=Up/YES, 1=Down/NO)
+    pub side: u8,
+    /// 订单大小
+    pub size: Decimal,
+    /// 订单价格
+    pub price: Decimal,
 }
