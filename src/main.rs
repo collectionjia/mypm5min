@@ -806,6 +806,8 @@ async fn main() -> Result<()> {
                                             let order_size = (order_price_usd / low_price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
                                             error!("{} | 倒计时120秒内，价格大于0.97以上，反向买单 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, low_price, order_price_usd);
                                             let countdown_for_trade = countdown_str.clone();
+                                            // 标记该市场已结算，这样结算时不会更新输赢次数
+                                            marketrecord.insert(market_id.clone(), true);
                                             tokio::spawn({
                                                 let executor = executor.clone();
                                                 let market_display = market_display.clone();
@@ -868,6 +870,25 @@ async fn main() -> Result<()> {
                                                             }
                                                             Err(e) => {
                                                                 error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, low_side_name);
+                                                                // 记录失败订单到交易历史
+                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                use chrono::Utc;
+                                                                let fail_order_id = format!("FAIL-{}", Utc::now().timestamp_millis());
+                                                                let size = (order_price_usd / low_price).to_f64().unwrap_or(0.0);
+                                                                add_trade(TradeRecord {
+                                                                    id: fail_order_id,
+                                                                    market_id: market_id_str.clone(),
+                                                                    market_slug: market_display.clone(),
+                                                                    side: low_side_name.clone(),
+                                                                    price: low_price.to_string().parse().unwrap_or(0.0),
+                                                                    order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
+                                                                    size: size,
+                                                                    timestamp: Utc::now().timestamp(),
+                                                                    status: "Failed".to_string(),
+                                                                    profit: None,
+                                                                    buy_countdown: Some(countdown_for_trade.clone()),
+                                                                    sell_countdown: None,
+                                                                });
                                                             }
                                                         }
                                                           }
@@ -1050,17 +1071,19 @@ async fn main() -> Result<()> {
                                                     // info!("xxxxxxxxxxxx333333");
 
                                                 //先进行市场id,在marketrecord查询,如果为true,就不更新记录,否则更新记录,并且将marketrecord中的值设为true
-                                                if let Some(record) = marketrecord.get(&market_id) {
+                                           
+                                                        let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
+                                                             info!("{} | 订单状态: {:?}", market_display, order_status_lock);
+                                                          info!("No赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
+                                                 if let Some(record) = marketrecord.get(&market_id) {
                                                     if *record {
                                                         continue;
                                                     }
                                                 }else {
-                                                        let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                             info!("{} | 订单状态: {:?}", market_display, order_status_lock);
-                                                          info!("No赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
                                                     wincount.insert(market_display.clone(), current_wincount + 1);
                                                     lostcount.insert(market_display.clone(), 0);
                                                     marketrecord.insert(market_id.clone(), true);
+                                                }
                                                     // 添加结算记录到交易历史
                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                     use chrono::Utc;
@@ -1078,21 +1101,23 @@ async fn main() -> Result<()> {
                                                         buy_countdown: None,
                                                         sell_countdown: None,
                                                     });
-                                                }
+                                                
 
                                                 }else{
 
-                                            if let Some(record) = marketrecord.get(&market_id) {
+                                         
+                                                   let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
+                                                  info!("No赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
+                                                     if let Some(record) = marketrecord.get(&market_id) {
                                                     if *record {
                                                         continue;
                                                     }
                                                 }else {
-                                                   let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                  info!("No赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
                                                   lostcount.insert(market_display.clone(), current_lostcount + 1);
                                                   wincount.insert(market_display.clone(), 0);
                                                   loststate.insert(market_display.clone(), current_lostcount + 1);
                                                     marketrecord.insert(market_id.clone(), true);
+                                                }
                                                     // 添加结算记录到交易历史
                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                     use chrono::Utc;
@@ -1110,7 +1135,7 @@ async fn main() -> Result<()> {
                                                         buy_countdown: None,
                                                         sell_countdown: None,
                                                     });
-                                                }
+                                             
 
 
                                                 }
@@ -1135,18 +1160,20 @@ async fn main() -> Result<()> {
                                                 // info!("Yes赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
                                                 if my_result == "盈" {
                                                     // info!("xxxxxxxxxxxx666666");
-                                                if let Some(record) = marketrecord.get(&market_id) {
+                                          
+                                                   let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
+                                                       info!("{} | 订单状态: {:?}", market_display, order_status_lock);
+                                                  info!("Yes赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
+                                                        if let Some(record) = marketrecord.get(&market_id) {
                                                     if *record {
                                                         continue;
                                                     }
                                                 }else {
-                                                   let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                       info!("{} | 订单状态: {:?}", market_display, order_status_lock);
-                                                  info!("Yes赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
                                                   wincount.insert(market_display.clone(), current_wincount + 1);
                                                   lostcount.insert(market_display.clone(), 0);
 
                                                     marketrecord.insert(market_id.clone(), true);
+                                                }
                                                     // 添加结算记录到交易历史
                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                     use chrono::Utc;
@@ -1164,24 +1191,26 @@ async fn main() -> Result<()> {
                                                         buy_countdown: None,
                                                         sell_countdown: None,
                                                     });
-                                                }
+                                                
 
 
                                                 }else{
 
 
 
-                                        if let Some(record) = marketrecord.get(&market_id) {
+                                       
+                                                    let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
+                                                  info!("Yes赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
+                                                   if let Some(record) = marketrecord.get(&market_id) {
                                                     if *record {
                                                         continue;
                                                     }
                                                 }else {
-                                                    let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                  info!("Yes赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
                                                   lostcount.insert(market_display.clone(), current_lostcount + 1);
                                                   wincount.insert(market_display.clone(), 0);
                                                   loststate.insert(market_display.clone(), current_lostcount + 1);
                                                     marketrecord.insert(market_id.clone(), true);
+                                                }
                                                     // 添加结算记录到交易历史
                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                     use chrono::Utc;
@@ -1199,7 +1228,7 @@ async fn main() -> Result<()> {
                                                         buy_countdown: None,
                                                         sell_countdown: None,
                                                     });
-                                                }
+                                               
 
                                                 }
                                                 let pnl = format!("(我{})", my_result);
@@ -1332,54 +1361,54 @@ async fn main() -> Result<()> {
                                 //     }
                                 // }
 
-                                // 2. 根据用户当前持仓进行 Redeem（需等待决议，支持重试）
-                                use poly_5min_bot::positions::get_positions;
+                                // 2. 根据用户当前持仓进行 Redeem（需等待决议，支持重试）- 已禁用，改为手动触发
+                                // use poly_5min_bot::positions::get_positions;
                                 
-                                let positions = match get_positions().await {
-                                    Ok(pos) => pos,
-                                    Err(e) => {
-                                        warn!("获取持仓失败：{}", e);
-                                        Vec::new()
-                                    }
-                                };
+                                // let positions = match get_positions().await {
+                                //     Ok(pos) => pos,
+                                //     Err(e) => {
+                                //         warn!("获取持仓失败：{}", e);
+                                //         Vec::new()
+                                //     }
+                                // };
                                 
-                                let mut condition_ids: HashSet<B256> = positions.iter()
-                                    .map(|p| p.condition_id)
-                                    .collect();
+                                // let mut condition_ids: HashSet<B256> = positions.iter()
+                                //     .map(|p| p.condition_id)
+                                //     .collect();
                                     
-                                if condition_ids.is_empty() {
-                                    info!("🏁 当前无持仓，无需 Redeem");
-                                } else {
-                                    info!("📋 当前持仓市场数：{}，开始 Redeem", condition_ids.len());
-                                    let mut completed = Vec::new();
+                                // if condition_ids.is_empty() {
+                                //     info!("🏁 当前无持仓，无需 Redeem");
+                                // } else {
+                                //     info!("📋 当前持仓市场数：{}，开始 Redeem", condition_ids.len());
+                                //     let mut completed = Vec::new();
                                     
-                                    for condition_id in &condition_ids {
-                                        match merge::redeem_max(*condition_id, proxy, &priv_key, None).await {
-                                            Ok(tx) => {
-                                                info!(condition_id = %condition_id, tx = %tx, "✅ Redeem 成功");
-                                                completed.push(*condition_id);
-                                            },
-                                            Err(e) => {
-                                                info!(condition_id = %condition_id, e = %e, "Redeem 失败");
-                                                let err_msg = e.to_string();
-                                                if err_msg.contains("无持仓") {
-                                                    debug!("Redeem 跳过：无持仓 | condition_id={}", condition_id);
-                                                    completed.push(*condition_id);
-                                                } else {
-                                                    warn!("⚠️ Redeem 暂未成功 (可能未决议) | condition_id={} | error={}", condition_id, err_msg);
-                                                }
-                                            }
-                                        }
-                                    }
+                                //     for condition_id in &condition_ids {
+                                //         match merge::redeem_max(*condition_id, proxy, &priv_key, None).await {
+                                //             Ok(tx) => {
+                                //                 info!(condition_id = %condition_id, tx = %tx, "✅ Redeem 成功");
+                                //                 completed.push(*condition_id);
+                                //             },
+                                //             Err(e) => {
+                                //                 info!(condition_id = %condition_id, e = %e, "Redeem 失败");
+                                //                 let err_msg = e.to_string();
+                                //                 if err_msg.contains("无持仓") {
+                                //                     debug!("Redeem 跳过：无持仓 | condition_id={}", condition_id);
+                                //                     completed.push(*condition_id);
+                                //                 } else {
+                                //                     warn!("⚠️ Redeem 暂未成功 (可能未决议) | condition_id={} | error={}", condition_id, err_msg);
+                                //                 }
+                                //             }
+                                //         }
+                                //     }
                                     
-                                    for c in completed {
-                                        condition_ids.remove(&c);
-                                    }
+                                //     for c in completed {
+                                //         condition_ids.remove(&c);
+                                //     }
                                     
-                                    if !condition_ids.is_empty() {
-                                        warn!("仍有 {} 个市场未完成 Redeem", condition_ids.len());
-                                    }
-                                }
+                                //     if !condition_ids.is_empty() {
+                                //         warn!("仍有 {} 个市场未完成 Redeem", condition_ids.len());
+                                //     }
+                                // }
                             });
                         }
 

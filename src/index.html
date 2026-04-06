@@ -252,6 +252,7 @@
                 <div id="statusText" class="status stopped">检查中...</div>
                 <button id="toggleBtn" onclick="toggleBot()" disabled>加载中...</button>
                 <button id="closeAllBtn" onclick="closeAllPositions()" class="btn-close-all">一键平仓</button>
+                <button id="manualRedeemBtn" onclick="manualRedeem()" class="btn-redeem">手动领取奖励</button>
                 <button id="redeemBtn" onclick="redeemRewards()" class="btn-redeem" style="display: none;">领取奖励</button>
 
                 <div id="lastUpdated" style="margin-top: 1rem; color: #666; font-size: 0.8rem;"></div>
@@ -838,6 +839,37 @@
             } catch (error) {
                 console.error('Error redeeming rewards:', error);
                 alert('请求失败，请检查控制台日志');
+            } finally {
+                btnEl.disabled = false;
+                btnEl.innerText = originalText;
+                updatePortfolio();
+            }
+        }
+
+        async function manualRedeem() {
+            if (!confirm('确定要手动领取奖励吗？\n这将合并所有可合并的持仓（YES+NO）为 USDC。')) {
+                return;
+            }
+            
+            const btnEl = document.getElementById('manualRedeemBtn');
+            const originalText = btnEl.innerText;
+            btnEl.disabled = true;
+            btnEl.innerText = '领取中...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/redeem`, {
+                    method: 'POST',
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`✅ 领取成功！\n${data.message}`);
+                } else {
+                    alert(`领取失败：${data.message}`);
+                }
+            } catch (error) {
+                console.error('Error redeeming rewards:', error);
+                alert('❌ 请求失败，请检查控制台日志');
             } finally {
                 btnEl.disabled = false;
                 btnEl.innerText = originalText;

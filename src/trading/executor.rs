@@ -206,7 +206,7 @@ impl TradingExecutor {
         }
         let order_amount = price * size;
         info!(
-            "🧾 下单参数详情 | action=buy_market_usd | token_id={} | side=BUY | order_type=FAK | reference_ask={} | usd_amount={} | price={} | min_size_for_price={} | computed_size={} | order_amount={}",
+            "🧾 下单参数详情 | action=buy_market_usd | token_id={} | side=BUY | order_type=FOK | reference_ask={} | usd_amount={} | price={} | min_size_for_price={} | computed_size={} | order_amount={}",
             token_id, reference_ask, usd_amount, price, min_size_for_order_price, size, order_amount
         );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
@@ -217,7 +217,7 @@ impl TradingExecutor {
             .side(Side::Buy)
             .price(reference_ask)
             .size(size)
-            .order_type(OrderType::FAK)
+            .order_type(OrderType::FOK)
             .build()
             .await?;
         let signed = self.client.sign(&signer, order).await?;
