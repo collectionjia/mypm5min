@@ -786,7 +786,7 @@ async fn main() -> Result<()> {
                                         let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg > 0;
                                         
                                         let price_greater_than_07 = price > dec!(0.7);
-                                        let price_greater_than_97 = price > dec!(0.97);
+                                        let price_greater_than_97 = price > dec!(0.98);
 
                                         
                                         let counter_val = yes_greater_than_no_counters.get(&market_id).map(|r| *r).unwrap_or(0);
@@ -894,6 +894,9 @@ async fn main() -> Result<()> {
                                                           }
                                                         
                                                     } else {
+                                                            if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
+                                                                error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 不下单了, 已建仓", market_display);        
+                                                            }else{
                                                         error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
                                                         if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
                                                         let mut order_status_map = order_status.lock().await;
@@ -926,6 +929,8 @@ async fn main() -> Result<()> {
                                                             buy_countdown: Some(countdown_for_trade.clone()),
                                                             sell_countdown: None,
                                                         });
+                                                            }
+                                                       
                                                     }
                                                 }
                                             });
@@ -1191,14 +1196,7 @@ async fn main() -> Result<()> {
                                                         buy_countdown: None,
                                                         sell_countdown: None,
                                                     });
-                                                
-
-
                                                 }else{
-
-
-
-                                       
                                                     let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
                                                   info!("Yes赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
                                                    if let Some(record) = marketrecord.get(&market_id) {
