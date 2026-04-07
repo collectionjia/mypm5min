@@ -1360,53 +1360,54 @@ async fn main() -> Result<()> {
                                 // }
 
                                 // 2. 根据用户当前持仓进行 Redeem（需等待决议，支持重试）- 已禁用，改为手动触发
-                                // use poly_5min_bot::positions::get_positions;
+                                use poly_5min_bot::positions::get_positions;
                                 
-                                // let positions = match get_positions().await {
-                                //     Ok(pos) => pos,
-                                //     Err(e) => {
-                                //         warn!("获取持仓失败：{}", e);
-                                //         Vec::new()
-                                //     }
-                                // };
+                                let positions = match get_positions().await {
+                                    Ok(pos) => pos,
+                                    Err(e) => {
+                                        warn!("获取持仓失败：{}", e);
+                                        Vec::new()
+                                    }
+                                };
                                 
-                                // let mut condition_ids: HashSet<B256> = positions.iter()
-                                //     .map(|p| p.condition_id)
-                                //     .collect();
+                                let mut condition_ids: HashSet<B256> = positions.iter()
+                                    .map(|p| p.condition_id)
+                                    .collect();
                                     
-                                // if condition_ids.is_empty() {
-                                //     info!("🏁 当前无持仓，无需 Redeem");
-                                // } else {
-                                //     info!("📋 当前持仓市场数：{}，开始 Redeem", condition_ids.len());
-                                //     let mut completed = Vec::new();
+                                if condition_ids.is_empty() {
+                                    info!("🏁 当前无持仓，无需 Redeem");
+                                } else if condition_ids.len() > 10 {
+                                    info!("📋 当前持仓市场数：{}，开始 Redeem", condition_ids.len());
+                                    let mut completed = Vec::new();
+                                    for condition_id in &condition_ids {
+                                        match merge::redeem_max(*condition_id, proxy, &priv_key, None).await {
+                                            Ok(tx) => {
+                                                info!(condition_id = %condition_id, tx = %tx, "✅ Redeem 成功");
+                                                completed.push(*condition_id);
+                                            },
+                                            Err(e) => {
+                                                info!(condition_id = %condition_id, e = %e, "Redeem 失败");
+                                                let err_msg = e.to_string();
+                                                if err_msg.contains("无持仓") {
+                                                    debug!("Redeem 跳过：无持仓 | condition_id={}", condition_id);
+                                                    completed.push(*condition_id);
+                                                } else {
+                                                    warn!("⚠️ Redeem 暂未成功 (可能未决议) | condition_id={} | error={}", condition_id, err_msg);
+                                                }
+                                            }
+                                        }
+                                    }
                                     
-                                //     for condition_id in &condition_ids {
-                                //         match merge::redeem_max(*condition_id, proxy, &priv_key, None).await {
-                                //             Ok(tx) => {
-                                //                 info!(condition_id = %condition_id, tx = %tx, "✅ Redeem 成功");
-                                //                 completed.push(*condition_id);
-                                //             },
-                                //             Err(e) => {
-                                //                 info!(condition_id = %condition_id, e = %e, "Redeem 失败");
-                                //                 let err_msg = e.to_string();
-                                //                 if err_msg.contains("无持仓") {
-                                //                     debug!("Redeem 跳过：无持仓 | condition_id={}", condition_id);
-                                //                     completed.push(*condition_id);
-                                //                 } else {
-                                //                     warn!("⚠️ Redeem 暂未成功 (可能未决议) | condition_id={} | error={}", condition_id, err_msg);
-                                //                 }
-                                //             }
-                                //         }
-                                //     }
+                                    for c in completed {
+                                        condition_ids.remove(&c);
+                                    }
                                     
-                                //     for c in completed {
-                                //         condition_ids.remove(&c);
-                                //     }
-                                    
-                                //     if !condition_ids.is_empty() {
-                                //         warn!("仍有 {} 个市场未完成 Redeem", condition_ids.len());
-                                //     }
-                                // }
+                                    if !condition_ids.is_empty() {
+                                        warn!("仍有 {} 个市场未完成 Redeem", condition_ids.len());
+                                    }
+                                } else {
+                                    info!("📋 当前持仓市场数：{} ≤ 10，跳过 Redeem", condition_ids.len());
+                                }
                             });
                         }
 
