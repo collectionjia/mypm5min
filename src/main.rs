@@ -799,7 +799,7 @@ async fn main() -> Result<()> {
 
 
                                     if  countdown_within_180 && price_greater_than_07 {
-                                        error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
+                                        // error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
 
                                         if price_greater_count {
                                             alloworder.insert(market_id.clone(), true);
@@ -810,10 +810,8 @@ async fn main() -> Result<()> {
                                                         let current_time = Utc::now().timestamp_millis();
                                                         let mut last_log_time = last_allow_order_log_time.entry(market_id.clone()).or_insert(0);
                                                         if current_time - *last_log_time >= 500 {
-                                                            info!("{} | 允许下单", market_display);
+                                                            // info!("{} | 允许下单", market_display);
                                                             *last_log_time = current_time;
-
-                                                                                                                            
                                                                 if price_greater_than_97 && price_greater_count {//大于0.97的那侧
                                                                         let order_price_usd = Decimal::ONE;
                                                                         let order_size = (order_price_usd / low_price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
