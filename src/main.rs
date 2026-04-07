@@ -535,40 +535,40 @@ async fn main() -> Result<()> {
                 if wc == 0 {
                     // 连续输的情况
                     match ls {
-                        1 => dec!(5),
-                        2 => dec!(10),
-                        _ => dec!(32)
+                        1 => dec!(10),
+                        2 => dec!(30),
+                        _ => dec!(30)
                     }
                 } else {
                     // loststate 不为 0，win_count 不为 0
                     match ls {
                         1 => {
                             match wc {
-                                1 => dec!(4),
-                                2 => dec!(3),
-                                3..=7 => dec!(2),
+                                1 => dec!(5),
+                                2 => dec!(2),
+                                3..=7 => dec!(1),
                                 _ => dec!(1)
                             }
                         },
                         2 => {
                             match wc {
-                                1 => dec!(9),
-                                2 => dec!(8),
-                                3 => dec!(7),
-                                4 => dec!(5),
-                                5 => dec!(3),
-                                6..=9 => dec!(2),
+                                1 => dec!(20),
+                                2 => dec!(10),
+                                3 => dec!(5),
+                                4 => dec!(1),
+                                5 => dec!(1),
+                                6..=9 => dec!(1),
                                 _ => dec!(1)
                             }
                         },
                         _ => {
                             match wc {
                                 1 => dec!(30),
-                                2 => dec!(20),
-                                3 => dec!(20),
-                                4 => dec!(10),
-                                5 => dec!(10),
-                                _ => dec!(2)
+                                2 => dec!(10),
+                                3 => dec!(5),
+                                4 => dec!(1),
+                                5 => dec!(1),
+                                _ => dec!(1)
                             }
                         }
                     }
@@ -799,7 +799,7 @@ async fn main() -> Result<()> {
                                         //如果有订单,而且订单中购买的token这边价格卖价在0.97,对订单进行清仓
 
 
-                                    if  countdown_within_180 && price_greater_than_07 && price_greater_count{
+                                    if  price_greater_than_07 && price_greater_count{
                                         error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
                                         if price_greater_than_97 {//大于0.97的那侧
                                             let order_price_usd = Decimal::ONE;
