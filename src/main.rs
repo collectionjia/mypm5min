@@ -1042,6 +1042,26 @@ async fn main() -> Result<()> {
                                                                                 } else {
                                                                                     if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
                                                                                             info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了", market_display);    
+                                                                                            if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
+                                                                                        order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.to_string(),price.to_string().into()));
+                                                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                                        use chrono::Utc;
+                                                                                        let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
+                                                                                        let size = (order_price_usd / price).to_f64().unwrap_or(0.0);
+                                                                                        add_trade(TradeRecord {
+                                                                                            id: sim_order_id,
+                                                                                            market_id: market_id_str,
+                                                                                            market_slug: market_display.clone(),
+                                                                                            side: side_name.clone(),
+                                                                                            order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
+                                                                                            price: price.to_string().parse().unwrap_or(0.0),
+                                                                                            size: size,
+                                                                                            timestamp: Utc::now().timestamp(),
+                                                                                            status: "SimBought".to_string(),
+                                                                                            profit: None,
+                                                                                            buy_countdown: Some(countdown_for_trade.clone()),
+                                                                                            sell_countdown: None,
+                                                                                        });
                                                                                     }else{
                                                                                         info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, side_name, order_size);
                                                                                         if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
