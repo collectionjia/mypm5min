@@ -742,6 +742,7 @@ async fn main() -> Result<()> {
                                     {
                                         let mut counter = yes_greater_than_no_counters.entry(market_id).or_insert(0);
                                         let mut larger_side = current_larger_side.entry(market_id).or_insert(None);
+                                        let default = (false, "".to_string(),"" .to_string(),"" .to_string(),"" .to_string(),"" .to_string());
 
                                         if *larger_side != current_larger {
                                             // 较大的一边发生变化，重置计数器
@@ -751,6 +752,87 @@ async fn main() -> Result<()> {
                                                 "{} | jiajiajia较大边变化 | 新较大边: {:?} | Yes:A{:.4} No:A{:.4}",
                                                 market_display, current_larger, yes_price, no_price
                                             );
+                                            
+                                            // 检查是否已经建仓，如果是则卖出
+                                            let order_status_lock = order_status.lock().await;
+                                            let (is_ordered, order_side_name, order_token_id, unorder_token_id, ordered_size, order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
+                                            
+                                            if is_ordered {
+                                                error!("{} | 价格出现反转，已建仓，执行卖出操作", market_display);
+                                                let sell_token_id = U256::from_str(&order_token_id).unwrap_or(U256::ZERO);
+                                                let sell_size = ordered_size.parse::<Decimal>().unwrap_or(dec!(0));
+                                                let sell_price = Decimal::from_str(&order_price).unwrap_or(dec!(0));
+                                                let countdown_for_trade = countdown_str.clone();
+                                                let market_id_str = market_id.to_string();
+                                                
+                                                // 异步执行卖出操作
+                                                tokio::spawn({
+                                                    let executor = executor.clone();
+                                                    let market_display = market_display.clone();
+                                                    let order_status = order_status.clone();
+                                                    let countdown_for_trade = countdown_for_trade;
+                                                    let market_id_str = market_id_str;
+                                                    let order_side_name = order_side_name;
+                                                    let is_running_clone = is_running.clone();
+                                                    async move {
+                                                        let is_live = is_running_clone.load(Ordering::Relaxed);
+                                                        if is_live {
+                                                            match executor.sell_at_price(sell_token_id, sell_price, sell_size).await {
+                                                                Ok(response) => {
+                                                                    let mut order_status_map = order_status.lock().await;
+                                                                    order_status_map.insert(market_display.clone(), (false, "".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string()));
+                                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                    use chrono::Utc;
+                                                                    let order_id = if response.order_id.is_empty() {
+                                                                        format!("LIVE-{}", Utc::now().timestamp_millis())
+                                                                    } else {
+                                                                        response.order_id.clone()
+                                                                    };
+                                                                    add_trade(TradeRecord {
+                                                                        id: order_id,
+                                                                        market_id: market_id_str,
+                                                                        market_slug: market_display.clone(),
+                                                                        side: "Sell".to_string(),
+                                                                        price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                        order_price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                        size: sell_size.to_f64().unwrap_or(0.0),
+                                                                        timestamp: Utc::now().timestamp(),
+                                                                        status: "Sold".to_string(),
+                                                                        profit: None,
+                                                                        buy_countdown: None,
+                                                                        sell_countdown: Some(countdown_for_trade.clone()),
+                                                                    });
+                                                                    error!("{} | 价格反转，卖出操作成功 | 订单ID: {:?} | 卖出: {} | 数量: {:.2}", market_display, response.order_id, order_side_name, sell_size);
+                                                                }
+                                                                Err(e) => {
+                                                                    error!("{} | 价格反转，卖出操作失败: {:?}", market_display, e);
+                                                                }
+                                                            }
+                                                        } else {
+                                                            error!("{} | 价格反转，执行模拟卖出操作 | 卖出: {} | 数量: {:.2} | 价格: {:.4}", market_display, order_side_name, sell_size, sell_price);
+                                                            let mut order_status_map = order_status.lock().await;
+                                                            order_status_map.insert(market_display.clone(), (false, "".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string()));
+                                                            use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                            use chrono::Utc;
+                                                            let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
+                                                            add_trade(TradeRecord {
+                                                                id: sim_order_id,
+                                                                market_id: market_id_str,
+                                                                market_slug: market_display.clone(),
+                                                                side: "Sell".to_string(),
+                                                                price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                order_price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                size: sell_size.to_f64().unwrap_or(0.0),
+                                                                timestamp: Utc::now().timestamp(),
+                                                                status: "SimSold".to_string(),
+                                                                profit: None,
+                                                                buy_countdown: None,
+                                                                sell_countdown: Some(countdown_for_trade.clone()),
+                                                            });
+                                                        }
+                                                    }
+                                                });
+                                            }
                                         } else if current_larger.is_some() {
                                             // 较大的一边未变化，计数加1
                                             if *counter == 60 {
@@ -827,7 +909,42 @@ async fn main() -> Result<()> {
                                                     let is_live = is_running_clone.load(Ordering::Relaxed);
                                                     if is_live {
                                                           if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                            info!("{} | 已建仓,价格大于0.97不买入了 ", market_display);
+                                                            error!("{} | 价格大于0.97，已建仓，执行卖出操作", market_display);
+                                                            let sell_token_id = U256::from_str(&order_token_id).unwrap_or(U256::ZERO);
+                                                            let sell_size = ordered_size.parse::<Decimal>().unwrap_or(dec!(0));
+                                                            let sell_price = Decimal::from_str(&order_price).unwrap_or(dec!(0));
+                                                            
+                                                            match executor.sell_at_price(sell_token_id, sell_price, sell_size).await {
+                                                                Ok(response) => {
+                                                                    let mut order_status_map = order_status.lock().await;
+                                                                    order_status_map.insert(market_display.clone(), (false, "".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string()));
+                                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                    use chrono::Utc;
+                                                                    let order_id = if response.order_id.is_empty() {
+                                                                        format!("LIVE-{}", Utc::now().timestamp_millis())
+                                                                    } else {
+                                                                        response.order_id.clone()
+                                                                    };
+                                                                    add_trade(TradeRecord {
+                                                                        id: order_id,
+                                                                        market_id: market_id_str,
+                                                                        market_slug: market_display.clone(),
+                                                                        side: "Sell".to_string(),
+                                                                        price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                        order_price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                        size: sell_size.to_f64().unwrap_or(0.0),
+                                                                        timestamp: Utc::now().timestamp(),
+                                                                        status: "Sold".to_string(),
+                                                                        profit: None,
+                                                                        buy_countdown: None,
+                                                                        sell_countdown: Some(countdown_for_trade.clone()),
+                                                                    });
+                                                                    error!("{} | 价格大于0.97，卖出操作成功 | 订单ID: {:?} | 卖出: {} | 数量: {:.2}", market_display, response.order_id, order_side_name, sell_size);
+                                                                }
+                                                                Err(e) => {
+                                                                    error!("{} | 价格大于0.97，卖出操作失败: {:?}", market_display, e);
+                                                                }
+                                                            }
                                                           }else{//如果没有建仓,则直接下单买
                                                             match executor.buy_market_usd(low_token_id, low_price, order_price_usd).await {
                                                             Ok(response) => {
@@ -895,7 +1012,31 @@ async fn main() -> Result<()> {
                                                         
                                                     } else {
                                                             if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                                error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 不下单了, 已建仓", market_display);        
+                                                                error!("{} | 价格大于0.97，已建仓，执行模拟卖出操作", market_display);
+                                                                let sell_token_id = U256::from_str(&order_token_id).unwrap_or(U256::ZERO);
+                                                                let sell_size = ordered_size.parse::<Decimal>().unwrap_or(dec!(0));
+                                                                let sell_price = Decimal::from_str(&order_price).unwrap_or(dec!(0));
+                                                                
+                                                                let mut order_status_map = order_status.lock().await;
+                                                                order_status_map.insert(market_display.clone(), (false, "".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string()));
+                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                use chrono::Utc;
+                                                                let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
+                                                                add_trade(TradeRecord {
+                                                                    id: sim_order_id,
+                                                                    market_id: market_id_str,
+                                                                    market_slug: market_display.clone(),
+                                                                    side: "Sell".to_string(),
+                                                                    price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                    order_price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                    size: sell_size.to_f64().unwrap_or(0.0),
+                                                                    timestamp: Utc::now().timestamp(),
+                                                                    status: "SimSold".to_string(),
+                                                                    profit: None,
+                                                                    buy_countdown: None,
+                                                                    sell_countdown: Some(countdown_for_trade.clone()),
+                                                                });
+                                                                error!("{} | 模拟卖出操作 | 卖出: {} | 数量: {:.2} | 价格: {:.4}", market_display, order_side_name, sell_size, sell_price);
                                                             }else{
                                                         error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
                                                         if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
