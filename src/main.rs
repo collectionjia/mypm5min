@@ -837,8 +837,6 @@ async fn main() -> Result<()> {
 
                                         //如果有订单,而且订单中购买的token这边价格卖价在0.97,对订单进行清仓
                                     if  price_greater_than_07 {
-                                        error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
-
                                         if price_greater_than_97 {//大于0.97的那侧
                                             info!("止盈策略执行,卖掉当前的订单,当前价格为{}", price);
                                             
@@ -887,8 +885,8 @@ async fn main() -> Result<()> {
                                                             }
                                                         }
                                         }else{//大于0.7小于0.97的那侧
-
-                                        if price_greater_count && price_greater_than_97 {
+                                            if price_greater_count && price_greater_than_97 {
+                                            error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
                                             let order_price_usd = calculate_order_price(&market_display, &lostcount, &wincount, &loststate);
                                             let order_size = (order_price_usd / price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
                                             let countdown_for_trade = countdown_str.clone();
