@@ -885,7 +885,7 @@ async fn main() -> Result<()> {
                                                             }
                                                         }
                                         }else{//大于0.7小于0.97的那侧
-                                            if price_greater_count && price_greater_than_97 {
+                                            if price_greater_count {
                                             error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
                                             let order_price_usd = calculate_order_price(&market_display, &lostcount, &wincount, &loststate);
                                             let order_size = (order_price_usd / price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
