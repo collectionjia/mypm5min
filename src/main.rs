@@ -910,8 +910,7 @@ async fn main() -> Result<()> {
                                         }else{//大于0.7小于0.97的那侧
                                             if price_greater_count {
                                             error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
-                                            let order_price_usd = calculate_order_price(&market_display, &lostcount, &wincount, &loststate);
-                                            let order_size = (order_price_usd / price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
+                                                            let order_price_usd = calculate_order_price(&market_display, &lostcount, &wincount, &loststate);
                                             let countdown_for_trade = countdown_str.clone();
                                             tokio::spawn({
                                                 let executor = executor.clone();
@@ -923,11 +922,9 @@ async fn main() -> Result<()> {
                                                 let is_running_clone = is_running.clone();
                                                 let mid = market_id;
                                                 let counters = yes_greater_than_no_counters.clone();
-                                                let order_size_str = order_size.clone();
                                                 let order_price = order_price_usd;
                                                 let countdown_for_trade = countdown_for_trade.clone();
                                                 let market_id_str = market_id.to_string();
-                                                let order_size_dec = order_size.to_string().parse::<Decimal>().unwrap_or(dec!(0));
                                                 let position_tracker = position_tracker.clone();
                                                 async move {
                                                     let is_live = is_running_clone.load(Ordering::Relaxed);
@@ -937,9 +934,17 @@ async fn main() -> Result<()> {
                                                         }else{
                                                             match executor.buy_market_usd(token_id, price, order_price_usd).await {
                                                                 Ok(response) => {
-                                                                    order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.to_string(),price.to_string().into()));
+                                                                    // 计算实际购买数量（与 buy_market_usd 方法中的逻辑一致）
+                                                                    let mut buy_size = (order_price_usd / price).round_dp(0);
+                                                                    if buy_size < dec!(1) {
+                                                                        buy_size = dec!(1);
+                                                                    }
+                                                                    let min_size_for_order_price = (dec!(1) / dec!(0.99)).ceil();
+                                                                    if buy_size < min_size_for_order_price {
+                                                                        buy_size = min_size_for_order_price;
+                                                                    }
+                                                                    order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),buy_size.to_string(),price.to_string().into()));
                                                                     // 更新持仓记录
-                                                                    let buy_size = order_size_dec;
                                                                     position_tracker.update_position(token_id, buy_size);
                                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                                     use chrono::Utc;
@@ -948,7 +953,7 @@ async fn main() -> Result<()> {
                                                                     } else {
                                                                         response.order_id.clone()
                                                                     };
-                                                                    let size = (order_price_usd / price).to_f64().unwrap_or(0.0);
+                                                                    let size = buy_size.to_f64().unwrap_or(0.0);
                                                                     add_trade(TradeRecord {
                                                                         id: order_id,
                                                                         market_id: market_id_str,
@@ -963,7 +968,7 @@ async fn main() -> Result<()> {
                                                                         buy_countdown: Some(countdown_for_trade.clone()),
                                                                         sell_countdown: None,
                                                                     });
-                                                                    info!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, side_name, order_size);
+                                                                    info!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元 | 数量: {:.0}", market_display, response.order_id, side_name, order_price_usd, buy_size);
                                                                 }
                                                                 Err(e) => {
                                                                     error!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, side_name);
@@ -974,13 +979,22 @@ async fn main() -> Result<()> {
                                                           if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
                                                                 info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了", market_display);    
                                                           }else{
-                                                            info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, side_name, order_size);
+                                                            // 计算实际购买数量（与 buy_market_usd 方法中的逻辑一致）
+                                                            let mut buy_size = (order_price_usd / price).round_dp(0);
+                                                            if buy_size < dec!(1) {
+                                                                buy_size = dec!(1);
+                                                            }
+                                                            let min_size_for_order_price = (dec!(1) / dec!(0.99)).ceil();
+                                                            if buy_size < min_size_for_order_price {
+                                                                buy_size = min_size_for_order_price;
+                                                            }
+                                                            info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 | 购买: {} | 金额: {:.2}美元 | 数量: {:.0}", market_display, side_name, order_price_usd, buy_size);
                                                             if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
-                                                            order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.to_string(),price.to_string().into()));
+                                                            order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),buy_size.to_string(),price.to_string().into()));
                                                             use crate::utils::trade_history::{add_trade, TradeRecord};
                                                             use chrono::Utc;
                                                             let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
-                                                            let size = (order_price_usd / price).to_f64().unwrap_or(0.0);
+                                                            let size = buy_size.to_f64().unwrap_or(0.0);
                                                             add_trade(TradeRecord {
                                                                 id: sim_order_id,
                                                                 market_id: market_id_str,

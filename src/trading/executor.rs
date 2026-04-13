@@ -108,7 +108,7 @@ impl TradingExecutor {
             .map_err(|e| anyhow::anyhow!("取消所有挂单失败: {}", e))
     }
 
-    /// 以指定价格下 FOK 卖单（收尾时市价意图卖出单腿持仓）
+    /// 以指定价格下 FAK 卖单（收尾时市价意图卖出单腿持仓）
     pub async fn sell_at_price(
         &self,
         token_id: U256,
@@ -117,7 +117,7 @@ impl TradingExecutor {
     ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
         let price = price.round_dp(2);
         info!(
-            "🧾 下单参数详情 | action=sell_at_price | token_id={} | side=SELL | order_type=FOK | price={} | size={}",
+            "🧾 下单参数详情 | action=sell_at_price | token_id={} | side=SELL | order_type=FAK | price={} | size={}",
             token_id, price, size
         );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
@@ -128,7 +128,7 @@ impl TradingExecutor {
             .side(Side::Sell)
             .price(price)
             .size(size)
-            .order_type(OrderType::FOK)
+            .order_type(OrderType::FAK)
             .build()
             .await?;
         let signed = self.client.sign(&signer, order).await?;
@@ -144,7 +144,7 @@ impl TradingExecutor {
             })
     }
 
-    /// 以指定价格下 GTC 买单（用于策略性单边下单）
+    /// 以指定价格下 FAK 买单（用于策略性单边下单）
     pub async fn buy_at_price(
         &self,
         token_id: U256,
@@ -153,7 +153,7 @@ impl TradingExecutor {
     ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
         let price = price.round_dp(2);
         info!(
-            "🧾 下单参数详情 | action=buy_at_price | token_id={} | side=BUY | order_type=GTC | price={} | size={}",
+            "🧾 下单参数详情 | action=buy_at_price | token_id={} | side=BUY | order_type=FAK | price={} | size={}",
             token_id, price, size
         );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
@@ -164,7 +164,7 @@ impl TradingExecutor {
             .side(Side::Buy)
             .price(price)
             .size(size)
-            .order_type(OrderType::GTC)
+            .order_type(OrderType::FAK)
             .build()
             .await?;
         let signed = self.client.sign(&signer, order).await?;
@@ -206,7 +206,7 @@ impl TradingExecutor {
         }
         let order_amount = price * size;
         info!(
-            "🧾 下单参数详情 | action=buy_market_usd | token_id={} | side=BUY | order_type=FOK | reference_ask={} | usd_amount={} | price={} | min_size_for_price={} | computed_size={} | order_amount={}",
+            "🧾 下单参数详情 | action=buy_market_usd | token_id={} | side=BUY | order_type=FAK | reference_ask={} | usd_amount={} | price={} | min_size_for_price={} | computed_size={} | order_amount={}",
             token_id, reference_ask, usd_amount, price, min_size_for_order_price, size, order_amount
         );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
@@ -217,7 +217,7 @@ impl TradingExecutor {
             .side(Side::Buy)
             .price(reference_ask)
             .size(size)
-            .order_type(OrderType::FOK)
+            .order_type(OrderType::FAK)
             .build()
             .await?;
         let signed = self.client.sign(&signer, order).await?;
