@@ -862,6 +862,7 @@ async fn main() -> Result<()> {
                                                                 let market_id_str = market_id_str;
                                                                 let order_side_name = order_side_name_clone;
                                                                 let is_running_clone = is_running.clone();
+                                                                let position_tracker = position_tracker.clone();
                                                                 async move {
                                                                     let is_live = is_running_clone.load(Ordering::Relaxed);
                                                                     if is_live {
@@ -871,6 +872,8 @@ async fn main() -> Result<()> {
                                                                                 Ok(response) => {
                                                                                     let mut order_status_map = order_status.lock().await;
                                                                                     order_status_map.insert(market_display.clone(), (false, "".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string()));
+                                                                                    // 更新持仓记录（卖出后减少持仓）
+                                                                                    position_tracker.update_position(sell_token_id, -size_floor);
                                                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                                                     use chrono::Utc;
                                                                                     let order_id = if response.order_id.is_empty() {
@@ -925,6 +928,7 @@ async fn main() -> Result<()> {
                                                 let countdown_for_trade = countdown_for_trade.clone();
                                                 let market_id_str = market_id.to_string();
                                                 let order_size_dec = order_size.to_string().parse::<Decimal>().unwrap_or(dec!(0));
+                                                let position_tracker = position_tracker.clone();
                                                 async move {
                                                     let is_live = is_running_clone.load(Ordering::Relaxed);
                                                     if is_live {
@@ -934,6 +938,9 @@ async fn main() -> Result<()> {
                                                             match executor.buy_market_usd(token_id, price, order_price_usd).await {
                                                                 Ok(response) => {
                                                                     order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.to_string(),price.to_string().into()));
+                                                                    // 更新持仓记录
+                                                                    let buy_size = order_size_dec;
+                                                                    position_tracker.update_position(token_id, buy_size);
                                                                     use crate::utils::trade_history::{add_trade, TradeRecord};
                                                                     use chrono::Utc;
                                                                     let order_id = if response.order_id.is_empty() {
