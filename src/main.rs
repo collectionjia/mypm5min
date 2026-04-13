@@ -525,53 +525,12 @@ async fn main() -> Result<()> {
             // loststate 为 0 时
             if ls == 0 {
                 if wc > 0 {
-                    dec!(2)
+                    dec!(1)
                 } else {
-                    dec!(2)
+                    dec!(1)
                 }
             } else {
-                // loststate 不为 0，检查 win_count
-                if wc == 0 {
-                    // 连续输的情况
-                    match ls {
-                        1 => dec!(10),
-                        2 => dec!(30),
-                        _ => dec!(30)
-                    }
-                } else {
-                    // loststate 不为 0，win_count 不为 0
-                    match ls {
-                        1 => {
-                            match wc {
-                                1 => dec!(5),
-                                2 => dec!(2),
-                                3..=7 => dec!(1),
-                                _ => dec!(1)
-                            }
-                        },
-                        2 => {
-                            match wc {
-                                1 => dec!(20),
-                                2 => dec!(10),
-                                3 => dec!(5),
-                                4 => dec!(1),
-                                5 => dec!(1),
-                                6..=9 => dec!(1),
-                                _ => dec!(1)
-                            }
-                        },
-                        _ => {
-                            match wc {
-                                1 => dec!(30),
-                                2 => dec!(10),
-                                3 => dec!(5),
-                                4 => dec!(1),
-                                5 => dec!(1),
-                                _ => dec!(1)
-                            }
-                        }
-                    }
-                }
+               dec!(1)
             }
         }
 
