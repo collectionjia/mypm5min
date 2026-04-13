@@ -450,7 +450,8 @@ async fn main() -> Result<()> {
 
         // 新一轮开始：重置风险敞口，使本轮从 0 敞口重新累计
         _risk_manager.position_tracker().reset_exposure();
- 
+
+        let position_tracker = _risk_manager.position_tracker().clone();
 
         // 初始化订单簿监控器
         let mut monitor = OrderBookMonitor::new();
@@ -848,8 +849,8 @@ async fn main() -> Result<()> {
                                                             if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
                                                             error!("{} | 价格大于0.97，已建仓，执行卖出操作", market_display);
                                                             let sell_token_id = U256::from_str(&order_token_id).unwrap_or(U256::ZERO);
-                                                            let sell_size = ordered_size.parse::<Decimal>().unwrap_or(dec!(0));
-                                                            let sell_price = Decimal::from_str(&order_price).unwrap_or(dec!(0));
+                                                            let sell_size = position_tracker.get_position(sell_token_id);
+                                                            let sell_price = price;
                                                             let countdown_for_trade = countdown_str.clone();
                                                             let market_id_str = market_id.to_string();
                                                             let order_side_name_clone = order_side_name.clone();
