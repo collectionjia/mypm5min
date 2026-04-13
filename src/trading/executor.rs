@@ -108,7 +108,7 @@ impl TradingExecutor {
             .map_err(|e| anyhow::anyhow!("取消所有挂单失败: {}", e))
     }
 
-    /// 以指定价格下 GTC 卖单（收尾时市价意图卖出单腿持仓）
+    /// 以指定价格下 FOK 卖单（收尾时市价意图卖出单腿持仓）
     pub async fn sell_at_price(
         &self,
         token_id: U256,
@@ -117,7 +117,7 @@ impl TradingExecutor {
     ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
         let price = price.round_dp(2);
         info!(
-            "🧾 下单参数详情 | action=sell_at_price | token_id={} | side=SELL | order_type=GTC | price={} | size={}",
+            "🧾 下单参数详情 | action=sell_at_price | token_id={} | side=SELL | order_type=FOK | price={} | size={}",
             token_id, price, size
         );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
@@ -128,7 +128,7 @@ impl TradingExecutor {
             .side(Side::Sell)
             .price(price)
             .size(size)
-            .order_type(OrderType::GTC)
+            .order_type(OrderType::FOK)
             .build()
             .await?;
         let signed = self.client.sign(&signer, order).await?;
