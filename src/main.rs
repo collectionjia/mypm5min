@@ -850,7 +850,7 @@ async fn main() -> Result<()> {
                                                             error!("{} | 价格大于0.97，已建仓，执行卖出操作", market_display);
                                                             let sell_token_id = U256::from_str(&order_token_id).unwrap_or(U256::ZERO);
                                                             let sell_size = position_tracker.get_position(sell_token_id);
-                                                            let sell_price = price;
+                                                            let sell_price = dec!(0.01); // 使用与一键平仓相同的价格，确保快速成交
                                                             let countdown_for_trade = countdown_str.clone();
                                                             let market_id_str = market_id.to_string();
                                                             let order_side_name_clone = order_side_name.clone();
@@ -865,35 +865,38 @@ async fn main() -> Result<()> {
                                                                 async move {
                                                                     let is_live = is_running_clone.load(Ordering::Relaxed);
                                                                     if is_live {
-                                                                        match executor.sell_at_price(sell_token_id, sell_price, sell_size).await {
-                                                                            Ok(response) => {
-                                                                                let mut order_status_map = order_status.lock().await;
-                                                                                order_status_map.insert(market_display.clone(), (false, "".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string()));
-                                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                                                use chrono::Utc;
-                                                                                let order_id = if response.order_id.is_empty() {
-                                                                                    format!("CLOSE-{}", Utc::now().timestamp_millis())
-                                                                                } else {
-                                                                                    response.order_id.clone()
-                                                                                };
-                                                                                add_trade(TradeRecord {
-                                                                                    id: order_id,
-                                                                                    market_id: market_id_str,
-                                                                                    market_slug: market_display.clone(),
-                                                                                    side: "Sell".to_string(),
-                                                                                    price: sell_price.to_string().parse().unwrap_or(0.0),
-                                                                                    order_price: sell_price.to_string().parse().unwrap_or(0.0),
-                                                                                    size: sell_size.to_f64().unwrap_or(0.0),
-                                                                                    timestamp: Utc::now().timestamp(),
-                                                                                    status: "Closed".to_string(),
-                                                                                    profit: None,
-                                                                                    buy_countdown: None,
-                                                                                    sell_countdown: Some(countdown_for_trade.clone()),
-                                                                                });
-                                                                                error!("{} | 止盈平仓，卖出操作成功 | 订单ID: {:?} | 卖出: {} | 数量: {:.2}", market_display, response.order_id, order_side_name, sell_size);
-                                                                            }
-                                                                            Err(e) => {
-                                                                                error!("{} | 止盈平仓，卖出操作失败: {:?}", market_display, e);
+                                                                        if sell_size > dec!(0.01) {
+                                                                            let size_floor = (sell_size * dec!(100)).floor() / dec!(100);
+                                                                            match executor.sell_at_price(sell_token_id, sell_price, size_floor).await {
+                                                                                Ok(response) => {
+                                                                                    let mut order_status_map = order_status.lock().await;
+                                                                                    order_status_map.insert(market_display.clone(), (false, "".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string()));
+                                                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                                    use chrono::Utc;
+                                                                                    let order_id = if response.order_id.is_empty() {
+                                                                                        format!("CLOSE-{}", Utc::now().timestamp_millis())
+                                                                                    } else {
+                                                                                        response.order_id.clone()
+                                                                                    };
+                                                                                    add_trade(TradeRecord {
+                                                                                        id: order_id,
+                                                                                        market_id: market_id_str,
+                                                                                        market_slug: market_display.clone(),
+                                                                                        side: "Sell".to_string(),
+                                                                                        price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                                        order_price: sell_price.to_string().parse().unwrap_or(0.0),
+                                                                                        size: size_floor.to_f64().unwrap_or(0.0),
+                                                                                        timestamp: Utc::now().timestamp(),
+                                                                                        status: "Closed".to_string(),
+                                                                                        profit: None,
+                                                                                        buy_countdown: None,
+                                                                                        sell_countdown: Some(countdown_for_trade.clone()),
+                                                                                    });
+                                                                                    error!("{} | 止盈平仓，卖出操作成功 | 订单ID: {:?} | 卖出: {} | 数量: {:.2}", market_display, response.order_id, order_side_name, size_floor);
+                                                                                }
+                                                                                Err(e) => {
+                                                                                    error!("{} | 止盈平仓，卖出操作失败: {:?}", market_display, e);
+                                                                                }
                                                                             }
                                                                         }
                                                                     }
