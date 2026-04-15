@@ -1,3 +1,25 @@
+# Ignore everything by default, then allow Rust source files only
+*
+!*/
+!.gitignore
+!*.rs
+!**/*.rs
+
+# Allow specific files that should remain tracked
+!.env.example
+!Cargo.lock
+!Cargo.toml
+!README.md
+!README.zh-CN.md
+!gitstart.sh
+!license.key
+!src/index.html
+!src/main.rs.bak
+!start.sh
+
+# Existing explicit ignores are redundant under the above rule,
+# but kept for clarity when non-rs files are still present.
+
 # Build artifacts
 /target/
 
@@ -8,11 +30,8 @@
 
 # Secrets and local config
 .env
-license.key
 
 # Logs
 *.log
 bot.log
 
-# Ignore Python source files
-*.py
