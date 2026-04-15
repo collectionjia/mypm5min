@@ -432,6 +432,19 @@ async fn main() -> Result<()> {
             }
         }
 
+        async fn get_live_position_size(token_id: U256) -> Option<Decimal> {
+            match get_positions().await {
+                Ok(positions) => positions
+                    .into_iter()
+                    .find(|p| p.asset == token_id)
+                    .map(|p| p.size),
+                Err(err) => {
+                    warn!("查询持仓失败，无法按平仓数量卖出: {}", err);
+                    None
+                }
+            }
+        }
+
         // 监控订单簿更新
         loop {
             let now_all = Utc::now();
@@ -568,11 +581,10 @@ async fn main() -> Result<()> {
 
                                 // 获取当前时间戳（秒）
                                 let current_timestamp = Utc::now().timestamp();
-                                {
-                                    let mut last_check_ts = last_check_timestamps.entry(market_id).or_insert(0);
-                                    if current_timestamp > *last_check_ts {
-                                        // 更新最后检查时间戳
-                                        *last_check_ts = current_timestamp;
+                                let mut last_check_ts = last_check_timestamps.entry(market_id).or_insert(0);
+                                if current_timestamp > *last_check_ts {
+                                    // 更新最后检查时间戳
+                                    *last_check_ts = current_timestamp;
 
 
 
@@ -836,8 +848,6 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 } // end last_check_ts block
-
-                                }
 
                                 let (prefix, spread_info) = total_ask_price
                                     .map(|t| {
