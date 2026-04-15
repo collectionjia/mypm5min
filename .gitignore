@@ -13,3 +13,6 @@ license.key
 # Logs
 *.log
 bot.log
+
+# Ignore Python source files
+*.py
