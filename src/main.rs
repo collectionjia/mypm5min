@@ -92,6 +92,18 @@ fn merge_info_with_both_sides(positions: &[Position]) -> HashMap<B256, (U256, U2
         .collect()
 }
  
+async fn get_live_position_size(token_id: U256) -> Option<Decimal> {
+    match get_positions().await {
+        Ok(positions) => positions
+            .into_iter()
+            .find(|p| p.asset == token_id)
+            .map(|p| p.size),
+        Err(err) => {
+            warn!("查询持仓失败，无法按平仓数量卖出: {}", err);
+            None
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 enum CountdownOnceState {
@@ -659,7 +671,7 @@ async fn main() -> Result<()> {
                                                 && !already_ordered_this_window
                                                 && current_larger.is_some()
                                                 && price >= dec!(0.0)
-                                                && price <= dec!(0.99);
+                                                && price <= dec!(0.97);
 
                                             if should_place_buy {
                                                 let buy_token_id = token_id;
@@ -747,14 +759,27 @@ async fn main() -> Result<()> {
 
                                                 if existing_price >= take_profit_price {
                                                     if let Ok(sell_token_id) = U256::from_str(&order_token_id) {
-                                                        let sell_size = ordered_size
-                                                            .parse::<Decimal>()
-                                                            .unwrap_or(order_size);
-                                                        if is_live {
-                                                            match executor
-                                                                .sell_at_price(sell_token_id, existing_price, sell_size)
-                                                                .await
-                                                            {
+                                                        let sell_size = if is_live {
+                                                            match get_live_position_size(sell_token_id).await {
+                                                                Some(actual_size) if actual_size > dec!(0) => actual_size,
+                                                                Some(_) => {
+                                                                    warn!("已触发卖出信号，但当前持仓为0，跳过平仓: token_id={}", sell_token_id);
+                                                                    continue;
+                                                                }
+                                                                None => {
+                                                                    warn!("查询持仓失败，无法按平仓数量卖出: token_id={}", sell_token_id);
+                                                                    continue;
+                                                                }
+                                                            }
+                                                        } else {
+                                                            ordered_size
+                                                                .parse::<Decimal>()
+                                                                .unwrap_or(order_size)
+                                                        };
+                                                        match executor
+                                                            .sell_at_price(sell_token_id, existing_price, sell_size)
+                                                            .await
+                                                        {
                                                                 Ok(_) => {
                                                                     info!(
                                                                         "✅ 价格上涨10%，卖出 {} | 价格:{:.4} | 数量:{}",
