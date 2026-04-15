@@ -390,6 +390,7 @@ async fn main() -> Result<()> {
         let current_larger_side: DashMap<B256, Option<bool>> = DashMap::new(); // None: no data, Some(true): yes larger, Some(false): no larger
         //订单存储(市场id,是否下单,下单yes/no,下单的tokenid,未下单的tokenid,下单的数量)
         let order_status: Arc<Mutex<HashMap<String, (bool, String, String, String, String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+        let market_ordered: Arc<DashMap<B256, bool>> = Arc::new(DashMap::new());
 
         #[derive(Clone)]
         struct SimOrderInfo {
@@ -403,22 +404,19 @@ async fn main() -> Result<()> {
         let sim_open_orders: Arc<DashMap<String, SimOrderInfo>> = Arc::new(DashMap::new());
         let drawdown_trigger_mask: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
 
-        // 计算投注金额的函数
-        fn calculate_order_price(market: &str, lostcount: &Arc<DashMap<String, u64>>, wincount: &Arc<DashMap<String, u64>>, loststate: &Arc<DashMap<String, u64>>) -> Decimal {
+        // 计算投注数量（固定投入 1 美元，按当前价格算份额）
+        fn calculate_order_price(market: &str, lostcount: &Arc<DashMap<String, u64>>, wincount: &Arc<DashMap<String, u64>>, loststate: &Arc<DashMap<String, u64>>, price: Decimal) -> Decimal {
             let lc = lostcount.get(market).map(|v| *v).unwrap_or(0);
             let wc = wincount.get(market).map(|v| *v).unwrap_or(0);
             let ls = loststate.get(market).map(|v| *v).unwrap_or(0);
             info!("market: {}, lostcount: {}, wincount: {}, loststate: {}", market, lc, wc, ls);
-            
-            // loststate 为 0 时
-            if ls == 0 {
-                if wc > 0 {
-                    dec!(1)
-                } else {
-                    dec!(1)
-                }
+
+            let usd_amount = dec!(1);
+            if price > dec!(0) {
+                let size = (usd_amount / price * dec!(100)).floor() / dec!(100);
+                size.max(dec!(0.01))
             } else {
-               dec!(1)
+                dec!(0.01)
             }
         }
 
@@ -643,6 +641,10 @@ async fn main() -> Result<()> {
                                                 .unwrap_or(&default)
                                                 .clone()
                                         };
+                                        let already_ordered_this_window = market_ordered
+                                            .get(&market_id)
+                                            .map(|v| *v)
+                                            .unwrap_or(false);
 
                                         if countdown_within_60 {
                                             let order_size = calculate_order_price(
@@ -650,9 +652,11 @@ async fn main() -> Result<()> {
                                                 &lostcount,
                                                 &wincount,
                                                 &loststate,
+                                                price,
                                             );
 
                                             let should_place_buy = !is_ordered
+                                                && !already_ordered_this_window
                                                 && current_larger.is_some()
                                                 && price >= dec!(0.0)
                                                 && price <= dec!(0.99);
@@ -661,16 +665,18 @@ async fn main() -> Result<()> {
                                                 let buy_token_id = token_id;
                                                 let buy_side_key = if current_larger == Some(true) { 0u8 } else { 1u8 };
                                                 let on_filled_state = if current_larger == Some(true) { 1u8 } else { 2u8 };
+                                                let buy_price = (price * dec!(1.02)).round_dp(4);
 
                                                 if is_live {
-                                                    match executor.buy_at_price(buy_token_id, price, order_size).await {
+                                                    match executor.buy_at_price(buy_token_id, buy_price, order_size).await {
                                                         Ok(_) => {
                                                             info!(
                                                                 "✅ 下单买入 {} | 价格:{:.4} | 数量:{}",
                                                                 side_name,
-                                                                price,
+                                                                buy_price,
                                                                 order_size
                                                             );
+                                                            market_ordered.insert(market_id, true);
                                                             let mut order_status_lock = order_status.lock().await;
                                                             order_status_lock.insert(
                                                                 market_display.clone(),
@@ -680,7 +686,7 @@ async fn main() -> Result<()> {
                                                                     buy_token_id.to_string(),
                                                                     low_token_id.to_string(),
                                                                     order_size.to_string(),
-                                                                    price.to_string(),
+                                                                    buy_price.to_string(),
                                                                 ),
                                                             );
                                                         }
@@ -700,7 +706,7 @@ async fn main() -> Result<()> {
                                                         SimOrderInfo {
                                                             market_id,
                                                             side_key: buy_side_key,
-                                                            limit_price: price,
+                                                            limit_price: buy_price,
                                                             size: order_size,
                                                             on_filled_state,
                                                             clear_first_leg_price: false,
@@ -710,10 +716,11 @@ async fn main() -> Result<()> {
                                                         "🧪 模拟买入 {} | side={} | 价格:{:.4} | 数量:{} | id={}",
                                                         market_display,
                                                         side_name,
-                                                        price,
+                                                        buy_price,
                                                         order_size,
                                                         id
                                                     );
+                                                    market_ordered.insert(market_id, true);
                                                     let mut order_status_lock = order_status.lock().await;
                                                     order_status_lock.insert(
                                                         market_display.clone(),
@@ -723,7 +730,7 @@ async fn main() -> Result<()> {
                                                             buy_token_id.to_string(),
                                                             low_token_id.to_string(),
                                                             order_size.to_string(),
-                                                            price.to_string(),
+                                                            buy_price.to_string(),
                                                         ),
                                                     );
                                                 }
