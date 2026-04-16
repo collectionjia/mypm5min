@@ -11,6 +11,7 @@ use std::str::FromStr;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use tokio::time;
 
 use crate::monitor::arbitrage::ArbitrageOpportunity;
 
@@ -55,37 +56,78 @@ impl TradingExecutor {
             })?
             .with_chain_id(Some(POLYGON));
 
-        let config = Config::builder().use_server_time(false).build();
-        let mut auth_builder = Client::new("https://clob.polymarket.com", config)
-            .map_err(|e| anyhow::anyhow!("创建CLOB客户端失败: {}", e))?
-            .authentication_builder(&signer);
+        let config = Config::builder()
+            .use_server_time(false)
+            .build();
+        
+        // 添加重试机制处理网络问题
+        let max_retries = 5; // 增加重试次数
+        let mut last_error: Option<anyhow::Error> = None;
 
-        // 如果提供了proxy_address，设置funder和signature_type（按照Python SDK模式）
-        if let Some(funder) = proxy_address {
-            auth_builder = auth_builder
-                .funder(funder)
-                .signature_type(SignatureType::Proxy);
+        for attempt in 1..=max_retries {
+            // 每次重试都重新创建认证构建器
+            let mut auth_builder = Client::new("https://clob.polymarket.com", config.clone())
+                .map_err(|e| anyhow::anyhow!("创建CLOB客户端失败: {}", e))?
+                .authentication_builder(&signer);
+
+            // 如果提供了proxy_address，设置funder和signature_type（按照Python SDK模式）
+            if let Some(funder) = proxy_address {
+                auth_builder = auth_builder
+                    .funder(funder)
+                    .signature_type(SignatureType::Proxy);
+            }
+
+            match auth_builder.authenticate().await {
+                Ok(client) => {
+                    info!("API认证成功 (尝试 {} / {})", attempt, max_retries);
+                    return Ok(Self {
+                        client,
+                        private_key,
+                        max_order_size: Decimal::try_from(max_order_size_usdc)
+                            .unwrap_or(rust_decimal_macros::dec!(100.0)),
+                        slippage: [
+                            Decimal::try_from(slippage[0]).unwrap_or(dec!(0.0)),
+                            Decimal::try_from(slippage[1]).unwrap_or(dec!(0.01)),
+                        ],
+                        gtd_expiration_secs,
+                        arbitrage_order_type,
+                    });
+                }
+                Err(e) => {
+                    // 检查是否是网络错误
+                    let error_str = e.to_string();
+                    let is_network_error = error_str.contains("error sending request") || 
+                                         error_str.contains("timeout") ||
+                                         error_str.contains("connection") ||
+                                         error_str.contains("network");
+                    
+                    last_error = Some(anyhow::anyhow!(
+                        "API认证失败 (尝试 {} / {}): {}. 可能的原因：1) 私钥无效 2) 网络问题 3) Polymarket API服务不可用",
+                        attempt, max_retries, e
+                    ));
+                    
+                    if is_network_error {
+                        error!(
+                            "网络错误 (尝试 {} / {}): {}. 正在重试...",
+                            attempt, max_retries, e
+                        );
+                    } else {
+                        error!(
+                            "API认证失败 (尝试 {} / {}): {}. 可能的原因：1) 私钥无效 2) 网络问题 3) Polymarket API服务不可用",
+                            attempt, max_retries, e
+                        );
+                    }
+                    
+                    if attempt < max_retries {
+                        let delay = attempt * 2; // 增加延迟时间
+                        info!("{}秒后重试...", delay);
+                        time::sleep(time::Duration::from_secs(delay as u64)).await;
+                    }
+                }
+            }
         }
 
-        let client = auth_builder.authenticate().await.map_err(|e| {
-            anyhow::anyhow!(
-                "API认证失败: {}. 可能的原因：1) 私钥无效 2) 网络问题 3) Polymarket API服务不可用",
-                e
-            )
-        })?;
-
-        Ok(Self {
-            client,
-            private_key,
-            max_order_size: Decimal::try_from(max_order_size_usdc)
-                .unwrap_or(rust_decimal_macros::dec!(100.0)),
-            slippage: [
-                Decimal::try_from(slippage[0]).unwrap_or(dec!(0.0)),
-                Decimal::try_from(slippage[1]).unwrap_or(dec!(0.01)),
-            ],
-            gtd_expiration_secs,
-            arbitrage_order_type,
-        })
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("API认证失败：达到最大重试次数")))
     }
 
     /// 验证认证是否真的成功 - 按照官方示例使用 api_keys() 来验证
