@@ -283,11 +283,7 @@ async fn main() -> Result<()> {
     });
 
     info!("🌐 Web控制台已启动: http://localhost:3000");
-    info!("🧪 默认模拟交易：在 Web 控制台可切换真实投注开关");
-
-  
     
-    // 收尾进行中标志：定时 merge 会检查并跳过，避免与收尾 merge 竞争
     let countdown_in_progress = Arc::new(AtomicBool::new(false));
     let marketrecord: Arc<DashMap<B256, bool>> = Arc::new(DashMap::new());
 
@@ -333,8 +329,6 @@ async fn main() -> Result<()> {
             }
         };
 
-    
-
         info!(market_count = markets.len(), "开始监控订单簿");
 
         // 记录当前窗口的时间戳，用于检测周期切换与收尾触发
@@ -352,15 +346,26 @@ async fn main() -> Result<()> {
 
         // 按市场记录上一拍卖一价，用于计算涨跌方向（仅一次 HashMap 读写，不影响监控性能）
         let last_prices: DashMap<B256, (Decimal, Decimal)> = DashMap::new();
-        let strategy_state: DashMap<B256, u8> = DashMap::new();
-        let first_leg_price_map: Arc<DashMap<B256, Decimal>> = Arc::new(DashMap::new());
-        let first_leg_qty_map: Arc<DashMap<B256, Decimal>> = Arc::new(DashMap::new());
-        let first_leg_side_key_map: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
         let yes_greater_than_no_counters: DashMap<B256, u32> = DashMap::new();
         let last_check_timestamps: DashMap<B256, i64> = DashMap::new();
         let current_larger_side: DashMap<B256, Option<bool>> = DashMap::new(); // None: no data, Some(true): yes larger, Some(false): no larger
         //订单存储(市场id,是否下单,下单yes/no,下单的tokenid,未下单的tokenid,下单的数量)
         let order_status: Arc<Mutex<HashMap<String, (bool, String, String, String, String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
+        let firstorder: DashMap<B256, i64> = DashMap::new();
+        // 较大边下单计数
+        let larger_side_order_counters: DashMap<B256, u32> = DashMap::new();
+        
+        // 购买历史记录结构
+        #[derive(Clone)]
+        struct PurchaseRecord {
+            side: String,
+            price: Decimal,
+            size: Decimal,
+            total_cost: Decimal,
+        }
+        
+        // 单边购买历史映射：市场ID -> (较大边购买记录, 较小边购买记录)
+        let purchase_history: DashMap<B256, (Vec<PurchaseRecord>, Vec<PurchaseRecord>)> = DashMap::new();
 
         #[derive(Clone)]
         struct SimOrderInfo {
@@ -371,8 +376,6 @@ async fn main() -> Result<()> {
             on_filled_state: u8,
             clear_first_leg_price: bool,
         }
-        let sim_open_orders: Arc<DashMap<String, SimOrderInfo>> = Arc::new(DashMap::new());
-        let drawdown_trigger_mask: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
 
         // 计算投注金额的函数
         fn calculate_order_price(market: &str) -> Decimal {
@@ -438,50 +441,7 @@ async fn main() -> Result<()> {
                                 let countdown_seconds = sec_to_end_nonneg % 60;
                                 let countdown_str = format!("{:02}:{:02}", countdown_minutes, countdown_seconds);
 
-                                {
-                                    let is_live = is_running.load(Ordering::Relaxed);
-                                    if !is_live {
-                                        let mut to_fill: Vec<String> = Vec::new();
-                                        for e in sim_open_orders.iter() {
-                                            let info = e.value();
-                                            if info.market_id != market_id {
-                                                continue;
-                                            }
-                                            let can_fill = if info.side_key == 0 {
-                                                yes_best_ask
-                                                    .as_ref()
-                                                    .map(|(p, _)| *p <= info.limit_price)
-                                                    .unwrap_or(false)
-                                            } else {
-                                                no_best_ask
-                                                    .as_ref()
-                                                    .map(|(p, _)| *p <= info.limit_price)
-                                                    .unwrap_or(false)
-                                            };
-                                            if can_fill {
-                                                to_fill.push(e.key().clone());
-                                            }
-                                        }
-                                        for id in to_fill {
-                                            if let Some((_k, info)) = sim_open_orders.remove(&id) {
-                                                crate::utils::trade_history::update_trade_status(&id, "SimBought");
-                                                if info.on_filled_state == 1u8 || info.on_filled_state == 2u8 {
-                                                    first_leg_qty_map.insert(info.market_id, info.size);
-                                                    first_leg_side_key_map.insert(info.market_id, info.side_key);
-                                                    drawdown_trigger_mask.remove(&info.market_id);
-                                                }
-                                                strategy_state.insert(info.market_id, info.on_filled_state);
-                                                if info.clear_first_leg_price {
-                                                    first_leg_price_map.remove(&info.market_id);
-                                                    first_leg_qty_map.remove(&info.market_id);
-                                                    first_leg_side_key_map.remove(&info.market_id);
-                                                    drawdown_trigger_mask.remove(&info.market_id);
-                                                }
-                                            }
-                                        }
-                                    }
                                 
-                                 }
 
                                 // 1、获取yes和no的实时卖价并进行比较，选择较大的一边，并记录是yes还是no，本轮市场进行计数，每秒加1，过程中较大的一边比较小的一边小时，计数置零，如果计数和等于60的时候，进行下单购买,并计数置零。
 
@@ -555,7 +515,7 @@ async fn main() -> Result<()> {
                                         let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg > 0;
                                         
                                         let price_greater_than_07 = price > dec!(0.7);
-                                        let price_greater_than_97 = price > dec!(0.98);
+                                        let price_less_than_98 = price < dec!(0.98);
 
                                         
                                         let counter_val = yes_greater_than_no_counters.get(&market_id).map(|r| *r).unwrap_or(0);
@@ -565,129 +525,214 @@ async fn main() -> Result<()> {
                                         let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size,order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
                                         //如果有订单,而且订单中购买的token这边价格卖价在0.97,对订单进行清仓
 
-
-
+                                    if  countdown_within_180  && price_greater_count && price_less_than_98{
+                                        // 较大边下单进行计数,当下单次数等于2,对较小边下单,次数并重置成0
+                                        let mut counter = larger_side_order_counters.entry(market_id).or_insert(0);
+                                        *counter += 1;
                                         
-                                    if  price_greater_than_07 && price_greater_count{
-                                        error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
-                                        if price_greater_than_97 {//大于0.97的那侧
-                                            let order_price_usd = Decimal::ONE;
-                                            let order_size = (order_price_usd / low_price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
-                                            error!("{} | 倒计时120秒内，价格大于0.97以上，反向买单 | 倒计时: {}秒 | 价格: {:.4} | 金额: {:.2}美元", market_display, sec_to_end_nonneg, low_price, order_price_usd);
-                                            let countdown_for_trade = countdown_str.clone();
-                                            // 标记该市场已结算，这样结算时不会更新输赢次数
-                                            marketrecord.insert(market_id.clone(), true);
-                                            tokio::spawn({
-                                                let executor = executor.clone();
-                                                let market_display = market_display.clone();
-                                                let token_id = low_token_id;
-                                                let low_side_name = low_side_name.to_string();
-                                                let low_token_id = low_token_id;
-                                                let order_status = order_status.clone();
-                                                let order_size=order_size.clone();
-                                                let mid = market_id;
-                                                let counters = yes_greater_than_no_counters.clone();
-                                                let is_running_clone = is_running.clone();
-                                                let order_size_str = order_size.to_string();
-                                                async move {
-                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                    if is_live {
-                                                          if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                            info!("{} | 已建仓,价格大于0.97不买入了 ", market_display);
-                                                          }else{//如果没有建仓,则直接下单买
-                                                            match executor.buy_market_usd(low_token_id, low_price, order_price_usd).await {
-                                                            Ok(response) => {
-                                                                let mut order_status_map = order_status.lock().await;
-                                                                let existing_order = order_status_map.get(&market_display);
-                                                                let updated_side_name = if let Some((_, existing_side, _, _, _, _)) = existing_order {
-                                                                    if existing_side.contains(&low_side_name) {
-                                                                        existing_side.clone()
-                                                                    } else {
-                                                                        low_side_name.clone()
-                                                                        // format!("{},{}", existing_side, low_side_name)
-                                                                    }
-                                                                } else {
-                                                                    low_side_name.clone()
-                                                                };
-                                                                order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), low_price.to_string()));
-                                                                // 记录交易历史已移除
-                                                                error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, low_side_name, order_size);
-                                                            }
-                                                            Err(e) => {
-                                                                error!("{} | 下单条件在180秒内，价格大于0.97，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, low_side_name);
-                                                                // 记录失败订单到交易历史已移除
-                                                            }
-                                                        }
-                                                          }
-                                                        
-                                                    } else {
-                                                            if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                                error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 不下单了, 已建仓", market_display);        
-                                                            }else{
-                                                        error!("{} | 模拟下单条件在120秒内，价格大于0.97，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, low_side_name, order_size);
-                                                        if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
-                                                        let mut order_status_map = order_status.lock().await;
-                                                        let existing_order = order_status_map.get(&market_display);
-                                                        let updated_side_name = if let Some((_, existing_side, _, _, _, _)) = existing_order {
-                                                            if existing_side.contains(&low_side_name) {
-                                                                existing_side.clone()
-                                                            } else {
-                                                                format!("{},{}", existing_side, low_side_name)
-                                                            }
-                                                        } else {
-                                                            low_side_name.clone()
-                                                        };
-                                                        order_status_map.insert(market_display.clone(), (true, updated_side_name, low_token_id.to_string(), token_id.to_string(), order_size_str.clone(), low_price.to_string()));
-                                                        // 记录模拟交易历史已移除
-                                                            }
-                                                       
-                                                    }
-                                                }
+                                        // 较大边下单
+                                        let (buy_token_id, buy_price, buy_side_name) = if current_larger == Some(true) {
+                                            (pair.yes_book.asset_id, yes_price * dec!(1.02), "Yes")
+                                        } else {
+                                            (pair.no_book.asset_id, no_price * dec!(1.02), "No")
+                                        };
+                                        
+                                        let order_size = dec!(5);
+                                        let order_total_cost = buy_price * order_size;
+                                        
+                                        // 记录较大边购买历史
+                                        {
+                                            let mut history = purchase_history.entry(market_id).or_insert((Vec::new(), Vec::new()));
+                                            history.0.push(PurchaseRecord {
+                                                side: buy_side_name.to_string(),
+                                                price: buy_price,
+                                                size: order_size,
+                                                total_cost: order_total_cost,
                                             });
-                                        }else{//大于0.7小于0.97的那侧
-                                            let order_price_usd = calculate_order_price(&market_display);
-                                            let order_size = (order_price_usd / price).round_dp(0).to_string().parse::<f64>().unwrap_or(0.0);
-                                            tokio::spawn({
-                                                let executor = executor.clone();
-                                                let market_display = market_display.clone();
-                                                let side_name = side_name.to_string();
-                                                let order_status = order_status.clone();
-                                                let token_id = token_id;
-                                                let low_token_id = low_token_id;
-                                                let is_running_clone = is_running.clone();
-                                                let mid = market_id;
-                                                let counters = yes_greater_than_no_counters.clone();
-                                                let order_size_str = order_size.clone();
-                                                async move {
-                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                    if is_live {
-                                                        if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                            info!("{} | 下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了", market_display);    
-                                                        }else{
-                                                            match executor.buy_market_usd(token_id, price, order_price_usd).await {
-                                                                Ok(response) => {
-                                                                    order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.to_string(),price.to_string().into()));
-                                                                    // 记录交易历史已移除
-                                                                    info!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元", market_display, response.order_id, side_name, order_size);
-                                                                }
-                                                                Err(e) => {
-                                                                    error!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, side_name);
-                                                                }
-                                                            }
-                                                        }
-                                                    } else {
-                                                          if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                                info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了", market_display);    
-                                                          }else{
-                                                            info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 | 购买: {} | 金额: {:.2}美元", market_display, side_name, order_size);
-                                                            if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
-                                                            order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),order_size_str.to_string(),price.to_string().into()));
-                                                            // 记录模拟交易历史已移除
-                                                          }
-                                                        
-                                                    }
+                                        }
+                                        
+                                        // 计算并打印较大边累计信息和利润
+                                        {
+                                            if let Some(history) = purchase_history.get(&market_id) {
+                                                let larger_records = &history.0;
+                                                let smaller_records = &history.1;
+                                                let larger_total_qty: Decimal = larger_records.iter().map(|r| r.size).sum();
+                                                let larger_total_cost: Decimal = larger_records.iter().map(|r| r.total_cost).sum();
+                                                let larger_avg_price = if larger_total_qty > dec!(0) { larger_total_cost / larger_total_qty } else { dec!(0) };
+                                                
+                                                let opposite_total_cost: Decimal = smaller_records.iter().map(|r| r.total_cost).sum();
+                                                
+                                                let gross_profit = (dec!(1) - larger_avg_price) * larger_total_qty;
+                                                let net_profit = gross_profit - opposite_total_cost;
+                                                
+                                                info!(
+                                                    "{} | 较大边下单 | 方向: {} | 本单单价:{:.4}*本单数量:{:.2}=本单成本:{:.4} | 累计均价:{:.4}*累计数量:{:.2}=累计成本:{:.4} | 毛利润:{:.4} | 纯利润:{:.4}",
+                                                    market_display, buy_side_name, buy_price, order_size, order_total_cost, larger_avg_price, larger_total_qty, larger_total_cost, gross_profit, net_profit
+                                                );
+                                            }
+                                        }
+                                        
+                                        // 这里应该调用实际的下单函数
+                                        // executor.buy_at_price(buy_token_id, buy_price, order_size).await;
+                                        
+                                        // 这里应该调用实际的下单函数
+                                        // executor.buy_at_price(buy_token_id, buy_price, order_size).await;
+                                        
+                                        // 当下单次数等于2时，对较小边下单
+                                        if *counter == 2 {
+                                            // 确定较小边的token和价格
+                                            let (low_token_id, low_price, low_side_name) = if current_larger == Some(false) {
+                                                (pair.yes_book.asset_id, yes_price * dec!(0.99), "Yes")
+                                            } else {
+                                                (pair.no_book.asset_id, no_price * dec!(0.99), "No")
+                                            };
+                                            
+                                            // 执行较小边下单
+                                            let order_size = dec!(5);
+                                            let order_total_cost = low_price * order_size;
+                                            
+                                            // 记录较小边购买历史
+                                            {
+                                                let mut history = purchase_history.entry(market_id).or_insert((Vec::new(), Vec::new()));
+                                                history.1.push(PurchaseRecord {
+                                                    side: low_side_name.to_string(),
+                                                    price: low_price,
+                                                    size: order_size,
+                                                    total_cost: order_total_cost,
+                                                });
+                                            }
+                                            
+                                            // 计算并打印较小边累计信息和利润
+                                            {
+                                                if let Some(history) = purchase_history.get(&market_id) {
+                                                    let smaller_records = &history.1;
+                                                    let larger_records = &history.0;
+                                                    let smaller_total_qty: Decimal = smaller_records.iter().map(|r| r.size).sum();
+                                                    let smaller_total_cost: Decimal = smaller_records.iter().map(|r| r.total_cost).sum();
+                                                    let smaller_avg_price = if smaller_total_qty > dec!(0) { smaller_total_cost / smaller_total_qty } else { dec!(0) };
+                                                    
+                                                    let opposite_total_cost: Decimal = larger_records.iter().map(|r| r.total_cost).sum();
+                                                    
+                                                    let gross_profit = (dec!(1) - smaller_avg_price) * smaller_total_qty;
+                                                    let net_profit = gross_profit - opposite_total_cost;
+                                                    
+                                                    info!(
+                                                        "{} | 较小边下单 | 方向: {} | 本单单价:{:.4}*本单数量:{:.2}=本单成本:{:.4} | 累计均价:{:.4}*累计数量:{:.2}=累计成本:{:.4} | 毛利润:{:.4} | 纯利润:{:.4}",
+                                                        market_display, low_side_name, low_price, order_size, order_total_cost, smaller_avg_price, smaller_total_qty, smaller_total_cost, gross_profit, net_profit
+                                                    );
                                                 }
-                                            });
+                                            }
+                                            
+                                            // 这里应该调用实际的下单函数
+                                            // executor.buy_at_price(low_token_id, low_price, order_size).await;
+                                            
+                                            // 重置计数为0
+                                            *counter = 0;
+                                            info!(
+                                                "{} | 计数重置 | 已对较小边下单，计数重置为0",
+                                                market_display
+                                            );
+                                        }
+                                    }else{
+                                        //根据firstorder判断,是否有订单,如果有,则不下单,如果没有,则下单,并firstorder插入记录,价格大的边下单价格*1.02,价格小的下单价格*0.99,下单用限价单下单
+                                        let has_first_order = firstorder.contains_key(&market_id);
+                                        if !has_first_order {
+                                            // 计算下单价格
+                                            let (buy_token_id, buy_price, buy_side_name) = if current_larger == Some(true) {
+                                                (pair.yes_book.asset_id, yes_price * dec!(1.02), "Yes")
+                                            } else {
+                                                (pair.no_book.asset_id, no_price * dec!(1.02), "No")
+                                            };
+                                            
+                                            let (low_buy_token_id, low_buy_price, low_buy_side_name) = if current_larger == Some(false) {
+                                                (pair.yes_book.asset_id, yes_price * dec!(0.99), "Yes")
+                                            } else {
+                                                (pair.no_book.asset_id, no_price * dec!(0.99), "No")
+                                            };
+                                            
+                                            // 执行下单操作
+                                            let order_size = dec!(5); // 订单大小，可根据实际情况调整
+                                            
+                                            // 下单价格大的一边
+                                            let order_total_cost = buy_price * order_size;
+                                            
+                                            // 记录较大边购买历史
+                                            {
+                                                let mut history = purchase_history.entry(market_id).or_insert((Vec::new(), Vec::new()));
+                                                history.0.push(PurchaseRecord {
+                                                    side: buy_side_name.to_string(),
+                                                    price: buy_price,
+                                                    size: order_size,
+                                                    total_cost: order_total_cost,
+                                                });
+                                            }
+                                            
+                                            // 计算并打印较大边累计信息和利润
+                                            {
+                                                if let Some(history) = purchase_history.get(&market_id) {
+                                                    let larger_records = &history.0;
+                                                    let smaller_records = &history.1;
+                                                    let larger_total_qty: Decimal = larger_records.iter().map(|r| r.size).sum();
+                                                    let larger_total_cost: Decimal = larger_records.iter().map(|r| r.total_cost).sum();
+                                                    let larger_avg_price = if larger_total_qty > dec!(0) { larger_total_cost / larger_total_qty } else { dec!(0) };
+                                                    
+                                                    let opposite_total_cost: Decimal = smaller_records.iter().map(|r| r.total_cost).sum();
+                                                    
+                                                    let gross_profit = (dec!(1) - larger_avg_price) * larger_total_qty;
+                                                    let net_profit = gross_profit - opposite_total_cost;
+                                                    
+                                                    info!(
+                                                        "{} | 较大边下单 | 方向: {} | 本单单价:{:.4}*本单数量:{:.2}=本单成本:{:.4} | 累计均价:{:.4}*累计数量:{:.2}=累计成本:{:.4} | 毛利润:{:.4} | 纯利润:{:.4}",
+                                                        market_display, buy_side_name, buy_price, order_size, order_total_cost, larger_avg_price, larger_total_qty, larger_total_cost, gross_profit, net_profit
+                                                    );
+                                                }
+                                            }
+                                            
+                                            // 这里应该调用实际的下单函数
+                                            // executor.buy_at_price(buy_token_id, buy_price, order_size).await;
+                                            
+                                            // 下单价格小的一边
+                                            let low_order_total_cost = low_buy_price * order_size;
+                                            
+                                            // 记录较小边购买历史
+                                            {
+                                                let mut history = purchase_history.entry(market_id).or_insert((Vec::new(), Vec::new()));
+                                                history.1.push(PurchaseRecord {
+                                                    side: low_buy_side_name.to_string(),
+                                                    price: low_buy_price,
+                                                    size: order_size,
+                                                    total_cost: low_order_total_cost,
+                                                });
+                                            }
+                                            
+                                            // 计算并打印较小边累计信息和利润
+                                            {
+                                                if let Some(history) = purchase_history.get(&market_id) {
+                                                    let smaller_records = &history.1;
+                                                    let larger_records = &history.0;
+                                                    let smaller_total_qty: Decimal = smaller_records.iter().map(|r| r.size).sum();
+                                                    let smaller_total_cost: Decimal = smaller_records.iter().map(|r| r.total_cost).sum();
+                                                    let smaller_avg_price = if smaller_total_qty > dec!(0) { smaller_total_cost / smaller_total_qty } else { dec!(0) };
+                                                    
+                                                    let opposite_total_cost: Decimal = larger_records.iter().map(|r| r.total_cost).sum();
+                                                    
+                                                    let gross_profit = (dec!(1) - smaller_avg_price) * smaller_total_qty;
+                                                    let net_profit = gross_profit - opposite_total_cost;
+                                                    
+                                                    info!(
+                                                        "{} | 较小边下单 | 方向: {} | 本单单价:{:.4}*本单数量:{:.2}=本单成本:{:.4} | 累计均价:{:.4}*累计数量:{:.2}=累计成本:{:.4} | 毛利润:{:.4} | 纯利润:{:.4}",
+                                                        market_display, low_buy_side_name, low_buy_price, order_size, low_order_total_cost, smaller_avg_price, smaller_total_qty, smaller_total_cost, gross_profit, net_profit
+                                                    );
+                                                }
+                                            }
+                                            
+                                            // 这里应该调用实际的下单函数
+                                            // executor.buy_at_price(low_buy_token_id, low_buy_price, order_size).await;
+                                            
+                                            // 记录firstorder
+                                            firstorder.insert(market_id, current_timestamp);
+                                            
+                                           
                                         }
                                     }
                                 
@@ -744,15 +789,13 @@ async fn main() -> Result<()> {
                                     .map(|(_, side, _, _, _, _)| side.clone())
                                     .unwrap_or_else(|| "未下单".to_string());
                                 
-                                // info!("{} {} | {}分{:02}秒 | {} | {} | {}{}{}|{}",
+                                // info!("{} {} | {}分{:02}秒 | {} | {} | {}|{}",
                                 //     prefix,
                                 //     market_display,
                                 //     countdown_minutes,
                                 //     countdown_seconds,
                                 //     yes_info,
                                 //     no_info,
-                                //     result_info,
-                                //     pnl_info,
                                 //     spread_info,
                                 //     order_second_param
                                 // );
