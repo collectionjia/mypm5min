@@ -321,7 +321,8 @@ async fn main() -> Result<()> {
         }
 
         // 创建订单簿流
-        let mut stream = match monitor.create_orderbook_stream() {
+        let stream_result = monitor.create_orderbook_stream().await;
+        let mut stream = match stream_result {
             Ok(stream) => stream,
             Err(e) => {
                 error!(error = %e, "创建订单簿流失败");
@@ -383,6 +384,8 @@ async fn main() -> Result<()> {
         }
 
         // 监控订单簿更新
+        let mut reconnect_attempts = 0;
+        const MAX_RECONNECT_ATTEMPTS: u32 = 5;
         loop {
             let now_all = Utc::now();
             let seconds_until_end_all = (window_end - now_all).num_seconds();
@@ -391,6 +394,8 @@ async fn main() -> Result<()> {
                 book_result = stream.next() => {
                     match book_result {
                         Some(Ok(book)) => {
+                            // 重置重连计数器
+                            reconnect_attempts = 0;
                             // 然后处理订单簿更新（book会被move）
                             if let Some(pair) = monitor.handle_book_update(book) {
                                 // 注意：asks 最后一个为卖一价

@@ -6,7 +6,12 @@ use polymarket_client_sdk::clob::ws::{types::response::{BookUpdate, MarketResolv
 use polymarket_client_sdk::types::{B256, U256};
 use std::collections::HashMap;
 use std::pin::Pin;
-use tracing::{debug, info};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
+use tokio::sync::RwLock;
+use tracing::{debug, info, warn, error};
 
 use crate::market::MarketInfo;
 
@@ -33,9 +38,12 @@ fn short_u256(u: &U256) -> String {
 }
 
 pub struct OrderBookMonitor {
-    ws_client: WsClient,
+    ws_url: String,
+    ws_client: Arc<RwLock<Option<WsClient>>>,
     books: DashMap<U256, BookUpdate>,
     market_map: HashMap<B256, (U256, U256)>, // market_id -> (yes_token_id, no_token_id)
+    is_connected: Arc<AtomicBool>,
+    reconnect_attempts: Arc<std::sync::atomic::AtomicU32>,
 }
 
 pub struct OrderBookPair {
@@ -57,12 +65,60 @@ impl OrderBookMonitor {
         .expect("创建 WsClient 失败");
 
         Self {
-            // 使用未认证的客户端：订单簿订阅不需要认证，这是公开数据
-            // 只有订阅用户数据（如用户订单、交易等）才需要认证
-            ws_client,
+            ws_url,
+            ws_client: Arc::new(RwLock::new(Some(ws_client))),
             books: DashMap::new(),
             market_map: HashMap::new(),
+            is_connected: Arc::new(AtomicBool::new(true)),
+            reconnect_attempts: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
+    }
+    
+    /// 尝试重新连接WebSocket
+    pub async fn reconnect(&self) -> Result<()> {
+        let max_attempts = 10;
+        let base_delay = Duration::from_secs(1);
+        
+        loop {
+            let attempts = self.reconnect_attempts.load(Ordering::SeqCst);
+            if attempts >= max_attempts {
+                error!("WebSocket重连失败，已达到最大尝试次数 {}，将持续重试", max_attempts);
+                sleep(Duration::from_secs(5)).await;
+                self.reconnect_attempts.store(0, Ordering::SeqCst);
+                continue;
+            }
+            
+            let delay = base_delay * (2_u64.pow(attempts.min(5) as u32)) as u32;
+            warn!("WebSocket连接断开，{} 秒后尝试重连 (尝试 {}/{})", delay.as_secs(), attempts + 1, max_attempts);
+            sleep(delay).await;
+            
+            self.reconnect_attempts.fetch_add(1, Ordering::SeqCst);
+            
+            match WsClient::new(&self.ws_url, polymarket_client_sdk::ws::config::Config::default()) {
+                Ok(new_client) => {
+                    let mut client_guard = self.ws_client.write().await;
+                    *client_guard = Some(new_client);
+                    self.is_connected.store(true, Ordering::SeqCst);
+                    self.reconnect_attempts.store(0, Ordering::SeqCst);
+                    info!("WebSocket重连成功");
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!("WebSocket重连失败: {}", e);
+                    continue;
+                }
+            }
+        }
+    }
+    
+    /// 检查连接状态
+    pub fn is_connected(&self) -> bool {
+        self.is_connected.load(Ordering::SeqCst)
+    }
+    
+    /// 标记连接断开
+    pub fn mark_disconnected(&self) {
+        self.is_connected.store(false, Ordering::SeqCst);
     }
 
     /// 订阅新市场
@@ -85,9 +141,12 @@ impl OrderBookMonitor {
     ///
     /// 注意：订单簿订阅使用未认证的 WebSocket 客户端，因为订单簿数据是公开的。
     /// 只有订阅用户相关数据（如用户订单状态、交易历史等）才需要认证。
-    pub fn create_orderbook_stream(
+    pub async fn create_orderbook_stream(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<BookUpdate>> + Send + '_>>> {
+        let client_guard = self.ws_client.read().await;
+        let client = client_guard.as_ref().ok_or_else(|| anyhow::anyhow!("WebSocket客户端未初始化"))?;
+        
         // 收集所有需要订阅的token_id
         let token_ids: Vec<U256> = self
             .market_map
@@ -102,7 +161,7 @@ impl OrderBookMonitor {
         info!(token_count = token_ids.len(), "创建订单簿订阅流（未认证）");
 
         // subscribe_orderbook 不需要认证，使用未认证客户端即可
-        let stream = self.ws_client.subscribe_orderbook(token_ids)?;
+        let stream = client.subscribe_orderbook(token_ids)?;
         // 将 SDK 的 Error 转换为 anyhow::Error
         let stream = stream.map(|result| result.map_err(|e| anyhow::anyhow!("{}", e)));
         Ok(Box::pin(stream))
@@ -112,9 +171,12 @@ impl OrderBookMonitor {
     ///
     /// 当市场 resolved 时推送 "market_resolved" 事件，包含 winning_outcome ("Yes" 或 "No")
     /// 需要 `custom_features_enabled` 标志
-    pub fn create_market_resolutions_stream(
+    pub async fn create_market_resolutions_stream(
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<MarketResolved>> + Send + '_>>> {
+        let client_guard = self.ws_client.read().await;
+        let client = client_guard.as_ref().ok_or_else(|| anyhow::anyhow!("WebSocket客户端未初始化"))?;
+        
         // 收集所有需要订阅的 token_id
         let token_ids: Vec<U256> = self
             .market_map
@@ -129,7 +191,7 @@ impl OrderBookMonitor {
         info!(token_count = token_ids.len(), "创建市场解决事件订阅流");
 
         // subscribe_market_resolutions 需要 custom_features_enabled
-        let stream = self.ws_client.subscribe_market_resolutions(token_ids)?;
+        let stream = client.subscribe_market_resolutions(token_ids)?;
         let stream = stream.map(|result| result.map_err(|e| anyhow::anyhow!("{}", e)));
         Ok(Box::pin(stream))
     }
