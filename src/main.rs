@@ -489,6 +489,7 @@ async fn main() -> Result<()> {
         let mut first_order = false;
         let mut end_order = false;
         let mut end_30 = false;
+        let mut is_small = false;
         
 
         // 创建市场ID到市场信息的映射
@@ -719,8 +720,9 @@ async fn main() -> Result<()> {
                                         let mut counter = yes_greater_than_no_counters.entry(market_id).or_insert(0);
                                         let mut larger_side = current_larger_side.entry(market_id).or_insert(None);
                                         let default = (false, "".to_string(),"" .to_string(),"" .to_string(),"" .to_string(),"" .to_string());
-
+                                        is_small=false;
                                         if *larger_side != current_larger {
+                                            is_small=true;
                                             // 较大的一边发生变化，重置计数器
                                             *counter = 0;
                                             *larger_side = current_larger;
@@ -728,10 +730,6 @@ async fn main() -> Result<()> {
                                                 "{} | jiajiajia较大边变化 | 新较大边: {:?} | Yes:A{:.4} No:A{:.4}",
                                                 market_display, current_larger, yes_price, no_price
                                             );
-                                            
-                                            // 检查是否已经建仓，如果是则卖出
-                                            let order_status_lock = order_status.lock().await;
-                                            let (is_ordered, order_side_name, order_token_id, unorder_token_id, ordered_size, order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
                                             
                                             // 确定当前较小的一边
                                             let current_smaller = if yes_price < no_price {
@@ -741,8 +739,8 @@ async fn main() -> Result<()> {
                                             } else {
                                                 None // 价格相等
                                             };
-                                            
-                                             // 未建仓，直接下单较小的一边
+                                            if is_small==true {
+ // 未建仓，直接下单较小的一边
                                                 let countdown_for_trade = countdown_str.clone();
                                                 let market_id_str = market_id.to_string();
                                                 let current_smaller_clone = current_smaller;
@@ -793,6 +791,8 @@ async fn main() -> Result<()> {
                                                         }
                                                     }
                                                 });
+                                            }
+                                            
 
                                         } else if current_larger.is_some() {
                                             // 较大的一边未变化，计数加1
