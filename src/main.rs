@@ -793,7 +793,8 @@ async fn main() -> Result<()> {
                                                                     }
                                                                 }
                                                             } else {
-                                                                error!("{} | 价格反转，执行模拟下单较小边 | 购买: {} | 数量: {:.2} | 价格: {:.4}", market_display, buy_side_name, order_size, buy_price);
+                                                                let total_cost = buy_price * order_size;
+                                                                error!("{} | 价格反转，执行模拟下单较小边 | 购买: {} | 单边成交单价={:.4} | 单边成交数量={:.2} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.2}", market_display, buy_side_name, buy_price, order_size, total_cost, buy_price, order_size);
                                                                 let mut order_status_map = order_status.lock().await;
                                                                 order_status_map.insert(market_display.clone(), (true, buy_side_name.to_string(), buy_token_id.to_string(), "".to_string(), order_size.to_string(), buy_price.to_string()));
                                                             }
