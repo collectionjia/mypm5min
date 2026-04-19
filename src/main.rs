@@ -487,6 +487,10 @@ async fn main() -> Result<()> {
         let mut wind_down_done = false;
         let mut post_end_claim_done = false;
         let mut force_close_cancel_done = false;
+        let mut first_order = false;
+        let mut end_order = false;
+        let mut end_30 = false;
+        
 
         // 创建市场ID到市场信息的映射
         let market_map: HashMap<B256, &MarketInfo> =
@@ -501,6 +505,7 @@ async fn main() -> Result<()> {
         let yes_greater_than_no_counters: DashMap<B256, u32> = DashMap::new();
         let last_check_timestamps: DashMap<B256, i64> = DashMap::new();
         let current_larger_side: DashMap<B256, Option<bool>> = DashMap::new(); // None: no data, Some(true): yes larger, Some(false): no larger
+        let larger_side_order_counters: DashMap<B256, u32> = DashMap::new(); // 较大边订单计数器
         //订单存储(市场id,是否下单,下单yes/no,下单的tokenid,未下单的tokenid,下单的数量)
         let order_status: Arc<Mutex<HashMap<String, (bool, String, String, String, String, String)>>> = Arc::new(Mutex::new(HashMap::new()));
 
@@ -515,25 +520,38 @@ async fn main() -> Result<()> {
         }
         let sim_open_orders: Arc<DashMap<String, SimOrderInfo>> = Arc::new(DashMap::new());
         let drawdown_trigger_mask: Arc<DashMap<B256, u8>> = Arc::new(DashMap::new());
-
-        // 计算投注金额的函数
-        fn calculate_order_price(market: &str, lostcount: &Arc<DashMap<String, u64>>, wincount: &Arc<DashMap<String, u64>>, loststate: &Arc<DashMap<String, u64>>) -> Decimal {
-            let lc = lostcount.get(market).map(|v| *v).unwrap_or(0);
-            let wc = wincount.get(market).map(|v| *v).unwrap_or(0);
-            let ls = loststate.get(market).map(|v| *v).unwrap_or(0);
-            info!("market: {}, lostcount: {}, wincount: {}, loststate: {}", market, lc, wc, ls);
-            
-            // loststate 为 0 时
-            if ls == 0 {
-                if wc > 0 {
-                    dec!(1)
-                } else {
-                    dec!(1)
-                }
-            } else {
-               dec!(1)
-            }
+        
+        #[derive(Clone)]
+        struct SideOrderInfo {
+            price: Decimal,
+            size: Decimal,
+            total_qty: Decimal,
+            total_cost: Decimal,
+            avg_price: Decimal,
+            gross_profit: Decimal,
+            net_profit: Decimal,
         }
+
+        #[derive(Clone)]
+        struct UpDownOrderInfo {
+            up_price: Decimal,
+            up_size: Decimal,
+            up_total_qty: Decimal,
+            up_total_cost: Decimal,
+            up_avg_price: Decimal,
+            up_gross_profit: Decimal,
+            up_net_profit: Decimal,
+            down_price: Decimal,
+            down_size: Decimal,
+            down_total_qty: Decimal,
+            down_total_cost: Decimal,
+            down_avg_price: Decimal,
+            down_gross_profit: Decimal,
+            down_net_profit: Decimal,
+        }
+        let up_down_history: Arc<DashMap<String, UpDownOrderInfo>> = Arc::new(DashMap::new());
+
+     
 
         // 监控订单簿更新
         loop {
@@ -716,6 +734,15 @@ async fn main() -> Result<()> {
                                             let order_status_lock = order_status.lock().await;
                                             let (is_ordered, order_side_name, order_token_id, unorder_token_id, ordered_size, order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
                                             
+                                            // 确定当前较小的一边
+                                            let current_smaller = if yes_price < no_price {
+                                                Some(true) // yes较小
+                                            } else if no_price < yes_price {
+                                                Some(false) // no较小
+                                            } else {
+                                                None // 价格相等
+                                            };
+                                            
                                             if is_ordered {
                                                 error!("{} | 价格出现反转，已建仓，执行卖出操作", market_display);
                                                 let sell_token_id = U256::from_str(&order_token_id).unwrap_or(U256::ZERO);
@@ -723,6 +750,11 @@ async fn main() -> Result<()> {
                                                 let sell_price = Decimal::from_str(&order_price).unwrap_or(dec!(0));
                                                 let countdown_for_trade = countdown_str.clone();
                                                 let market_id_str = market_id.to_string();
+                                                let current_smaller_clone = current_smaller;
+                                                let yes_price_clone = yes_price;
+                                                let no_price_clone = no_price;
+                                                let yes_asset_id = pair.yes_book.asset_id;
+                                                let no_asset_id = pair.no_book.asset_id;
                                                 
                                                 // 异步执行卖出操作
                                                 tokio::spawn({
@@ -733,8 +765,14 @@ async fn main() -> Result<()> {
                                                     let market_id_str = market_id_str;
                                                     let order_side_name = order_side_name;
                                                     let is_running_clone = is_running.clone();
+                                                    let yes_asset_id = yes_asset_id;
+                                                    let no_asset_id = no_asset_id;
+                                                    let current_smaller = current_smaller_clone;
+                                                    let yes_price = yes_price_clone;
+                                                    let no_price = no_price_clone;
                                                     async move {
                                                         let is_live = is_running_clone.load(Ordering::Relaxed);
+                                                        let market_id_str_clone = market_id_str.clone();
                                                         if is_live {
                                                             match executor.sell_at_price(sell_token_id, sell_price, sell_size).await {
                                                                 Ok(response) => {
@@ -749,7 +787,7 @@ async fn main() -> Result<()> {
                                                                     };
                                                                     add_trade(TradeRecord {
                                                                         id: order_id,
-                                                                        market_id: market_id_str,
+                                                                        market_id: market_id_str_clone.clone(),
                                                                         market_slug: market_display.clone(),
                                                                         side: "Sell".to_string(),
                                                                         price: sell_price.to_string().parse().unwrap_or(0.0),
@@ -762,12 +800,54 @@ async fn main() -> Result<()> {
                                                                         sell_countdown: Some(countdown_for_trade.clone()),
                                                                     });
                                                                     error!("{} | 价格反转，卖出操作成功 | 订单ID: {:?} | 卖出: {} | 数量: {:.2}", market_display, response.order_id, order_side_name, sell_size);
+                                                                     
+                                                                    // 价格反转，下单较小的一边
+                                                                    if let Some(smaller) = current_smaller {
+                                                                        let (buy_token_id, buy_price, buy_side_name) = if smaller {
+                                                                            (yes_asset_id, yes_price * dec!(0.99), "Yes")
+                                                                        } else {
+                                                                            (no_asset_id, no_price * dec!(0.99), "No")
+                                                                        };
+                                                                        let order_size = dec!(5);
+                                                                         
+                                                                        error!("{} | 价格反转，下单较小边 | 购买: {} | 数量: {:.2} | 价格: {:.4}", market_display, buy_side_name, order_size, buy_price);
+                                                                        match executor.buy_at_price(buy_token_id, buy_price, order_size).await {
+                                                                            Ok(buy_response) => {
+                                                                                let mut order_status_map = order_status.lock().await;
+                                                                                order_status_map.insert(market_display.clone(), (true, buy_side_name.to_string(), buy_token_id.to_string(), "".to_string(), order_size.to_string(), buy_price.to_string()));
+                                                                                let buy_order_id = if buy_response.order_id.is_empty() {
+                                                                                    format!("LIVE-{}", Utc::now().timestamp_millis())
+                                                                                } else {
+                                                                                    buy_response.order_id.clone()
+                                                                                };
+                                                                                add_trade(TradeRecord {
+                                                                                    id: buy_order_id,
+                                                                                    market_id: market_id_str_clone,
+                                                                                    market_slug: market_display.clone(),
+                                                                                    side: "Buy".to_string(),
+                                                                                    price: buy_price.to_string().parse().unwrap_or(0.0),
+                                                                                    order_price: buy_price.to_string().parse().unwrap_or(0.0),
+                                                                                    size: order_size.to_f64().unwrap_or(0.0),
+                                                                                    timestamp: Utc::now().timestamp(),
+                                                                                    status: "Bought".to_string(),
+                                                                                    profit: None,
+                                                                                    buy_countdown: Some(countdown_for_trade.clone()),
+                                                                                    sell_countdown: None,
+                                                                                });
+                                                                                error!("{} | 价格反转，下单较小边成功 | 订单ID: {:?} | 购买: {} | 数量: {:.2} | 价格: {:.4}", market_display, buy_response.order_id, buy_side_name, order_size, buy_price);
+                                                                            }
+                                                                            Err(e) => {
+                                                                                error!("{} | 价格反转，下单较小边失败: {:?}", market_display, e);
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
                                                                 Err(e) => {
                                                                     error!("{} | 价格反转，卖出操作失败: {:?}", market_display, e);
                                                                 }
                                                             }
                                                         } else {
+                                                            let market_id_str_clone = market_id_str.clone();
                                                             error!("{} | 价格反转，执行模拟卖出操作 | 卖出: {} | 数量: {:.2} | 价格: {:.4}", market_display, order_side_name, sell_size, sell_price);
                                                             let mut order_status_map = order_status.lock().await;
                                                             order_status_map.insert(market_display.clone(), (false, "".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string()));
@@ -776,7 +856,7 @@ async fn main() -> Result<()> {
                                                             let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
                                                             add_trade(TradeRecord {
                                                                 id: sim_order_id,
-                                                                market_id: market_id_str,
+                                                                market_id: market_id_str_clone,
                                                                 market_slug: market_display.clone(),
                                                                 side: "Sell".to_string(),
                                                                 price: sell_price.to_string().parse().unwrap_or(0.0),
@@ -788,15 +868,131 @@ async fn main() -> Result<()> {
                                                                 buy_countdown: None,
                                                                 sell_countdown: Some(countdown_for_trade.clone()),
                                                             });
+                                                             
+                                                            // 价格反转，执行模拟下单较小的一边
+                                                            if let Some(smaller) = current_smaller {
+                                                                let (buy_token_id, buy_price, buy_side_name) = if smaller {
+                                                                    (yes_asset_id, yes_price * dec!(0.99), "Yes")
+                                                                } else {
+                                                                    (no_asset_id, no_price * dec!(0.99), "No")
+                                                                };
+                                                                let order_size = dec!(5);
+                                                                 
+                                                                error!("{} | 价格反转，执行模拟下单较小边 | 购买: {} | 数量: {:.2} | 价格: {:.4}", market_display, buy_side_name, order_size, buy_price);
+                                                                let mut order_status_map = order_status.lock().await;
+                                                                order_status_map.insert(market_display.clone(), (true, buy_side_name.to_string(), buy_token_id.to_string(), "".to_string(), order_size.to_string(), buy_price.to_string()));
+                                                                let sim_buy_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
+                                                                add_trade(TradeRecord {
+                                                                    id: sim_buy_order_id,
+                                                                    market_id: market_id_str,
+                                                                    market_slug: market_display.clone(),
+                                                                    side: "Buy".to_string(),
+                                                                    price: buy_price.to_string().parse().unwrap_or(0.0),
+                                                                    order_price: buy_price.to_string().parse().unwrap_or(0.0),
+                                                                    size: order_size.to_f64().unwrap_or(0.0),
+                                                                    timestamp: Utc::now().timestamp(),
+                                                                    status: "SimBought".to_string(),
+                                                                    profit: None,
+                                                                    buy_countdown: Some(countdown_for_trade.clone()),
+                                                                    sell_countdown: None,
+                                                                });
+                                                            }
+                                                        }
+                                                    }
+                                                });
+                                            } else {
+                                                // 未建仓，直接下单较小的一边
+                                                let countdown_for_trade = countdown_str.clone();
+                                                let market_id_str = market_id.to_string();
+                                                let current_smaller_clone = current_smaller;
+                                                let yes_price_clone = yes_price;
+                                                let no_price_clone = no_price;
+                                                let yes_asset_id = pair.yes_book.asset_id;
+                                                let no_asset_id = pair.no_book.asset_id;
+                                                 
+                                                tokio::spawn({
+                                                    let executor = executor.clone();
+                                                    let market_display = market_display.clone();
+                                                    let order_status = order_status.clone();
+                                                    let countdown_for_trade = countdown_for_trade;
+                                                    let market_id_str = market_id_str;
+                                                    let is_running_clone = is_running.clone();
+                                                    let yes_asset_id = yes_asset_id;
+                                                    let no_asset_id = no_asset_id;
+                                                    let current_smaller = current_smaller_clone;
+                                                    let yes_price = yes_price_clone;
+                                                    let no_price = no_price_clone;
+                                                    async move {
+                                                        let is_live = is_running_clone.load(Ordering::Relaxed);
+                                                        if let Some(smaller) = current_smaller {
+                                                            let (buy_token_id, buy_price, buy_side_name) = if smaller {
+                                                                (yes_asset_id, yes_price * dec!(0.99), "Yes")
+                                                            } else {
+                                                                (no_asset_id, no_price * dec!(0.99), "No")
+                                                            };
+                                                            let order_size = dec!(5);
+                                                             
+                                                            if is_live {
+                                                                error!("{} | 价格反转，未建仓，下单较小边 | 购买: {} | 数量: {:.2} | 价格: {:.4}", market_display, buy_side_name, order_size, buy_price);
+                                                                match executor.buy_at_price(buy_token_id, buy_price, order_size).await {
+                                                                    Ok(buy_response) => {
+                                                                        let mut order_status_map = order_status.lock().await;
+                                                                        order_status_map.insert(market_display.clone(), (true, buy_side_name.to_string(), buy_token_id.to_string(), "".to_string(), order_size.to_string(), buy_price.to_string()));
+                                                                        use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                        use chrono::Utc;
+                                                                        let buy_order_id = if buy_response.order_id.is_empty() {
+                                                                            format!("LIVE-{}", Utc::now().timestamp_millis())
+                                                                        } else {
+                                                                            buy_response.order_id.clone()
+                                                                        };
+                                                                        add_trade(TradeRecord {
+                                                                            id: buy_order_id,
+                                                                            market_id: market_id_str,
+                                                                            market_slug: market_display.clone(),
+                                                                            side: "Buy".to_string(),
+                                                                            price: buy_price.to_string().parse().unwrap_or(0.0),
+                                                                            order_price: buy_price.to_string().parse().unwrap_or(0.0),
+                                                                            size: order_size.to_f64().unwrap_or(0.0),
+                                                                            timestamp: Utc::now().timestamp(),
+                                                                            status: "Bought".to_string(),
+                                                                            profit: None,
+                                                                            buy_countdown: Some(countdown_for_trade.clone()),
+                                                                            sell_countdown: None,
+                                                                        });
+                                                                        error!("{} | 价格反转，下单较小边成功 | 订单ID: {:?} | 购买: {} | 数量: {:.2} | 价格: {:.4}", market_display, buy_response.order_id, buy_side_name, order_size, buy_price);
+                                                                    }
+                                                                    Err(e) => {
+                                                                        error!("{} | 价格反转，下单较小边失败: {:?}", market_display, e);
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                error!("{} | 价格反转，执行模拟下单较小边 | 购买: {} | 数量: {:.2} | 价格: {:.4}", market_display, buy_side_name, order_size, buy_price);
+                                                                let mut order_status_map = order_status.lock().await;
+                                                                order_status_map.insert(market_display.clone(), (true, buy_side_name.to_string(), buy_token_id.to_string(), "".to_string(), order_size.to_string(), buy_price.to_string()));
+                                                                use crate::utils::trade_history::{add_trade, TradeRecord};
+                                                                use chrono::Utc;
+                                                                let sim_buy_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
+                                                                add_trade(TradeRecord {
+                                                                    id: sim_buy_order_id,
+                                                                    market_id: market_id_str,
+                                                                    market_slug: market_display.clone(),
+                                                                    side: "Buy".to_string(),
+                                                                    price: buy_price.to_string().parse().unwrap_or(0.0),
+                                                                    order_price: buy_price.to_string().parse().unwrap_or(0.0),
+                                                                    size: order_size.to_f64().unwrap_or(0.0),
+                                                                    timestamp: Utc::now().timestamp(),
+                                                                    status: "SimBought".to_string(),
+                                                                    profit: None,
+                                                                    buy_countdown: Some(countdown_for_trade.clone()),
+                                                                    sell_countdown: None,
+                                                                });
+                                                            }
                                                         }
                                                     }
                                                 });
                                             }
                                         } else if current_larger.is_some() {
                                             // 较大的一边未变化，计数加1
-                                            if *counter == 60 {
-                                                *counter = 0;
-                                            }
                                             *counter += 1;
                                             let side_str = if current_larger == Some(true) { "Yes" } else { "No" };
                                             error!(
@@ -830,196 +1026,673 @@ async fn main() -> Result<()> {
                                         let price_greater_than_97 = price > dec!(0.97);
 
                                         
-                                        let counter_val = yes_greater_than_no_counters.get(&market_id).map(|r| *r).unwrap_or(0);
-                                        let price_greater_count = counter_val == 60;
+                                        // 先检查计数器值
+                                        let price_greater_count = yes_greater_than_no_counters.get(&market_id).map(|r| *r == 60).unwrap_or(false);
                                         let default = (false, "".to_string(),"".to_string(),"".to_string(),"".to_string(),"".to_string());
                                         let order_status_lock = order_status.lock().await;
                                         let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size,order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
+                                        
+                                        // 计数达到60后重置
+                                        if price_greater_count {
+                                            yes_greater_than_no_counters.insert(market_id, 0);
+                                        }
 
                                         //如果有订单,而且订单中购买的token这边价格卖价在0.97,对订单进行清仓
-                                    if  price_greater_than_07 {
+                                    if  countdown_within_180 &&  price_greater_count {
                                         if price_greater_than_97 {//大于0.97的那侧
-                                            info!("止盈策略执行,卖掉当前的订单,当前价格为{}", price);
-                                            
-                                            let is_running_clone = is_running.clone();
-                                            let market_id_str = market_id.to_string();
-                                            let countdown_for_trade = countdown_str.clone();
-                                            let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                    if is_live {
-                                                            if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                            error!("{} | 价格大于0.97，已建仓，执行卖出操作", market_display);
-                                                            let sell_token_id = U256::from_str(&order_token_id).unwrap_or(U256::ZERO);
-                                                            let sell_size = position_tracker.get_position(sell_token_id);
-                                                            let sell_price = dec!(0.01); // 使用与一键平仓相同的价格，确保快速成交
-                                                            let countdown_for_trade = countdown_str.clone();
-                                                            let market_id_str = market_id.to_string();
-                                                            let order_side_name_clone = order_side_name.clone();
-                                                            tokio::spawn({
-                                                                let executor = executor.clone();
-                                                                let market_display = market_display.clone();
-                                                                let order_status = order_status.clone();
-                                                                let countdown_for_trade = countdown_for_trade;
-                                                                let market_id_str = market_id_str;
-                                                                let order_side_name = order_side_name_clone;
-                                                                let is_running_clone = is_running.clone();
-                                                                let position_tracker = position_tracker.clone();
-                                                                async move {
-                                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                                    if is_live {
-                                                                        if sell_size > dec!(0.01) {
-                                                                            let size_floor = (sell_size * dec!(100)).floor() / dec!(100);
-                                                                            match executor.sell_at_price(sell_token_id, sell_price, size_floor).await {
-                                                                                Ok(response) => {
-                                                                                    let mut order_status_map = order_status.lock().await;
-                                                                                    order_status_map.insert(market_display.clone(), (false, "".to_string(), "".to_string(), "".to_string(), "".to_string(), "".to_string()));
-                                                                                    // 更新持仓记录（卖出后减少持仓）
-                                                                                    position_tracker.update_position(sell_token_id, -size_floor);
-                                                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                                                    use chrono::Utc;
-                                                                                    let order_id = if response.order_id.is_empty() {
-                                                                                        format!("CLOSE-{}", Utc::now().timestamp_millis())
-                                                                                    } else {
-                                                                                        response.order_id.clone()
-                                                                                    };
-                                                                                    add_trade(TradeRecord {
-                                                                                        id: order_id,
-                                                                                        market_id: market_id_str,
-                                                                                        market_slug: market_display.clone(),
-                                                                                        side: "Sell".to_string(),
-                                                                                        price: sell_price.to_string().parse().unwrap_or(0.0),
-                                                                                        order_price: sell_price.to_string().parse().unwrap_or(0.0),
-                                                                                        size: size_floor.to_f64().unwrap_or(0.0),
-                                                                                        timestamp: Utc::now().timestamp(),
-                                                                                        status: "Closed".to_string(),
-                                                                                        profit: None,
-                                                                                        buy_countdown: None,
-                                                                                        sell_countdown: Some(countdown_for_trade.clone()),
-                                                                                    });
-                                                                                    error!("{} | 止盈平仓，卖出操作成功 | 订单ID: {:?} | 卖出: {} | 数量: {:.2}", market_display, response.order_id, order_side_name, size_floor);
-                                                                                }
-                                                                                Err(e) => {
-                                                                                    error!("{} | 止盈平仓，卖出操作失败: {:?}", market_display, e);
-                                                                                }
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            });
-                                                            }
-                                                        }
-                                        }else{//大于0.7小于0.97的那侧
-                                            if price_greater_count {
-                                            error!("{} | 倒计时120秒内 | 计数: {} | Yes:A{:.4} No:A{:.4}", market_display, counter_val, yes_price, no_price);
-                                                            let order_price_usd = calculate_order_price(&market_display, &lostcount, &wincount, &loststate);
-                                            let countdown_for_trade = countdown_str.clone();
-                                            tokio::spawn({
-                                                let executor = executor.clone();
-                                                let market_display = market_display.clone();
-                                                let side_name = side_name.to_string();
-                                                let order_status = order_status.clone();
-                                                let token_id = token_id;
-                                                let low_token_id = low_token_id;
-                                                let is_running_clone = is_running.clone();
-                                                let mid = market_id;
-                                                let counters = yes_greater_than_no_counters.clone();
-                                                let order_price = order_price_usd;
-                                                let countdown_for_trade = countdown_for_trade.clone();
-                                                let market_id_str = market_id.to_string();
-                                                let position_tracker = position_tracker.clone();
-                                                async move {
-                                                    let is_live = is_running_clone.load(Ordering::Relaxed);
-                                                    if is_live {
-                                                        if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                            info!("{} | 下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了", market_display);    
-                                                        }else{
-                                                            match executor.buy_market_usd(token_id, price, order_price_usd).await {
-                                                                Ok(response) => {
-                                                                    // 计算实际购买数量（与 buy_market_usd 方法中的逻辑一致）
-                                                                    let mut buy_size = (order_price_usd / price).round_dp(0);
-                                                                    if buy_size < dec!(1) {
-                                                                        buy_size = dec!(1);
-                                                                    }
-                                                                    let min_size_for_order_price = (dec!(1) / dec!(0.99)).ceil();
-                                                                    if buy_size < min_size_for_order_price {
-                                                                        buy_size = min_size_for_order_price;
-                                                                    }
-                                                                    order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),buy_size.to_string(),price.to_string().into()));
-                                                                    // 更新持仓记录
-                                                                    position_tracker.update_position(token_id, buy_size);
-                                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                                    use chrono::Utc;
-                                                                    let order_id = if response.order_id.is_empty() {
-                                                                        format!("LIVE-{}", Utc::now().timestamp_millis())
-                                                                    } else {
-                                                                        response.order_id.clone()
-                                                                    };
-                                                                    let size = buy_size.to_f64().unwrap_or(0.0);
-                                                                    add_trade(TradeRecord {
-                                                                        id: order_id,
-                                                                        market_id: market_id_str,
-                                                                        market_slug: market_display.clone(),
-                                                                        side: side_name.clone(),
-                                                                        order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
-                                                                        price: price.to_string().parse().unwrap_or(0.0),
-                                                                        size: size,
-                                                                        timestamp: Utc::now().timestamp(),
-                                                                        status: "Bought".to_string(),
-                                                                        profit: None,
-                                                                        buy_countdown: Some(countdown_for_trade.clone()),
-                                                                        sell_countdown: None,
-                                                                    });
-                                                                    info!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单成功 | 订单ID: {:?} | 购买: {} | 金额: {:.2}美元 | 数量: {:.0}", market_display, response.order_id, side_name, order_price_usd, buy_size);
-                                                                }
-                                                                Err(e) => {
-                                                                    error!("{} | 下单条件在180秒内，价格大于0.7，计数60次，订单下单失败: {:?} | 购买: {}", market_display, e, side_name);
-                                                                }
-                                                            }
-                                                        }
-                                                    } else {
-                                                          if is_ordered {//如果已经建仓,价格发生了反转,则先卖后买
-                                                                info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 已建仓,不购买了", market_display);    
-                                                          }else{
-                                                            // 计算实际购买数量（与 buy_market_usd 方法中的逻辑一致）
-                                                            let mut buy_size = (order_price_usd / price).round_dp(0);
-                                                            if buy_size < dec!(1) {
-                                                                buy_size = dec!(1);
-                                                            }
-                                                            let min_size_for_order_price = (dec!(1) / dec!(0.99)).ceil();
-                                                            if buy_size < min_size_for_order_price {
-                                                                buy_size = min_size_for_order_price;
-                                                            }
-                                                            info!("{} | 模拟下单条件在180秒内，价格大于0.7，计数60次 | 购买: {} | 金额: {:.2}美元 | 数量: {:.0}", market_display, side_name, order_price_usd, buy_size);
-                                                            if let Some(mut c) = counters.get_mut(&mid) { *c = 0; }
-                                                            order_status.lock().await.insert(market_display.clone(), (true, side_name.clone(),token_id.to_string(),low_token_id.to_string(),buy_size.to_string(),price.to_string().into()));
-                                                            use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                            use chrono::Utc;
-                                                            let sim_order_id = format!("SIM-{}", Utc::now().timestamp_millis());
-                                                            let size = buy_size.to_f64().unwrap_or(0.0);
-                                                            add_trade(TradeRecord {
-                                                                id: sim_order_id,
-                                                                market_id: market_id_str,
-                                                                market_slug: market_display.clone(),
-                                                                side: side_name.clone(),
-                                                                order_price: order_price_usd.to_string().parse().unwrap_or(0.0),
-                                                                price: price.to_string().parse().unwrap_or(0.0),
-                                                                size: size,
-                                                                timestamp: Utc::now().timestamp(),
-                                                                status: "SimBought".to_string(),
-                                                                profit: None,
-                                                                buy_countdown: Some(countdown_for_trade.clone()),
-                                                                sell_countdown: None,
-                                                            });
-                                                          }
-                                                        
-                                                    }
-                                                }
-                                            });
-
+                                            if end_order==false {
+                                                end_order=true;
+                                                //下单较小的一边
+                                                
+                                                // 确定当前较小的一边
+                                                let current_smaller = if yes_price < no_price {
+                                                    Some(true) // yes较小
+                                                } else if no_price < yes_price {
+                                                    Some(false) // no较小
+                                                } else {
+                                                    None // 价格相等
+                                                };
+                                                
+                                                // 下单较小的一边
+                                                let (buy_token_id, buy_price, buy_side_name) = if current_smaller == Some(true) {
+                                                    (pair.yes_book.asset_id, yes_price * dec!(0.99), "Yes")
+                                                } else if current_smaller == Some(false) {
+                                                    (pair.no_book.asset_id, no_price * dec!(0.99), "No")
+                                                } else {
+                                                    // 价格相等，选择yes
+                                                    (pair.yes_book.asset_id, yes_price * dec!(0.99), "Yes")
+                                                };
+                                                
+                                                let order_size = dec!(5);
+                                                let order_total_cost = buy_price * order_size;
+                                                
+                                                let market_key = market_display.clone();
+                                                
+                                                // 计算较小边的利润，并根据yes/no追加到UP或DOWN
+                                                let (smaller_avg_price, smaller_total_qty, smaller_gross_profit, smaller_net_profit, 
+                                                     up_avg_price, up_total_qty, up_total_cost, up_gross_profit, up_net_profit, 
+                                                     down_avg_price, down_total_qty, down_total_cost, down_gross_profit, down_net_profit) = 
+                                                    if let Some(history) = up_down_history.get(&market_key) {
+                                                    let prev_up_avg_price = history.up_avg_price;
+                                                    let prev_up_size = history.up_total_qty;
+                                                    let prev_down_avg_price = history.down_avg_price;
+                                                    let prev_down_size = history.down_total_qty;
+                                                    
+                                                    // 根据是yes还是no决定使用哪个历史数据
+                                                    let (prev_side_avg_price, prev_side_size, prev_other_total_cost) = 
+                                                        if current_smaller == Some(true) {
+                                                            // yes较小，使用UP的历史数据
+                                                            (prev_up_avg_price, prev_up_size, history.down_total_cost)
+                                                        } else {
+                                                            // no较小，使用DOWN的历史数据
+                                                            (prev_down_avg_price, prev_down_size, history.up_total_cost)
+                                                        };
+                                                    
+                                                    let new_smaller_avg_price = (prev_side_avg_price * prev_side_size + buy_price * order_size) / (prev_side_size + order_size);
+                                                    let new_smaller_total_qty = prev_side_size + order_size;
+                                                    let new_smaller_gross_profit = (dec!(1) - new_smaller_avg_price) * new_smaller_total_qty;
+                                                    let new_smaller_net_profit = new_smaller_gross_profit - prev_other_total_cost;
+                                                    
+                                                    // 根据是yes还是no决定追加到UP还是DOWN
+                                                    let (new_up_avg_price, new_up_total_qty, new_up_total_cost, new_up_gross_profit, new_up_net_profit,
+                                                         new_down_avg_price, new_down_total_qty, new_down_total_cost, new_down_gross_profit, new_down_net_profit) = 
+                                                        if current_smaller == Some(true) {
+                                                            // yes较小，追加到UP
+                                                            let up_total_qty = prev_up_size + order_size;
+                                                            let up_avg_price = (prev_up_avg_price * prev_up_size + buy_price * order_size) / up_total_qty;
+                                                            let up_total_cost = history.up_total_cost + order_total_cost;
+                                                            let up_gross_profit = (dec!(1) - up_avg_price) * up_total_qty;
+                                                            let up_net_profit = up_gross_profit - history.down_total_cost;
+                                                            (up_avg_price, up_total_qty, up_total_cost, up_gross_profit, up_net_profit,
+                                                             prev_down_avg_price, prev_down_size, history.down_total_cost, history.down_gross_profit, history.down_net_profit)
+                                                        } else {
+                                                            // no较小，追加到DOWN
+                                                            let down_total_qty = prev_down_size + order_size;
+                                                            let down_avg_price = (prev_down_avg_price * prev_down_size + buy_price * order_size) / down_total_qty;
+                                                            let down_total_cost = history.down_total_cost + order_total_cost;
+                                                            let down_gross_profit = (dec!(1) - down_avg_price) * down_total_qty;
+                                                            let down_net_profit = down_gross_profit - history.up_total_cost;
+                                                            (prev_up_avg_price, prev_up_size, history.up_total_cost, history.up_gross_profit, history.up_net_profit,
+                                                             down_avg_price, down_total_qty, down_total_cost, down_gross_profit, down_net_profit)
+                                                        };
+                                                    
+                                                    (new_smaller_avg_price, new_smaller_total_qty, new_smaller_gross_profit, new_smaller_net_profit,
+                                                     new_up_avg_price, new_up_total_qty, new_up_total_cost, new_up_gross_profit, new_up_net_profit,
+                                                     new_down_avg_price, new_down_total_qty, new_down_total_cost, new_down_gross_profit, new_down_net_profit)
+                                                } else {
+                                                    let smaller_gross_profit = (dec!(1) - buy_price) * order_size;
+                                                    // 根据是yes还是no决定追加到UP还是DOWN
+                                                    let (up_avg, up_qty, up_cost, up_gross, up_net, down_avg, down_qty, down_cost, down_gross, down_net) = 
+                                                        if current_smaller == Some(true) {
+                                                            // yes较小，追加到UP
+                                                            (buy_price, order_size, order_total_cost, smaller_gross_profit, smaller_gross_profit - dec!(0),
+                                                             dec!(0), dec!(0), dec!(0), dec!(0), dec!(0))
+                                                        } else {
+                                                            // no较小，追加到DOWN
+                                                            (dec!(0), dec!(0), dec!(0), dec!(0), dec!(0),
+                                                             buy_price, order_size, order_total_cost, smaller_gross_profit, smaller_gross_profit)
+                                                        };
+                                                    (buy_price, order_size, smaller_gross_profit, smaller_gross_profit,
+                                                     up_avg, up_qty, up_cost, up_gross, up_net,
+                                                     down_avg, down_qty, down_cost, down_gross, down_net)
+                                                };
+                                                
+                                                info!("{} | 价格大于0.97，下单较小边 | 购买: {} | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边积累总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4}", 
+                                                    market_display, buy_side_name, buy_price, order_size, order_total_cost, 
+                                                    if current_smaller == Some(true) { up_total_cost } else { down_total_cost },
+                                                    smaller_avg_price, smaller_total_qty, smaller_gross_profit, smaller_net_profit);
+                                                
+                                                // 更新历史记录
+                                                let existing_history = up_down_history.get(&market_key)
+                                                    .map(|r| r.clone())
+                                                    .unwrap_or(UpDownOrderInfo {
+                                                        up_price: dec!(0),
+                                                        up_size: dec!(0),
+                                                        up_total_qty: dec!(0),
+                                                        up_total_cost: dec!(0),
+                                                        up_avg_price: dec!(0),
+                                                        up_gross_profit: dec!(0),
+                                                        up_net_profit: dec!(0),
+                                                        down_price: dec!(0),
+                                                        down_size: dec!(0),
+                                                        down_total_qty: dec!(0),
+                                                        down_total_cost: dec!(0),
+                                                        down_avg_price: dec!(0),
+                                                        down_gross_profit: dec!(0),
+                                                        down_net_profit: dec!(0),
+                                                    });
+                                                up_down_history.insert(market_key.clone(), UpDownOrderInfo {
+                                                   // 更新UP数据
+                                                   up_price: if current_smaller == Some(true) { buy_price } else { existing_history.up_price },
+                                                   up_size: if current_smaller == Some(true) { order_size } else { existing_history.up_size },
+                                                   up_total_qty,
+                                                   up_total_cost,
+                                                   up_avg_price,
+                                                   up_gross_profit,
+                                                   up_net_profit,
+                                                   // 更新DOWN数据
+                                                   down_price: if current_smaller == Some(false) { buy_price } else { existing_history.down_price },
+                                                   down_size: if current_smaller == Some(false) { order_size } else { existing_history.down_size },
+                                                   down_total_qty,
+                                                   down_total_cost,
+                                                   down_avg_price,
+                                                   down_gross_profit,
+                                                   down_net_profit,
+                                               });
+                                                
+                                                // 这里可以添加实际的下单逻辑
                                             }
-
-
-                                            
+                                        }else{//大于0.7小于0.97的那侧
+                                           //下单较大的一边,并进行做一个变量赋值0进行计数,如果计数等于2,则下较大一边一单同时,再下较小的一边一单
+                                           
+                                           // 确定当前较大的一边
+                                           let current_larger = if yes_price > no_price {
+                                               Some(true) // yes较大
+                                           } else if no_price > yes_price {
+                                               Some(false) // no较大
+                                           } else {
+                                               None // 价格相等
+                                           };
+                                           
+                                           // 创建或获取较大边订单计数器
+                                           let mut counter = larger_side_order_counters.entry(market_id).or_insert(0);
+                                           *counter += 1;
+                                           
+                                           // 下单较大的一边
+                                           let (buy_token_id, buy_price, buy_side_name) = if current_larger == Some(true) {
+                                               (pair.yes_book.asset_id, yes_price * dec!(1.02), "Yes")
+                                           } else if current_larger == Some(false) {
+                                               (pair.no_book.asset_id, no_price * dec!(1.02), "No")
+                                           } else {
+                                               // 价格相等，选择yes
+                                               (pair.yes_book.asset_id, yes_price * dec!(1.02), "Yes")
+                                           };
+                                           
+                                           let order_size = dec!(5);
+                                           let order_total_cost = buy_price * order_size;
+                                           
+                                           let market_key = market_display.clone();
+                                           
+                                           // 计算较大边的利润
+                                           let (larger_avg_price, larger_total_qty, larger_gross_profit, larger_net_profit,
+                                                up_avg_price, up_total_qty, up_total_cost, up_gross_profit, up_net_profit,
+                                                down_avg_price, down_total_qty, down_total_cost, down_gross_profit, down_net_profit) = 
+                                               if let Some(history) = up_down_history.get(&market_key) {
+                                               let prev_up_avg_price = history.up_avg_price;
+                                               let prev_up_size = history.up_total_qty;
+                                               let prev_down_avg_price = history.down_avg_price;
+                                               let prev_down_size = history.down_total_qty;
+                                               
+                                               // 计算较大边的中间值（仅用于日志输出）
+                                               let (prev_larger_avg_price, prev_larger_size) = if current_larger == Some(true) {
+                                                   (prev_up_avg_price, prev_up_size)
+                                               } else {
+                                                   (prev_down_avg_price, prev_down_size)
+                                               };
+                                               let new_larger_avg_price = (prev_larger_avg_price * prev_larger_size + buy_price * order_size) / (prev_larger_size + order_size);
+                                               let new_larger_total_qty = prev_larger_size + order_size;
+                                               let new_larger_gross_profit = (dec!(1) - new_larger_avg_price) * new_larger_total_qty;
+                                               let new_larger_net_profit = new_larger_gross_profit - if current_larger == Some(true) {
+                                                   history.down_total_cost
+                                               } else {
+                                                   history.up_total_cost
+                                               };
+                                               
+                                               // 根据是yes还是no决定追加到UP还是DOWN
+                                               let (new_up_avg_price, new_up_total_qty, new_up_total_cost, new_up_gross_profit, new_up_net_profit,
+                                                    new_down_avg_price, new_down_total_qty, new_down_total_cost, new_down_gross_profit, new_down_net_profit) = 
+                                                   if current_larger == Some(true) {
+                                                       // yes较大，追加到UP
+                                                       let up_total_qty = prev_up_size + order_size;
+                                                       let up_avg_price = (prev_up_avg_price * prev_up_size + buy_price * order_size) / up_total_qty;
+                                                       let up_total_cost = history.up_total_cost + order_total_cost;
+                                                       let up_gross_profit = (dec!(1) - up_avg_price) * up_total_qty;
+                                                       let up_net_profit = up_gross_profit - history.down_total_cost;
+                                                       (up_avg_price, up_total_qty, up_total_cost, up_gross_profit, up_net_profit,
+                                                        prev_down_avg_price, prev_down_size, history.down_total_cost, history.down_gross_profit, history.down_net_profit)
+                                                   } else {
+                                                       // no较大，追加到DOWN
+                                                       let down_total_qty = prev_down_size + order_size;
+                                                       let down_avg_price = (prev_down_avg_price * prev_down_size + buy_price * order_size) / down_total_qty;
+                                                       let down_total_cost = history.down_total_cost + order_total_cost;
+                                                       let down_gross_profit = (dec!(1) - down_avg_price) * down_total_qty;
+                                                       let down_net_profit = down_gross_profit - history.up_total_cost;
+                                                       (prev_up_avg_price, prev_up_size, history.up_total_cost, history.up_gross_profit, history.up_net_profit,
+                                                        down_avg_price, down_total_qty, down_total_cost, down_gross_profit, down_net_profit)
+                                                   };
+                                               
+                                               (new_larger_avg_price, new_larger_total_qty, new_larger_gross_profit, new_larger_net_profit,
+                                                new_up_avg_price, new_up_total_qty, new_up_total_cost, new_up_gross_profit, new_up_net_profit,
+                                                new_down_avg_price, new_down_total_qty, new_down_total_cost, new_down_gross_profit, new_down_net_profit)
+                                           } else {
+                                               let larger_gross_profit = (dec!(1) - buy_price) * order_size;
+                                               // 根据是yes还是no决定追加到UP还是DOWN
+                                               let (up_avg, up_qty, up_cost, up_gross, up_net, down_avg, down_qty, down_cost, down_gross, down_net) = 
+                                                   if current_larger == Some(true) {
+                                                       // yes较大，追加到UP
+                                                       (buy_price, order_size, order_total_cost, larger_gross_profit, larger_gross_profit - dec!(0),
+                                                        dec!(0), dec!(0), dec!(0), dec!(0), dec!(0))
+                                                   } else {
+                                                       // no较大，追加到DOWN
+                                                       (dec!(0), dec!(0), dec!(0), dec!(0), dec!(0),
+                                                        buy_price, order_size, order_total_cost, larger_gross_profit, larger_gross_profit)
+                                                   };
+                                               (buy_price, order_size, larger_gross_profit, larger_gross_profit,
+                                                up_avg, up_qty, up_cost, up_gross, up_net,
+                                                down_avg, down_qty, down_cost, down_gross, down_net)
+                                           };
+                                           
+                                           // 计算积累总成本
+                                           let accumulated_cost = if up_down_history.contains_key(&market_key) {
+                                               if current_larger == Some(true) { up_total_cost } else { down_total_cost }
+                                           } else {
+                                               if current_larger == Some(true) { up_total_cost } else { down_total_cost }
+                                           };
+                                           
+                                           info!("{} | 下单较大边 | 计数: {} | 购买: {} | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边积累总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4}", 
+                                               market_display, *counter, buy_side_name, buy_price, order_size, order_total_cost, 
+                                               accumulated_cost,
+                                               larger_avg_price, larger_total_qty, larger_gross_profit, larger_net_profit);
+                                           
+                                           // 如果计数等于2，同时下单较小的一边
+                                           if *counter == 2 {
+                                               let current_smaller = if current_larger == Some(true) {
+                                                   Some(false) // yes较大，则no较小
+                                               } else if current_larger == Some(false) {
+                                                   Some(true) // no较大，则yes较小
+                                               } else {
+                                                   None
+                                               };
+                                               
+                                               let (smaller_token_id, smaller_price, smaller_side_name) = if current_larger == Some(true) {
+                                                   (pair.no_book.asset_id, no_price * dec!(0.99), "No")
+                                               } else if current_larger == Some(false) {
+                                                   (pair.yes_book.asset_id, yes_price * dec!(0.99), "Yes")
+                                               } else {
+                                                   // 价格相等，选择no
+                                                   (pair.no_book.asset_id, no_price * dec!(0.99), "No")
+                                               };
+                                                
+                                               let smaller_size = dec!(5);
+                                               let smaller_total_cost = smaller_price * smaller_size;
+                                               
+                                               // 计算较小边的利润
+                                               let (smaller_avg_price, smaller_total_qty, smaller_gross_profit, smaller_net_profit) = if let Some(history) = up_down_history.get(&market_key) {
+                                                   let prev_up_avg_price = history.up_avg_price;
+                                                   let prev_up_size = history.up_total_qty;
+                                                   let prev_down_avg_price = history.down_avg_price;
+                                                   let prev_down_size = history.down_total_qty;
+                                                   
+                                                   // 根据是yes还是no决定使用哪个历史数据
+                                                   let (prev_side_avg_price, prev_side_size, prev_other_avg_price, prev_other_size, prev_other_total_cost) = 
+                                                       if current_smaller == Some(true) {
+                                                           // yes较小，使用UP的历史数据
+                                                           (prev_up_avg_price, prev_up_size, prev_down_avg_price, prev_down_size, history.down_total_cost)
+                                                       } else {
+                                                           // no较小，使用DOWN的历史数据
+                                                           (prev_down_avg_price, prev_down_size, prev_up_avg_price, prev_up_size, history.up_total_cost)
+                                                       };
+                                                   
+                                                   let new_smaller_avg_price = (prev_side_avg_price * prev_side_size + smaller_price * smaller_size) / (prev_side_size + smaller_size);
+                                                   let new_smaller_total_qty = prev_side_size + smaller_size;
+                                                   let new_smaller_gross_profit = (dec!(1) - new_smaller_avg_price) * new_smaller_total_qty;
+                                                   let new_smaller_net_profit = new_smaller_gross_profit - prev_other_total_cost;
+                                                   
+                                                   (new_smaller_avg_price, new_smaller_total_qty, new_smaller_gross_profit, new_smaller_net_profit)
+                                               } else {
+                                                   let smaller_gross_profit = (dec!(1) - smaller_price) * smaller_size;
+                                                   let smaller_net_profit = smaller_gross_profit;
+                                                   (smaller_price, smaller_size, smaller_gross_profit, smaller_net_profit)
+                                               };
+                                               
+                                               info!("{} | 计数达到2，同时下单较小边 | 购买: {} | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边积累总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4}", 
+                                                   market_display, smaller_side_name, smaller_price, smaller_size, smaller_total_cost, 
+                                                   if current_smaller == Some(true) { up_total_cost } else { down_total_cost },
+                                                   smaller_avg_price, smaller_total_qty, smaller_gross_profit, smaller_net_profit);
+                                                
+                                               // 更新历史记录
+                                               let existing_history = up_down_history.get(&market_key)
+                                                   .map(|r| r.clone())
+                                                   .unwrap_or(UpDownOrderInfo {
+                                                       up_price: dec!(0),
+                                                       up_size: dec!(0),
+                                                       up_total_qty: dec!(0),
+                                                       up_total_cost: dec!(0),
+                                                       up_avg_price: dec!(0),
+                                                       up_gross_profit: dec!(0),
+                                                       up_net_profit: dec!(0),
+                                                       down_price: dec!(0),
+                                                       down_size: dec!(0),
+                                                       down_total_qty: dec!(0),
+                                                       down_total_cost: dec!(0),
+                                                       down_avg_price: dec!(0),
+                                                       down_gross_profit: dec!(0),
+                                                       down_net_profit: dec!(0),
+                                                   });
+                                               up_down_history.insert(market_key.clone(), UpDownOrderInfo {
+                                                   // 更新UP数据（根据current_larger和current_smaller）
+                                                   up_price: if current_larger == Some(true) { buy_price } else if current_smaller == Some(true) { smaller_price } else { existing_history.up_price },
+                                                   up_size: if current_larger == Some(true) { order_size } else if current_smaller == Some(true) { smaller_size } else { existing_history.up_size },
+                                                   up_total_qty,
+                                                   up_total_cost,
+                                                   up_avg_price,
+                                                   up_gross_profit,
+                                                   up_net_profit,
+                                                   // 更新DOWN数据（根据current_larger和current_smaller）
+                                                   down_price: if current_larger == Some(false) { buy_price } else if current_smaller == Some(false) { smaller_price } else { existing_history.down_price },
+                                                   down_size: if current_larger == Some(false) { order_size } else if current_smaller == Some(false) { smaller_size } else { existing_history.down_size },
+                                                   down_total_qty,
+                                                   down_total_cost,
+                                                   down_avg_price,
+                                                   down_gross_profit,
+                                                   down_net_profit,
+                                               });
+                                                
+                                               // 重置计数器
+                                               *counter = 0;
+                                           } else {
+                                               // 更新历史记录
+                                               let existing_history = up_down_history.get(&market_key)
+                                                   .map(|r| r.clone())
+                                                   .unwrap_or(UpDownOrderInfo {
+                                                       up_price: dec!(0),
+                                                       up_size: dec!(0),
+                                                       up_total_qty: dec!(0),
+                                                       up_total_cost: dec!(0),
+                                                       up_avg_price: dec!(0),
+                                                       up_gross_profit: dec!(0),
+                                                       up_net_profit: dec!(0),
+                                                       down_price: dec!(0),
+                                                       down_size: dec!(0),
+                                                       down_total_qty: dec!(0),
+                                                       down_total_cost: dec!(0),
+                                                       down_avg_price: dec!(0),
+                                                       down_gross_profit: dec!(0),
+                                                       down_net_profit: dec!(0),
+                                                   });
+                                               up_down_history.insert(market_key.clone(), UpDownOrderInfo {
+                                                   // 更新UP数据
+                                                   up_price: if current_larger == Some(true) { buy_price } else { existing_history.up_price },
+                                                   up_size: if current_larger == Some(true) { order_size } else { existing_history.up_size },
+                                                   up_total_qty,
+                                                   up_total_cost,
+                                                   up_avg_price,
+                                                   up_gross_profit,
+                                                   up_net_profit,
+                                                   // 更新DOWN数据
+                                                   down_price: if current_larger == Some(false) { buy_price } else { existing_history.down_price },
+                                                   down_size: if current_larger == Some(false) { order_size } else { existing_history.down_size },
+                                                   down_total_qty,
+                                                   down_total_cost,
+                                                   down_avg_price,
+                                                   down_gross_profit,
+                                                   down_net_profit,
+                                               });
+                                           }
+                                           
+                                           // 这里可以添加实际的下单逻辑
                                         }
+                                    }else{
+                                        if countdown_within_30 {
+
+                                            if end_30==false {
+                                                end_30=true;
+//下单较大的一边,并输出日志
+                                            // 确定当前较大的一边
+                                            let current_larger = if yes_price > no_price {
+                                                Some(true) // yes较大
+                                            } else if no_price > yes_price {
+                                                Some(false) // no较大
+                                            } else {
+                                                None // 价格相等
+                                            };
+                                            
+                                            // 创建或获取较大边订单计数器
+                                            let mut counter = larger_side_order_counters.entry(market_id).or_insert(0);
+                                            *counter += 1;
+                                            
+                                            // 下单较大的一边
+                                            let (buy_token_id, buy_price, buy_side_name) = if current_larger == Some(true) {
+                                                (pair.yes_book.asset_id, yes_price * dec!(1.02), "Yes")
+                                            } else if current_larger == Some(false) {
+                                                (pair.no_book.asset_id, no_price * dec!(1.02), "No")
+                                            } else {
+                                                // 价格相等，选择yes
+                                                (pair.yes_book.asset_id, yes_price * dec!(1.02), "Yes")
+                                            };
+                                            
+                                            let order_size = dec!(5);
+                                            let order_total_cost = buy_price * order_size;
+                                            
+                                            let market_key = market_display.clone();
+                                            
+                                            // 计算较大边的利润
+                                             let (larger_avg_price, larger_total_qty, larger_gross_profit, larger_net_profit,
+                                                  up_avg_price, up_total_qty, up_total_cost, up_gross_profit, up_net_profit,
+                                                  down_avg_price, down_total_qty, down_total_cost, down_gross_profit, down_net_profit) = 
+                                                 if let Some(history) = up_down_history.get(&market_key) {
+                                                 let prev_up_avg_price = history.up_avg_price;
+                                                 let prev_up_size = history.up_total_qty;
+                                                 let prev_down_avg_price = history.down_avg_price;
+                                                 let prev_down_size = history.down_total_qty;
+                                                 
+                                                 // 计算较大边的中间值（仅用于日志输出）
+                                                 let (prev_larger_avg_price, prev_larger_size) = if current_larger == Some(true) {
+                                                     (prev_up_avg_price, prev_up_size)
+                                                 } else {
+                                                     (prev_down_avg_price, prev_down_size)
+                                                 };
+                                                 let new_larger_avg_price = (prev_larger_avg_price * prev_larger_size + buy_price * order_size) / (prev_larger_size + order_size);
+                                                 let new_larger_total_qty = prev_larger_size + order_size;
+                                                 let new_larger_gross_profit = (dec!(1) - new_larger_avg_price) * new_larger_total_qty;
+                                                 let new_larger_net_profit = new_larger_gross_profit - if current_larger == Some(true) {
+                                                     history.down_total_cost
+                                                 } else {
+                                                     history.up_total_cost
+                                                 };
+                                                
+                                                // 根据是yes还是no决定追加到UP还是DOWN
+                                                let (new_up_avg_price, new_up_total_qty, new_up_total_cost, new_up_gross_profit, new_up_net_profit,
+                                                     new_down_avg_price, new_down_total_qty, new_down_total_cost, new_down_gross_profit, new_down_net_profit) = 
+                                                    if current_larger == Some(true) {
+                                                        // yes较大，追加到UP
+                                                        let up_total_qty = prev_up_size + order_size;
+                                                        let up_avg_price = (prev_up_avg_price * prev_up_size + buy_price * order_size) / up_total_qty;
+                                                        let up_total_cost = history.up_total_cost + order_total_cost;
+                                                        let up_gross_profit = (dec!(1) - up_avg_price) * up_total_qty;
+                                                        let up_net_profit = up_gross_profit - history.down_total_cost;
+                                                        (up_avg_price, up_total_qty, up_total_cost, up_gross_profit, up_net_profit,
+                                                         prev_down_avg_price, prev_down_size, history.down_total_cost, history.down_gross_profit, history.down_net_profit)
+                                                    } else {
+                                                        // no较大，追加到DOWN
+                                                        let down_total_qty = prev_down_size + order_size;
+                                                        let down_avg_price = (prev_down_avg_price * prev_down_size + buy_price * order_size) / down_total_qty;
+                                                        let down_total_cost = history.down_total_cost + order_total_cost;
+                                                        let down_gross_profit = (dec!(1) - down_avg_price) * down_total_qty;
+                                                        let down_net_profit = down_gross_profit - history.up_total_cost;
+                                                        (prev_up_avg_price, prev_up_size, history.up_total_cost, history.up_gross_profit, history.up_net_profit,
+                                                         down_avg_price, down_total_qty, down_total_cost, down_gross_profit, down_net_profit)
+                                                    };
+                                                
+                                                (new_larger_avg_price, new_larger_total_qty, new_larger_gross_profit, new_larger_net_profit,
+                                                 new_up_avg_price, new_up_total_qty, new_up_total_cost, new_up_gross_profit, new_up_net_profit,
+                                                 new_down_avg_price, new_down_total_qty, new_down_total_cost, new_down_gross_profit, new_down_net_profit)
+                                            } else {
+                                                let larger_gross_profit = (dec!(1) - buy_price) * order_size;
+                                                // 根据是yes还是no决定追加到UP还是DOWN
+                                                let (up_avg, up_qty, up_cost, up_gross, up_net, down_avg, down_qty, down_cost, down_gross, down_net) = 
+                                                    if current_larger == Some(true) {
+                                                        // yes较大，追加到UP
+                                                        (buy_price, order_size, order_total_cost, larger_gross_profit, larger_gross_profit - dec!(0),
+                                                         dec!(0), dec!(0), dec!(0), dec!(0), dec!(0))
+                                                    } else {
+                                                        // no较大，追加到DOWN
+                                                        (dec!(0), dec!(0), dec!(0), dec!(0), dec!(0),
+                                                         buy_price, order_size, order_total_cost, larger_gross_profit, larger_gross_profit)
+                                                    };
+                                                (buy_price, order_size, larger_gross_profit, larger_gross_profit,
+                                                 up_avg, up_qty, up_cost, up_gross, up_net,
+                                                 down_avg, down_qty, down_cost, down_gross, down_net)
+                                            };
+                                            
+                                            // 计算积累总成本
+                                            let accumulated_cost = if up_down_history.contains_key(&market_key) {
+                                                if current_larger == Some(true) { up_total_cost } else { down_total_cost }
+                                            } else {
+                                                if current_larger == Some(true) { up_total_cost } else { down_total_cost }
+                                            };
+                                            
+                                            info!("{} | 下单较大边 | 倒计时30秒内 | 计数: {} | 购买: {} | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边积累总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4}", 
+                                                market_display, *counter, buy_side_name, buy_price, order_size, order_total_cost, 
+                                                accumulated_cost,
+                                                larger_avg_price, larger_total_qty, larger_gross_profit, larger_net_profit);
+                                            
+                                            // 更新历史记录
+                                            let existing_history = up_down_history.get(&market_key)
+                                                .map(|r| r.clone())
+                                                .unwrap_or(UpDownOrderInfo {
+                                                       up_price: dec!(0),
+                                                       up_size: dec!(0),
+                                                       up_total_qty: dec!(0),
+                                                       up_total_cost: dec!(0),
+                                                       up_avg_price: dec!(0),
+                                                       up_gross_profit: dec!(0),
+                                                       up_net_profit: dec!(0),
+                                                       down_price: dec!(0),
+                                                       down_size: dec!(0),
+                                                       down_total_qty: dec!(0),
+                                                       down_total_cost: dec!(0),
+                                                       down_avg_price: dec!(0),
+                                                       down_gross_profit: dec!(0),
+                                                       down_net_profit: dec!(0),
+                                                   });
+                                            up_down_history.insert(market_key.clone(), UpDownOrderInfo {
+                                               // 更新UP数据
+                                               up_price: if current_larger == Some(true) { buy_price } else { existing_history.up_price },
+                                               up_size: if current_larger == Some(true) { order_size } else { existing_history.up_size },
+                                               up_total_qty,
+                                               up_total_cost,
+                                               up_avg_price,
+                                               up_gross_profit,
+                                               up_net_profit,
+                                               // 更新DOWN数据
+                                               down_price: if current_larger == Some(false) { buy_price } else { existing_history.down_price },
+                                               down_size: if current_larger == Some(false) { order_size } else { existing_history.down_size },
+                                               down_total_qty,
+                                               down_total_cost,
+                                               down_avg_price,
+                                               down_gross_profit,
+                                               down_net_profit,
+                                           });
+                                            
+                                            }
+                                            
+                                            // 这里可以添加实际的下单逻辑
+                                        }else{
+                                        //jiajiatodo
+                                        if first_order==false {
+                                            first_order=true;
+                                            //up和down分别根据当前价格下单限价单
+                                            if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
+                                                // 为up和down方向分别下单限价单
+                                                let up_price = yes_price * dec!(1.02); // 上涨方向价格
+                                                let down_price = no_price * dec!(0.99); // 下跌方向价格
+                                                
+                                                // 固定下单数量为5
+                                                let up_size = dec!(5);
+                                                let down_size = dec!(5);
+                                                
+                                                let up_total_cost = up_price * up_size;
+                                                let down_total_cost = down_price * down_size;
+                                                
+                                                let market_key = market_display.clone();
+                                                
+                                                let (up_avg_price, up_total_qty, up_total_cost, up_last_profit, up_last_net_profit) = if let Some(history) = up_down_history.get(&market_key) {
+                                                    let prev_up_price = history.up_avg_price;
+                                                    let prev_up_size = history.up_total_qty;
+                                                    let prev_up_total_cost = history.up_total_cost;
+                                                    let prev_down_price = history.down_avg_price;
+                                                    let prev_down_size = history.down_total_qty;
+
+                                                    let new_up_avg_price = (prev_up_price * prev_up_size + up_price * up_size) / (prev_up_size + up_size);
+                                                    let new_up_total_qty = prev_up_size + up_size;
+                                                    let new_up_total_cost = prev_up_total_cost + up_total_cost;
+                                                    let new_up_gross_profit = (dec!(1) - new_up_avg_price) * new_up_total_qty;
+                                                    let new_up_net_profit = new_up_gross_profit - (prev_down_price * prev_down_size);
+
+                                                    (new_up_avg_price, new_up_total_qty, new_up_total_cost, new_up_gross_profit, new_up_net_profit)
+                                                } else {
+                                                    let up_gross_profit = (dec!(1) - up_price) * up_size;
+                                                    let up_net_profit = up_gross_profit - down_total_cost;
+                                                    (up_price, up_size, up_total_cost, up_gross_profit, up_net_profit)
+                                                };
+
+                                                let (down_avg_price, down_total_qty, down_total_cost, down_last_profit, down_last_net_profit) = if let Some(history) = up_down_history.get(&market_key) {
+                                                    let prev_up_price = history.up_avg_price;
+                                                    let prev_up_size = history.up_total_qty;
+                                                    let prev_down_price = history.down_avg_price;
+                                                    let prev_down_size = history.down_total_qty;
+                                                    let prev_down_total_cost = history.down_total_cost;
+
+                                                    let new_down_avg_price = (prev_down_price * prev_down_size + down_price * down_size) / (prev_down_size + down_size);
+                                                    let new_down_total_qty = prev_down_size + down_size;
+                                                    let new_down_total_cost = prev_down_total_cost + down_total_cost;
+                                                    let new_down_gross_profit = (dec!(1) - new_down_avg_price) * new_down_total_qty;
+                                                    let new_down_net_profit = new_down_gross_profit - (prev_up_price * prev_up_size);
+
+                                                    (new_down_avg_price, new_down_total_qty, new_down_total_cost, new_down_gross_profit, new_down_net_profit)
+                                                } else {
+                                                    let down_gross_profit = (dec!(1) - down_price) * down_size;
+                                                    let down_net_profit = down_gross_profit - up_total_cost;
+                                                    (down_price, down_size, down_total_cost, down_gross_profit, down_net_profit)
+                                                };
+                                                
+                                                // 更新历史记录
+                                                let existing_history = up_down_history.get(&market_key)
+                                                    .map(|r| r.clone())
+                                                    .unwrap_or(UpDownOrderInfo {
+                                                        up_price: dec!(0),
+                                                        up_size: dec!(0),
+                                                        up_total_qty: dec!(0),
+                                                        up_total_cost: dec!(0),
+                                                        up_avg_price: dec!(0),
+                                                        up_gross_profit: dec!(0),
+                                                        up_net_profit: dec!(0),
+                                                        down_price: dec!(0),
+                                                        down_size: dec!(0),
+                                                        down_total_qty: dec!(0),
+                                                        down_total_cost: dec!(0),
+                                                        down_avg_price: dec!(0),
+                                                        down_gross_profit: dec!(0),
+                                                        down_net_profit: dec!(0),
+                                                    });
+                                                up_down_history.insert(market_key.clone(), UpDownOrderInfo {
+                                                    // 更新UP和DOWN方向数据
+                                                    up_price,
+                                                    up_size,
+                                                    up_total_qty: up_total_qty,
+                                                    up_total_cost,
+                                                    up_avg_price,
+                                                    up_gross_profit: up_last_profit,
+                                                    up_net_profit: up_last_net_profit,
+                                                    down_price,
+                                                    down_size,
+                                                    down_total_qty: down_total_qty,
+                                                    down_total_cost,
+                                                    down_avg_price,
+                                                    down_gross_profit: down_last_profit,
+                                                    down_net_profit: down_last_net_profit,
+                                                });
+                                                
+                                                info!("{} | UP方向下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4}", 
+                                                    market_display, up_price, up_size, up_total_cost, up_avg_price, up_total_qty, up_last_profit, up_last_net_profit);
+                                                info!("{} | DOWN方向下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4}", 
+                                                    market_display, down_price, down_size, down_total_cost, down_avg_price, down_total_qty, down_last_profit, down_last_net_profit);
+                                                
+                                                // 这里可以添加实际的下单逻辑
+                                            }
+                                        }
+                                         }
                                     }
                                 
                                 }
@@ -1322,6 +1995,33 @@ async fn main() -> Result<()> {
                             new_window = new_window_timestamp,
                             "检测到新的5分钟窗口，准备取消旧订阅并切换到新窗口"
                         );
+                        
+                        // 输出UP和DOWN方向的最终状态
+                        for entry in up_down_history.iter() {
+                            let market_key = entry.key();
+                            let history = entry.value();
+                            
+                            let up_price = history.up_price;
+                            let down_price = history.down_price;
+                            
+                            // 判断哪边赢
+                            let winner = if up_price.is_zero() {
+                                "DOWN"
+                            } else if down_price.is_zero() {
+                                "UP"
+                            } else if up_price > down_price {
+                                "DOWN" // 价格更高的一方输，因为最终价格接近1的一方赢
+                            } else {
+                                "UP"
+                            };
+                            
+                            // 使用存储的累计数据输出日志
+                            info!("{} | UP方向 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4}", 
+                                market_key, history.up_price, history.up_size, history.up_total_cost, history.up_avg_price, history.up_total_qty, history.up_gross_profit, history.up_net_profit);
+                            info!("{} | DOWN方向 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4}", 
+                                market_key, history.down_price, history.down_size, history.down_total_cost, history.down_avg_price, history.down_total_qty, history.down_gross_profit, history.down_net_profit);
+                            info!("{} | 本局结束 | 获胜方: {}", market_key, winner);
+                        }
 
                         // 获取上一轮的市场信息列表 (condition_id, yes_token, no_token)
                         let prev_round_markets: Vec<(B256, U256, U256)> = market_map.values()
