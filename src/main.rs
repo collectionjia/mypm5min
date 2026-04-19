@@ -758,11 +758,13 @@ async fn main() -> Result<()> {
                                                 let no_price_clone = no_price;
                                                 let yes_asset_id = pair.yes_book.asset_id;
                                                 let no_asset_id = pair.no_book.asset_id;
-                                                 
+                                                let up_down_history_clone = up_down_history.clone();
+                                                  
                                                 tokio::spawn({
                                                     let executor = executor.clone();
                                                     let market_display = market_display.clone();
                                                     let order_status = order_status.clone();
+                                                    let up_down_history = up_down_history_clone;
                                                     let is_running_clone = is_running.clone();
                                                     let yes_asset_id = yes_asset_id;
                                                     let no_asset_id = no_asset_id;
@@ -788,6 +790,63 @@ async fn main() -> Result<()> {
                                                                         let total_cost = buy_price * order_size;
                                                                         let buy_direction = if buy_side_name == "Yes" { "UP" } else { "DOWN" };
                                                                         error!("{} | 价格反转，下单较小边成功 | 订单ID: {:?} | 购买: {} | 方向: {} | 单边成交单价={:.4} | 单边成交数量={:.2} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.2}", market_display, buy_response.order_id, buy_side_name, buy_direction, buy_price, order_size, total_cost, buy_price, order_size);
+                                                                         
+                                                                        // 更新历史记录
+                                                                        let market_key = market_display.clone();
+                                                                        let existing_history = up_down_history.get(&market_key)
+                                                                            .map(|r| r.clone())
+                                                                            .unwrap_or(UpDownOrderInfo {
+                                                                                up_price: dec!(0),
+                                                                                up_size: dec!(0),
+                                                                                up_total_qty: dec!(0),
+                                                                                up_total_cost: dec!(0),
+                                                                                up_avg_price: dec!(0),
+                                                                                up_gross_profit: dec!(0),
+                                                                                up_net_profit: dec!(0),
+                                                                                down_price: dec!(0),
+                                                                                down_size: dec!(0),
+                                                                                down_total_qty: dec!(0),
+                                                                                down_total_cost: dec!(0),
+                                                                                down_avg_price: dec!(0),
+                                                                                down_gross_profit: dec!(0),
+                                                                                down_net_profit: dec!(0),
+                                                                            });
+                                                                        
+                                                                        let is_up = buy_side_name == "Yes";
+                                                                        let (new_up_price, new_up_size, new_up_total_qty, new_up_total_cost, new_up_avg_price) = if is_up {
+                                                                            let new_total_qty = existing_history.up_total_qty + order_size;
+                                                                            let new_total_cost = existing_history.up_total_cost + total_cost;
+                                                                            let new_avg_price = new_total_cost / new_total_qty;
+                                                                            (buy_price, order_size, new_total_qty, new_total_cost, new_avg_price)
+                                                                        } else {
+                                                                            (existing_history.up_price, existing_history.up_size, existing_history.up_total_qty, existing_history.up_total_cost, existing_history.up_avg_price)
+                                                                        };
+                                                                        
+                                                                        let (new_down_price, new_down_size, new_down_total_qty, new_down_total_cost, new_down_avg_price) = if !is_up {
+                                                                            let new_total_qty = existing_history.down_total_qty + order_size;
+                                                                            let new_total_cost = existing_history.down_total_cost + total_cost;
+                                                                            let new_avg_price = new_total_cost / new_total_qty;
+                                                                            (buy_price, order_size, new_total_qty, new_total_cost, new_avg_price)
+                                                                        } else {
+                                                                            (existing_history.down_price, existing_history.down_size, existing_history.down_total_qty, existing_history.down_total_cost, existing_history.down_avg_price)
+                                                                        };
+                                                                        
+                                                                        up_down_history.insert(market_key, UpDownOrderInfo {
+                                                                            up_price: new_up_price,
+                                                                            up_size: new_up_size,
+                                                                            up_total_qty: new_up_total_qty,
+                                                                            up_total_cost: new_up_total_cost,
+                                                                            up_avg_price: new_up_avg_price,
+                                                                            up_gross_profit: existing_history.up_gross_profit,
+                                                                            up_net_profit: existing_history.up_net_profit,
+                                                                            down_price: new_down_price,
+                                                                            down_size: new_down_size,
+                                                                            down_total_qty: new_down_total_qty,
+                                                                            down_total_cost: new_down_total_cost,
+                                                                            down_avg_price: new_down_avg_price,
+                                                                            down_gross_profit: existing_history.down_gross_profit,
+                                                                            down_net_profit: existing_history.down_net_profit,
+                                                                        });
                                                                     }
                                                                     Err(e) => {
                                                                         error!("{} | 价格反转，下单较小边失败: {:?}", market_display, e);
@@ -799,6 +858,63 @@ async fn main() -> Result<()> {
                                                                 error!("{} | 价格反转，执行模拟下单较小边 | 购买: {} | 方向: {} | 单边成交单价={:.4} | 单边成交数量={:.2} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.2}", market_display, buy_side_name, buy_direction, buy_price, order_size, total_cost, buy_price, order_size);
                                                                 let mut order_status_map = order_status.lock().await;
                                                                 order_status_map.insert(market_display.clone(), (true, buy_side_name.to_string(), buy_token_id.to_string(), "".to_string(), order_size.to_string(), buy_price.to_string()));
+                                                                 
+                                                                // 更新历史记录
+                                                                let market_key = market_display.clone();
+                                                                let existing_history = up_down_history.get(&market_key)
+                                                                    .map(|r| r.clone())
+                                                                    .unwrap_or(UpDownOrderInfo {
+                                                                        up_price: dec!(0),
+                                                                        up_size: dec!(0),
+                                                                        up_total_qty: dec!(0),
+                                                                        up_total_cost: dec!(0),
+                                                                        up_avg_price: dec!(0),
+                                                                        up_gross_profit: dec!(0),
+                                                                        up_net_profit: dec!(0),
+                                                                        down_price: dec!(0),
+                                                                        down_size: dec!(0),
+                                                                        down_total_qty: dec!(0),
+                                                                        down_total_cost: dec!(0),
+                                                                        down_avg_price: dec!(0),
+                                                                        down_gross_profit: dec!(0),
+                                                                        down_net_profit: dec!(0),
+                                                                    });
+                                                                
+                                                                let is_up = buy_side_name == "Yes";
+                                                                let (new_up_price, new_up_size, new_up_total_qty, new_up_total_cost, new_up_avg_price) = if is_up {
+                                                                    let new_total_qty = existing_history.up_total_qty + order_size;
+                                                                    let new_total_cost = existing_history.up_total_cost + total_cost;
+                                                                    let new_avg_price = new_total_cost / new_total_qty;
+                                                                    (buy_price, order_size, new_total_qty, new_total_cost, new_avg_price)
+                                                                } else {
+                                                                    (existing_history.up_price, existing_history.up_size, existing_history.up_total_qty, existing_history.up_total_cost, existing_history.up_avg_price)
+                                                                };
+                                                                
+                                                                let (new_down_price, new_down_size, new_down_total_qty, new_down_total_cost, new_down_avg_price) = if !is_up {
+                                                                    let new_total_qty = existing_history.down_total_qty + order_size;
+                                                                    let new_total_cost = existing_history.down_total_cost + total_cost;
+                                                                    let new_avg_price = new_total_cost / new_total_qty;
+                                                                    (buy_price, order_size, new_total_qty, new_total_cost, new_avg_price)
+                                                                } else {
+                                                                    (existing_history.down_price, existing_history.down_size, existing_history.down_total_qty, existing_history.down_total_cost, existing_history.down_avg_price)
+                                                                };
+                                                                
+                                                                up_down_history.insert(market_key, UpDownOrderInfo {
+                                                                    up_price: new_up_price,
+                                                                    up_size: new_up_size,
+                                                                    up_total_qty: new_up_total_qty,
+                                                                    up_total_cost: new_up_total_cost,
+                                                                    up_avg_price: new_up_avg_price,
+                                                                    up_gross_profit: existing_history.up_gross_profit,
+                                                                    up_net_profit: existing_history.up_net_profit,
+                                                                    down_price: new_down_price,
+                                                                    down_size: new_down_size,
+                                                                    down_total_qty: new_down_total_qty,
+                                                                    down_total_cost: new_down_total_cost,
+                                                                    down_avg_price: new_down_avg_price,
+                                                                    down_gross_profit: existing_history.down_gross_profit,
+                                                                    down_net_profit: existing_history.down_net_profit,
+                                                                });
                                                             }
                                                         }
                                                     }
