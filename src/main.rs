@@ -1602,7 +1602,7 @@ async fn main() -> Result<()> {
                                 };
                                 
                                 let safe_market_name = market_display.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_");
-                                let file_name = format!("market_{}_{}.txt", safe_market_name, time_str);
+                                let file_name = format!("market_files/market_{}_{}.txt", safe_market_name, time_str);
                                 if let Ok(mut file) = OpenOptions::new()
                                     .create(true)
                                     .append(true)
