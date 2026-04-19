@@ -719,7 +719,6 @@ async fn main() -> Result<()> {
                                     {
                                         let mut counter = yes_greater_than_no_counters.entry(market_id).or_insert(0);
                                         let mut larger_side = current_larger_side.entry(market_id).or_insert(None);
-                                        let default = (false, "".to_string(),"" .to_string(),"" .to_string(),"" .to_string(),"" .to_string());
                                         is_small=false;
                                         if *larger_side != current_larger {
                                             is_small=true;
@@ -739,8 +738,19 @@ async fn main() -> Result<()> {
                                             } else {
                                                 None // 价格相等
                                             };
-                                            if is_small==true {
- // 未建仓，直接下单较小的一边
+                                            
+                                            // 确定当前较小的一边的价格
+                                            let smaller_price = if yes_price < no_price {
+                                                yes_price
+                                            } else if no_price < yes_price {
+                                                no_price
+                                            } else {
+                                                yes_price // 价格相等时默认使用yes价格
+                                            };
+                                            
+                                            // 仅当较大边变化且较小边价格在0.45以下时下单
+                                            if is_small == true && smaller_price < dec!(0.45) {
+                                                // 未建仓，直接下单较小的一边
                                                 let countdown_for_trade = countdown_str.clone();
                                                 let market_id_str = market_id.to_string();
                                                 let current_smaller_clone = current_smaller;
@@ -979,7 +989,6 @@ async fn main() -> Result<()> {
                                                    down_gross_profit,
                                                    down_net_profit,
                                                });
-                                                
                                                 // 这里可以添加实际的下单逻辑
                                             }
                                         }else{//大于0.7小于0.97的那侧
@@ -1235,7 +1244,17 @@ async fn main() -> Result<()> {
                                     }else{
                                         if countdown_within_30 {
 
-                                            if end_30==false {
+                                            // 确定当前较大的一边的价格
+                                            let larger_price = if yes_price > no_price {
+                                                yes_price
+                                            } else if no_price > yes_price {
+                                                no_price
+                                            } else {
+                                                yes_price // 价格相等时默认使用yes价格
+                                            };
+                                            
+                                            // 仅当价格大于等于0.97时下单
+                                            if end_30 == false && larger_price >= dec!(0.97) {
                                                 end_30=true;
                                             //下单较大的一边,并输出日志
                                             // 确定当前较大的一边
