@@ -1589,8 +1589,18 @@ async fn main() -> Result<()> {
                                     yes_info,
                                     no_info
                                 );
+                                // 生成5分钟间隔的时间戳
+                                let now = std::time::SystemTime::now();
+                                let timestamp = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                                let five_min_interval = (timestamp / 300) * 300; // 5分钟间隔
+                                let time_str = if let Some(dt) = chrono::NaiveDateTime::from_timestamp_opt(five_min_interval as i64, 0) {
+                                    dt.format("%Y%m%d_%H%M").to_string()
+                                } else {
+                                    format!("{}", five_min_interval)
+                                };
+                                
                                 let safe_market_name = market_display.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_");
-                                let file_name = format!("market_{}.txt", safe_market_name);
+                                let file_name = format!("market_{}_{}.txt", safe_market_name, time_str);
                                 if let Ok(mut file) = OpenOptions::new()
                                     .create(true)
                                     .append(true)
