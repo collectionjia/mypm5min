@@ -18,6 +18,8 @@ use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -390,9 +392,6 @@ async fn main() -> Result<()> {
     let wind_down_in_progress = Arc::new(AtomicBool::new(false));
     let countdown_in_progress = Arc::new(AtomicBool::new(false));
 
-    let lostcount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new()); // 记录每个市场的输的次数
-    let wincount: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());   // 记录每个市场的赢的次数
-    let loststate: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());  // 记录输了几次后进行赢的
     let marketrecord: Arc<DashMap<B256, bool>> = Arc::new(DashMap::new());//是否下过单
     let allowmarket: Arc<DashMap<B256, bool>> = Arc::new(DashMap::new());//允许下单
 
@@ -743,11 +742,6 @@ async fn main() -> Result<()> {
                                                 None // 价格相等
                                             };
                                             
-                                          
-
-
-
-
                                              // 未建仓，直接下单较小的一边
                                                 let countdown_for_trade = countdown_str.clone();
                                                 let market_id_str = market_id.to_string();
@@ -761,8 +755,6 @@ async fn main() -> Result<()> {
                                                     let executor = executor.clone();
                                                     let market_display = market_display.clone();
                                                     let order_status = order_status.clone();
-                                                    let countdown_for_trade = countdown_for_trade;
-                                                    let market_id_str = market_id_str;
                                                     let is_running_clone = is_running.clone();
                                                     let yes_asset_id = yes_asset_id;
                                                     let no_asset_id = no_asset_id;
@@ -839,9 +831,6 @@ async fn main() -> Result<()> {
                                         
                                         // 先检查计数器值
                                         let price_greater_count = yes_greater_than_no_counters.get(&market_id).map(|r| *r == 60).unwrap_or(false);
-                                        let default = (false, "".to_string(),"".to_string(),"".to_string(),"".to_string(),"".to_string());
-                                        let order_status_lock = order_status.lock().await;
-                                        let (is_ordered, order_side_name,order_token_id,unorder_token_id,ordered_size,order_price) = order_status_lock.get(&market_display).unwrap_or(&default).clone();
                                         
                                         // 计数达到60后重置
                                         if price_greater_count {
@@ -1248,7 +1237,7 @@ async fn main() -> Result<()> {
 
                                             if end_30==false {
                                                 end_30=true;
-//下单较大的一边,并输出日志
+                                            //下单较大的一边,并输出日志
                                             // 确定当前较大的一边
                                             let current_larger = if yes_price > no_price {
                                                 Some(true) // yes较大
@@ -1545,180 +1534,12 @@ async fn main() -> Result<()> {
                                 //如果有订单,订单中的方向和市场结果比对,如果一直就赢了,如果不一致就输了
                                 let (result_info, pnl_info) = match (yes_best_ask, no_best_ask) {
                                     (Some(_), None) => {
-                                        // No赢，判断下单盈亏
-                                        let order_status_lock = order_status.lock().await;
-                                   
-                                        if let Some((is_ordered, order_side_name, _, _, ordered_size, _)) = order_status_lock.get(&market_display) {
-                                            // info!("xxxxxxxxxxxx111111");
-                                            if *is_ordered {
-                                                // info!("xxxxxxxxxxxx222222");
-                                                let my_result = if order_side_name.contains("No") { "盈" } else { "亏" };
-                                                // info!("No赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
-                                                if my_result == "盈" {
-                                                    // info!("xxxxxxxxxxxx333333");
-
-                                                //先进行市场id,在marketrecord查询,如果为true,就不更新记录,否则更新记录,并且将marketrecord中的值设为true
-                                           
-                                                        let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                             info!("{} | 订单状态: {:?}", market_display, order_status_lock);
-                                                          info!("No赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
-                                                 if let Some(record) = marketrecord.get(&market_id) {
-                                                    if *record {
-                                                        continue;
-                                                    }
-                                                }else {
-                                                    wincount.insert(market_display.clone(), current_wincount + 1);
-                                                    lostcount.insert(market_display.clone(), 0);
-                                                    marketrecord.insert(market_id.clone(), true);
-                                                }
-                                                    // 添加结算记录到交易历史
-                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                    use chrono::Utc;
-                                                    add_trade(TradeRecord {
-                                                        id: format!("SETTLE-{}", Utc::now().timestamp_millis()),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: "No赢-赢".to_string(),
-                                                        order_price: 0.0,
-                                                        price: 0.0,
-                                                        size: 0.0,
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "Won".to_string(),
-                                                        profit: Some(1.0),
-                                                        buy_countdown: None,
-                                                        sell_countdown: None,
-                                                    });
-                                                
-
-                                                }else{
-
-                                         
-                                                   let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                  info!("No赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
-                                                     if let Some(record) = marketrecord.get(&market_id) {
-                                                    if *record {
-                                                        continue;
-                                                    }
-                                                }else {
-                                                  lostcount.insert(market_display.clone(), current_lostcount + 1);
-                                                  wincount.insert(market_display.clone(), 0);
-                                                  loststate.insert(market_display.clone(), current_lostcount + 1);
-                                                    marketrecord.insert(market_id.clone(), true);
-                                                }
-                                                    // 添加结算记录到交易历史
-                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                    use chrono::Utc;
-                                                    add_trade(TradeRecord {
-                                                        id: format!("SETTLE-{}", Utc::now().timestamp_millis()),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: "No赢-亏".to_string(),
-                                                        order_price: 0.0,
-                                                        price: 0.0,
-                                                        size: 0.0,
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "Lost".to_string(),
-                                                        profit: Some(-1.0),
-                                                        buy_countdown: None,
-                                                        sell_countdown: None,
-                                                    });
-                                             
-
-
-                                                }
-                                                let pnl = format!("(我{})", my_result);
-                                                ("【No赢】".to_string(), pnl)
-                                            } else {
-                                                ("【No赢】".to_string(), String::new())
-                                            }
-                                        } else {
-                                            ("【No赢】".to_string(), String::new())
-                                        }
+                                        // No赢
+                                        ("【No赢】".to_string(), String::new())
                                     }
                                     (None, Some(_)) => {
-                                        // Yes赢，判断下单盈亏
-                                        let order_status_lock = order_status.lock().await;
-                                    
-                                        if let Some((is_ordered, order_side_name, _, _, ordered_size, _)) = order_status_lock.get(&market_display) {
-                                            // info!("xxxxxxxxxxxx444444");
-                                            if *is_ordered  {
-                                                // info!("xxxxxxxxxxxx555555");
-                                                let my_result = if order_side_name.contains("Yes") { "盈" } else { "亏" };
-                                                // info!("Yes赢分支 | market: {} | order_side: {} | my_result: {}", market_display, order_side_name, my_result);
-                                                if my_result == "盈" {
-                                                    // info!("xxxxxxxxxxxx666666");
-                                          
-                                                   let current_wincount = wincount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                       info!("{} | 订单状态: {:?}", market_display, order_status_lock);
-                                                  info!("Yes赢-赢 | market: {} | old_wincount: {} | new_wincount: {}", market_display, current_wincount, current_wincount + 1);
-                                                        if let Some(record) = marketrecord.get(&market_id) {
-                                                    if *record {
-                                                        continue;
-                                                    }
-                                                }else {
-                                                  wincount.insert(market_display.clone(), current_wincount + 1);
-                                                  lostcount.insert(market_display.clone(), 0);
-
-                                                    marketrecord.insert(market_id.clone(), true);
-                                                }
-                                                    // 添加结算记录到交易历史
-                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                    use chrono::Utc;
-                                                    add_trade(TradeRecord {
-                                                        id: format!("SETTLE-{}", Utc::now().timestamp_millis()),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: "Yes赢-赢".to_string(),
-                                                        order_price: 0.0,
-                                                        price: 0.0,
-                                                        size: 0.0,
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "Won".to_string(),
-                                                        profit: Some(1.0),
-                                                        buy_countdown: None,
-                                                        sell_countdown: None,
-                                                    });
-                                                }else{
-                                                    let current_lostcount = lostcount.get(&market_display).map(|v| *v).unwrap_or(0);
-                                                  info!("Yes赢-亏 | market: {} | old_lostcount: {}", market_display, current_lostcount);
-                                                   if let Some(record) = marketrecord.get(&market_id) {
-                                                    if *record {
-                                                        continue;
-                                                    }
-                                                }else {
-                                                  lostcount.insert(market_display.clone(), current_lostcount + 1);
-                                                  wincount.insert(market_display.clone(), 0);
-                                                  loststate.insert(market_display.clone(), current_lostcount + 1);
-                                                    marketrecord.insert(market_id.clone(), true);
-                                                }
-                                                    // 添加结算记录到交易历史
-                                                    use crate::utils::trade_history::{add_trade, TradeRecord};
-                                                    use chrono::Utc;
-                                                    add_trade(TradeRecord {
-                                                        id: format!("SETTLE-{}", Utc::now().timestamp_millis()),
-                                                        market_id: market_id.to_string(),
-                                                        market_slug: market_display.clone(),
-                                                        side: "Yes赢-亏".to_string(),
-                                                        order_price: 0.0,
-                                                        price: 0.0,
-                                                        size: 0.0,
-                                                        timestamp: Utc::now().timestamp(),
-                                                        status: "Lost".to_string(),
-                                                        profit: Some(-1.0),
-                                                        buy_countdown: None,
-                                                        sell_countdown: None,
-                                                    });
-                                               
-
-                                                }
-                                                let pnl = format!("(我{})", my_result);
-                                                ("【Yes赢】".to_string(), pnl)
-                                            } else {
-                                                ("【Yes赢】".to_string(), String::new())
-                                            }
-                                        } else {
-                                            ("【Yes赢】".to_string(), String::new())
-                                        }
+                                        // Yes赢
+                                        ("【Yes赢】".to_string(), String::new())
                                     }
                                     (Some(_), Some(_)) => (String::new(), String::new()), // 两边都有价，市场未结算
                                     (None, None) => (String::new(), String::new()),
@@ -1741,18 +1562,23 @@ async fn main() -> Result<()> {
                                     .map(|(_, side, _, _, _, _)| side.clone())
                                     .unwrap_or_else(|| "未下单".to_string());
                                 
-                                // info!("{} {} | {}分{:02}秒 | {} | {} | {}{}{}|{}",
-                                //     prefix,
-                                //     market_display,
-                                //     countdown_minutes,
-                                //     countdown_seconds,
-                                //     yes_info,
-                                //     no_info,
-                                //     result_info,
-                                //     pnl_info,
-                                //     spread_info,
-                                //     order_second_param
-                                // );
+                                let log_line = format!(
+                                    "{} | {}分{:02}秒 | {} | {}\n",
+                                    market_display,
+                                    countdown_minutes,
+                                    countdown_seconds,
+                                    yes_info,
+                                    no_info
+                                );
+                                let safe_market_name = market_display.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-', "_");
+                                let file_name = format!("market_{}.txt", safe_market_name);
+                                if let Ok(mut file) = OpenOptions::new()
+                                    .create(true)
+                                    .append(true)
+                                    .open(file_name)
+                                {
+                                    let _ = file.write_all(log_line.as_bytes());
+                                }
 
                                 // 保留原有的结构化日志用于调试（可选）
                                 // debug!(
