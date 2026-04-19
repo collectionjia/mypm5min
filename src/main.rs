@@ -719,7 +719,6 @@ async fn main() -> Result<()> {
                                     {
                                         let mut counter = yes_greater_than_no_counters.entry(market_id).or_insert(0);
                                         let mut larger_side = current_larger_side.entry(market_id).or_insert(None);
-                                        is_small=false;
                                         if *larger_side != current_larger {
                                             is_small=true;
                                             // 较大的一边发生变化，重置计数器
@@ -749,7 +748,8 @@ async fn main() -> Result<()> {
                                             };
                                             
                                             // 仅当较大边变化且较小边价格在0.45以下时下单
-                                            if is_small == true && smaller_price < dec!(0.45) {
+                                            if is_small == true && smaller_price <= dec!(0.45) {
+                                                is_small=false;
                                                 // 未建仓，直接下单较小的一边
                                                 let countdown_for_trade = countdown_str.clone();
                                                 let market_id_str = market_id.to_string();
@@ -786,7 +786,8 @@ async fn main() -> Result<()> {
                                                                         let mut order_status_map = order_status.lock().await;
                                                                         order_status_map.insert(market_display.clone(), (true, buy_side_name.to_string(), buy_token_id.to_string(), "".to_string(), order_size.to_string(), buy_price.to_string()));
                                                                         let total_cost = buy_price * order_size;
-                                                                        error!("{} | 价格反转，下单较小边成功 | 订单ID: {:?} | 购买: {} | 单边成交单价={:.4} | 单边成交数量={:.2} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.2}", market_display, buy_response.order_id, buy_side_name, buy_price, order_size, total_cost, buy_price, order_size);
+                                                                        let buy_direction = if buy_side_name == "Yes" { "UP" } else { "DOWN" };
+                                                                        error!("{} | 价格反转，下单较小边成功 | 订单ID: {:?} | 购买: {} | 方向: {} | 单边成交单价={:.4} | 单边成交数量={:.2} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.2}", market_display, buy_response.order_id, buy_side_name, buy_direction, buy_price, order_size, total_cost, buy_price, order_size);
                                                                     }
                                                                     Err(e) => {
                                                                         error!("{} | 价格反转，下单较小边失败: {:?}", market_display, e);
@@ -794,7 +795,8 @@ async fn main() -> Result<()> {
                                                                 }
                                                             } else {
                                                                 let total_cost = buy_price * order_size;
-                                                                error!("{} | 价格反转，执行模拟下单较小边 | 购买: {} | 单边成交单价={:.4} | 单边成交数量={:.2} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.2}", market_display, buy_side_name, buy_price, order_size, total_cost, buy_price, order_size);
+                                                                let buy_direction = if buy_side_name == "Yes" { "UP" } else { "DOWN" };
+                                                                error!("{} | 价格反转，执行模拟下单较小边 | 购买: {} | 方向: {} | 单边成交单价={:.4} | 单边成交数量={:.2} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.2}", market_display, buy_side_name, buy_direction, buy_price, order_size, total_cost, buy_price, order_size);
                                                                 let mut order_status_map = order_status.lock().await;
                                                                 order_status_map.insert(market_display.clone(), (true, buy_side_name.to_string(), buy_token_id.to_string(), "".to_string(), order_size.to_string(), buy_price.to_string()));
                                                             }
