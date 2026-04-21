@@ -13,3 +13,18 @@ license.key
 # Logs
 *.log
 bot.log
+
+# Python
+*.py
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
