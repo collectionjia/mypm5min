@@ -736,9 +736,10 @@ async fn main() -> Result<()> {
 
                                         //如果有订单,而且订单中购买的token这边价格卖价在0.97,对订单进行清仓
                                         //jiajiatodo
-                                        if first_order==false && countdown_within_180  {
-                                            first_order=true;
-                                            //加个条件，如果价格小于0.90，才下单
+                                        if countdown_within_180  {
+                                            if first_order==false {
+                                             
+                                                    //加个条件，如果价格小于0.90，才下单
                                             //up和down分别根据当前价格下单限价单
                                             if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
                                                 // 为up和down方向分别下单限价单
@@ -762,6 +763,7 @@ async fn main() -> Result<()> {
                                                 };
 
                                            if up_size > dec!(0) && down_size > dec!(0) {
+                                            first_order=true;
                                                 let up_total_cost_single = up_price * up_size;
                                                 let down_total_cost_single = down_price * down_size;
                                                 
@@ -881,7 +883,9 @@ async fn main() -> Result<()> {
                                                     });
                                                 }
                                                 }
-                                           }     
+                                            }
+                                            }
+                                                 
 
                                          //首单下完了
                                         // 判断哪边已下数量小，只有数量小的那边才下单，两边相等则不下单
@@ -894,7 +898,7 @@ async fn main() -> Result<()> {
                                         let lowest_price_threshold = if let Some(history) = up_down_history.get(&market_display.clone()) {
                                             if low_side_name == "Yes" { history.up_avg_price - dec!(0.2) } else { history.down_avg_price - dec!(0.2) }
                                         } else { dec!(0) };
-                                        if low_price <= lowest_price_threshold && low_side_qty < high_side_qty {
+                                        if low_price <= lowest_price_threshold && low_side_qty < high_side_qty && first_order==true {
                                             is_small=false;
                                             let small_order_size = dec!(5);
                                             let small_total_cost = low_price * small_order_size;
@@ -1034,7 +1038,7 @@ async fn main() -> Result<()> {
                                             }
                                         }
 
-                                        }else if countdown_within_30 { 
+                                }else if countdown_within_30 { 
 
                                             //首单下完了
                                             // 判断哪边已下数量小，只有数量小的那边才下单，两边相等则不下单
