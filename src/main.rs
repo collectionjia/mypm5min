@@ -745,7 +745,7 @@ async fn main() -> Result<()> {
                                                 let up_price = yes_price * dec!(1.02); // 上涨方向价格
                                                 let down_price = no_price * dec!(0.99); // 下跌方向价格
                                                 
-                                                if up_price < dec!(0.90) && down_price < dec!(0.90) {
+                                                if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
                                                     // 价格低的size下10个，价格高的size下5个
                                                     let (up_size, down_size) = if up_price <= down_price {
                                                         (dec!(5), dec!(10)) // up价格低，down价格高
@@ -846,7 +846,31 @@ async fn main() -> Result<()> {
                                                     market_display, up_price, up_size, up_total_cost_acc, up_avg_price, up_total_qty, up_last_profit, up_last_net_profit, up_order_cnt);
                                                 info!("{} | DOWN方向下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
                                                     market_display, down_price, down_size, down_total_cost_acc, down_avg_price, down_total_qty, down_last_profit, down_last_net_profit, down_order_cnt);
-                                                // 这里可以添加实际的下单逻辑
+                                                
+                                                let is_live = is_running.load(Ordering::Relaxed);
+                                                if is_live {
+                                                    let exec = executor.clone();
+                                                    let up_token = pair.yes_book.asset_id;
+                                                    let up_p = up_price;
+                                                    let up_s = up_size;
+                                                    tokio::spawn(async move {
+                                                        match exec.buy_at_price(up_token, up_p, up_s).await {
+                                                            Ok(_) => info!("UP方向限价单买入成功: YES token={:#x} price={:.4} size={:.0}", up_token, up_p, up_s),
+                                                            Err(e) => error!("UP方向限价单买入失败: {}", e),
+                                                        }
+                                                    });
+                                                    
+                                                    let exec2 = executor.clone();
+                                                    let down_token = pair.no_book.asset_id;
+                                                    let down_p = down_price;
+                                                    let down_s = down_size;
+                                                    tokio::spawn(async move {
+                                                        match exec2.buy_at_price(down_token, down_p, down_s).await {
+                                                            Ok(_) => info!("DOWN方向限价单买入成功: NO token={:#x} price={:.4} size={:.0}", down_token, down_p, down_s),
+                                                            Err(e) => error!("DOWN方向限价单买入失败: {}", e),
+                                                        }
+                                                    });
+                                                }
                                                 }
                                                 }
                                         }
@@ -982,6 +1006,22 @@ async fn main() -> Result<()> {
                                                         no_final_price: dec!(0),
                                                     });
                                                 }
+                                            }
+                                            
+                                            let is_live = is_running.load(Ordering::Relaxed);
+                                            if is_live {
+                                                let exec = executor.clone();
+                                                let small_token = if low_side_name == "Yes" { pair.yes_book.asset_id } else { pair.no_book.asset_id };
+                                                let small_p = low_price;
+                                                let small_s = small_order_size;
+                                                let side_str = side_label.to_string();
+                                                let market_str = market_display.clone();
+                                                tokio::spawn(async move {
+                                                    match exec.buy_at_price(small_token, small_p, small_s).await {
+                                                        Ok(_) => info!("{} | {}方向(小边)限价单买入成功: token={:#x} price={:.4} size={:.0}", market_str, side_str, small_token, small_p, small_s),
+                                                        Err(e) => error!("{} | {}方向(小边)限价单买入失败: {}", market_str, side_str, e),
+                                                    }
+                                                });
                                             }
                                         }
                                         
