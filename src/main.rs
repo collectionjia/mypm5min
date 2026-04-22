@@ -1056,13 +1056,14 @@ async fn main() -> Result<()> {
                                             let low_price_val = if low_price_side == "Yes" { yes_price } else { no_price };
 
                                             // 检查是否满足下单条件
-                                            if low_side_qty > dec!(10) || high_side_qty > dec!(10) {
+                                            if (low_side_qty > dec!(10) || high_side_qty > dec!(10)) && high_price<dec!(0.97) {
                                                 is_small=false;
                                                 let order_size = dec!(10);
                                                 // 确定市场方向
                                                 let market_direction = if high_price_side == "Yes" { "UP" } else { "DOWN" };
                                                 // 根据market_direction选择购买价格和资产
                                                 let buy_price = high_price;
+                                                let buy_token = if market_direction == "UP" { pair.yes_book.asset_id } else { pair.no_book.asset_id };
                                                 let total_cost = buy_price * order_size;
                                                 let market_key = market_display.clone();
                                                 
