@@ -741,25 +741,32 @@ async fn main() -> Result<()> {
                                             //加个条件，如果价格小于0.90，才下单
                                             //up和down分别根据当前价格下单限价单
                                             if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
-                                                // 为up和down方向分别下单限价单
-                                                let up_price = yes_price * dec!(1.02); // 上涨方向价格
-                                                let down_price = no_price * dec!(0.99); // 下跌方向价格
+                                                let up_price = yes_price * dec!(1.02);
+                                                let down_price = no_price * dec!(0.99);
                                                 
-                                                let (up_size, down_size) = if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
-                                                    if up_price <= down_price {
-                                                        (dec!(10), dec!(5))
+                                                let in_05_06_range = (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6));
+                                                let in_07_09_range = (up_price >= dec!(0.7) && up_price <= dec!(0.9)) || (down_price >= dec!(0.7) && down_price <= dec!(0.9));
+                                                
+                                                if in_05_06_range || in_07_09_range {
+                                                    let (up_size, down_size) = if in_05_06_range {
+                                                        if up_price <= down_price {
+                                                            (dec!(5), dec!(10))
+                                                        } else {
+                                                            (dec!(10), dec!(5))
+                                                        }
+                                                    } else if in_07_09_range {
+                                                        if up_price <= down_price {
+                                                            (dec!(10), dec!(5))
+                                                        } else {
+                                                            (dec!(5), dec!(10))
+                                                        }
                                                     } else {
-                                                        (dec!(5), dec!(10))
-                                                    }
-                                                } else if (up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8)) {
-                                                    if up_price <= down_price {
-                                                        (dec!(5), dec!(10))
+                                                        (dec!(0), dec!(0))
+                                                    };
+                                                    
+                                                    if up_size == dec!(0) && down_size == dec!(0) {
+                                                        // 不满足条件，不下单
                                                     } else {
-                                                        (dec!(10), dec!(5))
-                                                    }
-                                                } else {
-                                                    (dec!(0), dec!(0))
-                                                };
                                                 
                                                 let up_total_cost_single = up_price * up_size;
                                                 let down_total_cost_single = down_price * down_size;
@@ -878,6 +885,7 @@ async fn main() -> Result<()> {
                                                             Err(e) => error!("DOWN方向限价单买入失败: {}", e),
                                                         }
                                                     });
+                                                }
                                                 }
                                                 }
                                                 }
