@@ -1055,6 +1055,10 @@ async fn main() -> Result<()> {
                                             if low_side_qty<dec!(10) || high_side_qty<dec!(10) {
                                                 is_small=false;
                                                 let small_order_size = dec!(10);
+                                                //根据low_side_qty是yes还是no,判断是up还是down的市场价格,并且购买up这边还是down这边
+                                                // 确定市场方向和购买的资产
+                                                let market_direction = if low_side_name == "Yes" { "UP" } else { "DOWN" };
+                                                let buy_token = if low_side_name == "Yes" { pair.yes_book.asset_id } else { pair.no_book.asset_id };
                                                 let small_total_cost = low_price * small_order_size;
                                                 let market_key = market_display.clone();
                                                 
