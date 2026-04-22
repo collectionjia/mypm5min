@@ -854,9 +854,9 @@ async fn main() -> Result<()> {
                                                 let down_order_cnt = existing_history.down_order_count + 1;
                                                 
                                                 info!("{} | UP方向下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
-                                                    market_display, up_price, up_size, up_total_cost_acc, up_avg_price, up_total_qty, up_last_profit, up_last_net_profit, up_order_cnt);
+                                                    market_display, up_price, up_size, up_total_cost_acc, up_avg_price, up_total_qty, up_last_profit, up_last_net_profit-down_total_cost_acc, up_order_cnt);
                                                 info!("{} | DOWN方向下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
-                                                    market_display, down_price, down_size, down_total_cost_acc, down_avg_price, down_total_qty, down_last_profit, down_last_net_profit, down_order_cnt);
+                                                    market_display, down_price, down_size, down_total_cost_acc, down_avg_price, down_total_qty, down_last_profit, down_last_net_profit-up_total_cost_acc, down_order_cnt);
                                                 
                                                 let is_live = is_running.load(Ordering::Relaxed);
                                                 if is_live {
