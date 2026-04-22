@@ -1051,7 +1051,7 @@ async fn main() -> Result<()> {
                                             let lowest_price_threshold = if let Some(history) = up_down_history.get(&market_display.clone()) {
                                                 if low_side_name == "Yes" { history.up_avg_price - dec!(0.2) } else { history.down_avg_price - dec!(0.2) }
                                             } else { dec!(0) };
-                                            if low_side_qty < high_side_qty {
+                                            if low_side_qty < high_side_qty && (low_side_qty<dec!(10) || high_side_qty<dec!(10)) {
                                                 is_small=false;
                                                 let small_order_size = dec!(10);
                                                 let small_total_cost = low_price * small_order_size;
