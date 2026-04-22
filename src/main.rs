@@ -539,8 +539,11 @@ async fn main() -> Result<()> {
             down_gross_profit: Decimal,
             down_net_profit: Decimal,
             down_order_count: u32,
+            yes_final_price: Decimal,
+            no_final_price: Decimal,
         }
         let up_down_history: Arc<DashMap<String, UpDownOrderInfo>> = Arc::new(DashMap::new());
+        let final_prices: Arc<DashMap<String, (Decimal, Decimal)>> = Arc::new(DashMap::new());
 
      
 
@@ -588,6 +591,9 @@ async fn main() -> Result<()> {
                                 } else {
                                     market_title.to_string()
                                 };
+                                if let (Some((yes_p, _)), Some((no_p, _))) = (yes_best_ask, no_best_ask) {
+                                    final_prices.insert(market_display.clone(), (yes_p, no_p));
+                                }
                                 let market_category = if !market_symbol.is_empty() {
                                     market_symbol.to_string()
                                 } else {
@@ -713,7 +719,7 @@ async fn main() -> Result<()> {
                                             (pair.no_book.asset_id, no_price, "No")
                                         };
 
-                                        let countdown_within_180 = sec_to_end_nonneg <= 180 && sec_to_end_nonneg > 30;
+                                        let countdown_within_180 = sec_to_end_nonneg <= 250 && sec_to_end_nonneg > 30;
                                         let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg > 0;
                                         
                                         let price_greater_than_07 = price > dec!(0.7);
@@ -730,7 +736,7 @@ async fn main() -> Result<()> {
 
                                         //如果有订单,而且订单中购买的token这边价格卖价在0.97,对订单进行清仓
                                         //jiajiatodo
-                                        if first_order==false {
+                                        if first_order==false && countdown_within_180  {
                                             first_order=true;
                                             //加个条件，如果价格小于0.90，才下单
                                             //up和down分别根据当前价格下单限价单
@@ -767,8 +773,7 @@ async fn main() -> Result<()> {
                                                     (new_up_avg_price, new_up_total_qty, new_up_total_cost, new_up_gross_profit, new_up_net_profit)
                                                 } else {
                                                     let up_gross_profit = (dec!(1) - up_price) * up_size;
-                                                    let up_net_profit = up_gross_profit - down_total_cost_single;
-                                                    (up_price, up_size, up_total_cost_single, up_gross_profit, up_net_profit)
+                                                    (up_price, up_size, up_total_cost_single, up_gross_profit, up_gross_profit)
                                                 };
 
                                                 let (down_avg_price, down_total_qty, down_total_cost_acc, down_last_profit, down_last_net_profit) = if let Some(history) = up_down_history.get(&market_key) {
@@ -786,8 +791,7 @@ async fn main() -> Result<()> {
                                                     (new_down_avg_price, new_down_total_qty, new_down_total_cost, new_down_gross_profit, new_down_net_profit)
                                                 } else {
                                                     let down_gross_profit = (dec!(1) - down_price) * down_size;
-                                                    let down_net_profit = down_gross_profit - up_total_cost_single;
-                                                    (down_price, down_size, down_total_cost_single, down_gross_profit, down_net_profit)
+                                                    (down_price, down_size, down_total_cost_single, down_gross_profit, down_gross_profit)
                                                 };
                                                 
                                                 // 更新历史记录
@@ -810,6 +814,8 @@ async fn main() -> Result<()> {
                                                         down_gross_profit: dec!(0),
                                                         down_net_profit: dec!(0),
                                                         down_order_count: 0,
+                                                        yes_final_price: dec!(0),
+                                                        no_final_price: dec!(0),
                                                     });
                                                 up_down_history.insert(market_key.clone(), UpDownOrderInfo {
                                                     // 更新UP和DOWN方向数据
@@ -829,6 +835,8 @@ async fn main() -> Result<()> {
                                                     down_gross_profit: down_last_profit,
                                                     down_net_profit: down_last_net_profit,
                                                     down_order_count: existing_history.down_order_count + 1,
+                                                    yes_final_price: existing_history.yes_final_price,
+                                                    no_final_price: existing_history.no_final_price,
                                                 });
                                                 
                                                 let up_order_cnt = existing_history.up_order_count + 1;
@@ -843,7 +851,17 @@ async fn main() -> Result<()> {
                                                 }
                                         }
                                         //首单下完了
-                                        if is_small==true && low_price<= dec!(0.30)  {
+                                        // 判断哪边已下数量小，只有数量小的那边才下单，两边相等则不下单
+                                        let low_side_qty = if let Some(history) = up_down_history.get(&market_display.clone()) {
+                                            if low_side_name == "Yes" { history.up_total_qty } else { history.down_total_qty }
+                                        } else { dec!(0) };
+                                        let high_side_qty = if let Some(history) = up_down_history.get(&market_display.clone()) {
+                                            if low_side_name == "Yes" { history.down_total_qty } else { history.up_total_qty }
+                                        } else { dec!(0) };
+                                        let lowest_price_threshold = if let Some(history) = up_down_history.get(&market_display.clone()) {
+                                            if low_side_name == "Yes" { history.up_avg_price - dec!(0.2) } else { history.down_avg_price - dec!(0.2) }
+                                        } else { dec!(0) };
+                                        if low_price <= lowest_price_threshold && low_side_qty < high_side_qty {
                                             is_small=false;
                                             let small_order_size = dec!(5);
                                             let small_total_cost = low_price * small_order_size;
@@ -865,7 +883,7 @@ async fn main() -> Result<()> {
                                                 (new_small_avg_price, new_small_total_qty, new_small_total_cost, new_small_gross_profit, new_small_net_profit, prev_small_order_count + 1)
                                             } else {
                                                 let small_gross_profit = (dec!(1) - low_price) * small_order_size;
-                                                let small_net_profit = small_gross_profit;
+                                                let small_net_profit = small_gross_profit - small_total_cost;
                                                 (low_price, small_order_size, small_total_cost, small_gross_profit, small_net_profit, 1)
                                             };
                                             
@@ -895,6 +913,8 @@ async fn main() -> Result<()> {
                                                         down_gross_profit: existing.down_gross_profit,
                                                         down_net_profit: existing.down_net_profit,
                                                         down_order_count: existing.down_order_count,
+                                                        yes_final_price: existing.yes_final_price,
+                                                        no_final_price: existing.no_final_price,
                                                     });
                                                 } else {
                                                     up_down_history.insert(market_key.clone(), UpDownOrderInfo {
@@ -914,6 +934,8 @@ async fn main() -> Result<()> {
                                                         down_gross_profit: small_gross_profit,
                                                         down_net_profit: small_net_profit,
                                                         down_order_count: small_order_count,
+                                                        yes_final_price: existing.yes_final_price,
+                                                        no_final_price: existing.no_final_price,
                                                     });
                                                 }
                                             } else {
@@ -935,6 +957,8 @@ async fn main() -> Result<()> {
                                                         down_gross_profit: dec!(0),
                                                         down_net_profit: dec!(0),
                                                         down_order_count: 0,
+                                                        yes_final_price: dec!(0),
+                                                        no_final_price: dec!(0),
                                                     });
                                                 } else {
                                                     up_down_history.insert(market_key.clone(), UpDownOrderInfo {
@@ -954,6 +978,8 @@ async fn main() -> Result<()> {
                                                         down_gross_profit: small_gross_profit,
                                                         down_net_profit: small_net_profit,
                                                         down_order_count: small_order_count,
+                                                        yes_final_price: dec!(0),
+                                                        no_final_price: dec!(0),
                                                     });
                                                 }
                                             }
@@ -1113,31 +1139,30 @@ async fn main() -> Result<()> {
                             let market_key = entry.key();
                             let history = entry.value();
                             
-                            let up_price = history.up_price;
-                            let down_price = history.down_price;
+                            let (yes_final_price, no_final_price) = final_prices.get(market_key).map(|r| (r.0, r.1)).unwrap_or((dec!(0), dec!(0)));
                             
-                            // 判断哪边赢：0表示输了，价格接近0.99表示赢了，价格低的一方赢
-                            let winner = if up_price.is_zero() {
-                                "DOWN"
-                            } else if down_price.is_zero() {
+                            // 判断哪边赢：根据市场实时价格判断，YES价格=0.99则UP赢，NO价格=0.99则DOWN赢
+                            let winner = if yes_final_price == dec!(0.99) {
                                 "UP"
-                            } else if up_price == dec!(0.99) {
-                                "UP"
-                            } else if down_price == dec!(0.99) {
+                            } else if no_final_price == dec!(0.99) {
                                 "DOWN"
-                            } else if up_price < down_price {
+                            } else if yes_final_price == dec!(0) {
+                                "DOWN"
+                            } else if no_final_price == dec!(0) {
+                                "UP"
+                            } else if yes_final_price < no_final_price {
                                 "DOWN"
                             } else {
                                 "UP"
                             };
                             
                             // 使用存储的累计数据输出日志
-                            let win_profit = if winner == "UP" { history.up_net_profit } else { history.down_net_profit };
+                            let win_profit = if winner == "UP" { history.up_gross_profit - history.down_total_cost } else { history.down_gross_profit - history.up_total_cost };
                             info!("{} | UP方向 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
                                 market_key, history.up_price, history.up_size, history.up_total_cost, history.up_avg_price, history.up_total_qty, history.up_gross_profit, history.up_net_profit, history.up_order_count);
                             info!("{} | DOWN方向 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
                                 market_key, history.down_price, history.down_size, history.down_total_cost, history.down_avg_price, history.down_total_qty, history.down_gross_profit, history.down_net_profit, history.down_order_count);
-                            info!("{} | 本局结束 | 获胜方: {} | 纯利润: {:.4}", market_key, winner, win_profit);
+                            info!("{} | 本局结束 | YES价格={:.4} | NO价格={:.4} | 获胜方: {} | 纯利润: {:.4}", market_key, yes_final_price, no_final_price, winner, win_profit);
                         }
 
                         // 获取上一轮的市场信息列表 (condition_id, yes_token, no_token)
