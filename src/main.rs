@@ -719,8 +719,8 @@ async fn main() -> Result<()> {
                                             (pair.no_book.asset_id, no_price, "No")
                                         };
 
-                                        let countdown_within_180 = sec_to_end_nonneg <= 250 && sec_to_end_nonneg > 30;
-                                        let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg > 0;
+                                        let countdown_within_180 = sec_to_end_nonneg <= 250 && sec_to_end_nonneg > 60;
+                                        let countdown_within_30 = sec_to_end_nonneg <= 60 && sec_to_end_nonneg > 0;
                                         
                                         let price_greater_than_07 = price > dec!(0.7);
                                         let price_greater_than_97 = price < dec!(0.97);
