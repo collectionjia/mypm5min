@@ -745,12 +745,20 @@ async fn main() -> Result<()> {
                                                 let up_price = yes_price * dec!(1.02); // 上涨方向价格
                                                 let down_price = no_price * dec!(0.99); // 下跌方向价格
                                                 
-                                                if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
-                                                    // 价格低的size下10个，价格高的size下5个
-                                                    let (up_size, down_size) = if up_price <= down_price {
-                                                        (dec!(5), dec!(10)) // up价格低，down价格高
+                                                let (up_size, down_size) = if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
+                                                    if up_price <= down_price {
+                                                        (dec!(10), dec!(5))
                                                     } else {
-                                                        (dec!(10), dec!(5)) // up价格高，down价格低
+                                                        (dec!(5), dec!(10))
+                                                    }
+                                                } else if (up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8)) {
+                                                    if up_price <= down_price {
+                                                        (dec!(5), dec!(10))
+                                                    } else {
+                                                        (dec!(10), dec!(5))
+                                                    }
+                                                } else {
+                                                    (dec!(0), dec!(0))
                                                 };
                                                 
                                                 let up_total_cost_single = up_price * up_size;
