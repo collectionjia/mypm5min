@@ -1056,10 +1056,12 @@ async fn main() -> Result<()> {
                                                 is_small=false;
                                                 let small_order_size = dec!(10);
                                                 //根据low_side_qty是yes还是no,判断是up还是down的市场价格,并且购买up这边还是down这边
-                                                // 确定市场方向和购买的资产
+                                                // 确定市场方向
                                                 let market_direction = if low_side_name == "Yes" { "UP" } else { "DOWN" };
-                                                let buy_token = if low_side_name == "Yes" { pair.yes_book.asset_id } else { pair.no_book.asset_id };
-                                                let small_total_cost = low_price * small_order_size;
+                                                // 根据market_direction选择购买价格和资产
+                                                let buy_price = if market_direction == "UP" { yes_price } else { no_price };
+                                                let buy_token = if market_direction == "UP" { pair.yes_book.asset_id } else { pair.no_book.asset_id };
+                                                let small_total_cost = buy_price * small_order_size;
                                                 let market_key = market_display.clone();
                                                 
                                                 let (small_avg_price, small_total_qty, small_total_cost_sum, small_gross_profit, small_net_profit, small_order_count) = if let Some(history) = up_down_history.get(&market_key) {
@@ -1069,7 +1071,7 @@ async fn main() -> Result<()> {
                                                     let prev_small_order_count = if low_side_name == "Yes" { history.up_order_count } else { history.down_order_count };
                                                     let other_side_total_cost = if low_side_name == "Yes" { history.down_total_cost } else { history.up_total_cost };
 
-                                                    let new_small_avg_price = (prev_small_avg_price * prev_small_size + low_price * small_order_size) / (prev_small_size + small_order_size);
+                                                    let new_small_avg_price = (prev_small_avg_price * prev_small_size + buy_price * small_order_size) / (prev_small_size + small_order_size);
                                                     let new_small_total_qty = prev_small_size + small_order_size;
                                                     let new_small_total_cost = prev_small_cost + small_total_cost;
                                                     let new_small_gross_profit = (dec!(1) - new_small_avg_price) * new_small_total_qty;
@@ -1077,14 +1079,14 @@ async fn main() -> Result<()> {
 
                                                     (new_small_avg_price, new_small_total_qty, new_small_total_cost, new_small_gross_profit, new_small_net_profit, prev_small_order_count + 1)
                                                 } else {
-                                                    let small_gross_profit = (dec!(1) - low_price) * small_order_size;
+                                                    let small_gross_profit = (dec!(1) - buy_price) * small_order_size;
                                                     let small_net_profit = small_gross_profit - small_total_cost;
-                                                    (low_price, small_order_size, small_total_cost, small_gross_profit, small_net_profit, 1)
+                                                    (buy_price, small_order_size, small_total_cost, small_gross_profit, small_net_profit, 1)
                                                 };
                                                 
                                                 let side_label = if low_side_name == "Yes" { "UP" } else { "DOWN" };
                                                 info!("{} | {}方向(小边)下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}", 
-                                                    market_display, side_label, low_price, small_order_size, small_total_cost, small_avg_price, small_total_qty, small_gross_profit, small_net_profit, small_order_count);
+                                                    market_display, side_label, buy_price, small_order_size, small_total_cost, small_avg_price, small_total_qty, small_gross_profit, small_net_profit, small_order_count);
                                                 
                                                 // 更新历史记录
                                                 if let Some(history) = up_down_history.get(&market_key) {
