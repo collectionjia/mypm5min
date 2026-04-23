@@ -490,6 +490,7 @@ async fn main() -> Result<()> {
         let mut end_order = false;
         let mut end_30 = false;
         let mut is_small = false;
+        let mut is_small_flag = false;
         
 
         // 创建市场ID到市场信息的映射
@@ -754,9 +755,9 @@ async fn main() -> Result<()> {
                                                     }
                                                 } else if (up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8)) {
                                                     if up_price <= down_price {
-                                                      (dec!(5), dec!(10))
+                                                     (dec!(10), dec!(5))
                                                     } else {
-                                                      (dec!(10), dec!(5))
+                                                       (dec!(5), dec!(10))
                                                     }
                                                 } else {
                                                     (dec!(0), dec!(0))
