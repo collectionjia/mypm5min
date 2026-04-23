@@ -808,15 +808,15 @@ async fn main() -> Result<()> {
                                 
 
                                 
-                                // info!("{} {} | {}分{:02}秒 | {} | {} | {}",
-                                //     prefix,
-                                //     market_display,
-                                //     countdown_minutes,
-                                //     countdown_seconds,
-                                //     yes_info,
-                                //     no_info,
-                                //     spread_info,
-                                // );
+                                info!("{} {} | {}分{:02}秒 | {} | {} | {}",
+                                    prefix,
+                                    market_display,
+                                    countdown_minutes,
+                                    countdown_seconds,
+                                    yes_info,
+                                    no_info,
+                                    spread_info,
+                                );
 
                                 // 保留原有的结构化日志用于调试（可选）
                                 // debug!(

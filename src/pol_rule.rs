@@ -107,70 +107,90 @@ pub fn rule_1_initial_probe(market: &Market, config: &RuleConfig) -> Vec<Order> 
         return orders;
     }
 
-    if market.up_price <= config.max_price {
+    // 确定价格较小的一边
+    let low_side = if market.up_price < market.down_price {
+        Side::Up
+    } else {
+        Side::Down
+    };
+
+    let low_price = if low_side == Side::Up {
+        market.up_price
+    } else {
+        market.down_price
+    };
+
+    // 只下较小的一边
+    if low_price <= config.max_price {
+        let order_price = (low_price * dec!(1.02)).round_dp(2);
+        
         orders.push(Order {
-            outcome: Side::Up,
-            size: config.size,
-            price: (market.up_price * dec!(1.02)).round_dp(2),
-            cost: config.size * (market.up_price * dec!(1.02)).round_dp(2),
+            outcome: low_side,
+            size: dec!(5), // size都是5个
+            price: order_price,
+            cost: dec!(5) * order_price,
             timestamp: 0,
         });
+        
+        info!(
+            "[规则1] 只下较小的一边: {:?}=@{:.2}",
+            low_side, order_price
+        );
     }
 
-    if market.down_price <= config.max_price {
-        orders.push(Order {
-            outcome: Side::Down,
-            size: config.size,
-            price: (market.down_price * dec!(1.02)).round_dp(2),
-            cost: config.size * (market.down_price * dec!(1.02)).round_dp(2),
-            timestamp: 0,
-        });
-    }
-
-    info!(
-        "[规则1] 开盘试探: UP@{:.2}, DOWN@{:.2}",
-        market.up_price, market.down_price
-    );
     orders
 }
 
-/// 规则2: 趋势跟随
-/// 价格移动>5%时顺势加仓
+/// 规则2: 对边下单
+/// 对边如果小于较小的一边就下单
 pub fn rule_2_trend_follow(
     market: &Market,
     trades: &[Trade],
     config: &RuleConfig,
 ) -> Option<Order> {
-    let last_trade = trades.iter().rev().find(|_| true);
-
-    if let Some(trade) = last_trade {
-        if trade.price > dec!(0) {
-            let price_change = match trade.outcome {
-                Side::Up => (market.up_price - trade.price) / trade.price,
-                Side::Down => (market.down_price - trade.price) / trade.price,
-            };
-
-            if price_change.abs() > config.trend_threshold {
-                let order_side = if price_change > dec!(0) { Side::Up } else { Side::Down };
-                let order_price = match order_side {
-                    Side::Up => market.up_price,
-                    Side::Down => market.down_price,
-                };
-
-                let order = Order {
-                    outcome: order_side,
-                    size: config.size,
-                    price: (order_price * dec!(0.99)).round_dp(2),
-                    cost: config.size * (order_price * dec!(0.99)).round_dp(2),
-                    timestamp: 0,
-                };
-                info!(
-                    "[规则2] 趋势: {:.1}%",
-                    (price_change * dec!(100)).to_string().parse::<f64>().unwrap_or(0.0)
-                );
-                return Some(order);
-            }
-        }
+    // 确定价格较小的一边
+    let low_side = if market.up_price < market.down_price {
+        Side::Up
+    } else {
+        Side::Down
+    };
+    
+    let low_price = if low_side == Side::Up {
+        market.up_price
+    } else {
+        market.down_price
+    };
+    
+    // 确定对边
+    let opposite_side = if low_side == Side::Up {
+        Side::Down
+    } else {
+        Side::Up
+    };
+    
+    let opposite_price = if opposite_side == Side::Up {
+        market.up_price
+    } else {
+        market.down_price
+    };
+    
+    // 对边如果小于较小的一边就下单
+    if opposite_price < low_price {
+        let order_price = (opposite_price * dec!(0.99)).round_dp(2);
+        
+        let order = Order {
+            outcome: opposite_side,
+            size: dec!(5), // size都是5个
+            price: order_price,
+            cost: dec!(5) * order_price,
+            timestamp: 0,
+        };
+        
+        info!(
+            "[规则2] 对边下单: {:?}=@{:.2} (较小边: {:?}=@{:.2})",
+            opposite_side, order_price, low_side, low_price
+        );
+        return Some(order);
     }
 
     None
@@ -219,7 +239,7 @@ pub fn rule_3_reversal_hedge(market: &Market, trades: &[Trade], config: &RuleCon
 pub fn rule_4_time_stop(remaining_secs: i64, time_stop_logged: &mut bool) -> bool {
     if remaining_secs <= 30 {
         if !*time_stop_logged {
-            info!("[规则4] 时间到,停止下单,剩余{}秒", remaining_secs);
+            info!("[5规则策略] 时间到,停止下单,剩余{}秒", remaining_secs);
             *time_stop_logged = true;
         }
         return true;
@@ -360,19 +380,8 @@ pub fn execute_rules(
         end_time: None,
     };
 
-    // 规则4: 时间停止检查
-    if rule_4_time_stop(remaining_secs, &mut state.time_stop_logged) {
-        return (false, orders_to_execute);
-    }
-
-    // 规则5: 止损检查
-    let current_pnl = calculate_pnl(&state.trades, None);
-    if rule_5_stop_loss(current_pnl, config) {
-        info!("[5规则策略] 触发止损，停止交易");
-        return (false, orders_to_execute);
-    }
-
     // 规则6: 止盈检查
+    let current_pnl = calculate_pnl(&state.trades, None);
     if rule_6_take_profit(current_pnl, config) {
         info!("[5规则策略] 触发止盈，停止交易");
         return (false, orders_to_execute);
@@ -440,19 +449,7 @@ pub fn execute_rules(
         }
     }
 
-    // 规则3: 反转对冲
-    if state.trades.len() >= 3 {
-        if let Some(order) = rule_3_reversal_hedge(&current_market, &state.trades, config) {
-            state.add_trade(Trade {
-                outcome: order.outcome,
-                size: order.size,
-                price: order.price,
-                cost: order.cost,
-                time: elapsed_secs,
-            });
-            orders_to_execute.push(order);
-        }
-    }
+
 
     (true, orders_to_execute)
 }
