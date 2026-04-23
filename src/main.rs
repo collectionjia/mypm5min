@@ -728,7 +728,7 @@ async fn main() -> Result<()> {
 
                                         
                                         // 先检查计数器值
-                                        let price_greater_count = yes_greater_than_no_counters.get(&market_id).map(|r| *r == 60).unwrap_or(false);
+                                        let price_greater_count = yes_greater_than_no_counters.get(&market_id).map(|r| *r >= 35).unwrap_or(false);
                                         
                                         // 计数达到60后重置
                                         if price_greater_count {
