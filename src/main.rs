@@ -720,7 +720,7 @@ async fn main() -> Result<()> {
                                             (pair.no_book.asset_id, no_price, "No")
                                         };
 
-                                        let countdown_within_180 = sec_to_end_nonneg <= 180 && sec_to_end_nonneg > 60;
+                                        let countdown_within_180 = sec_to_end_nonneg <= 250 && sec_to_end_nonneg > 60;
                                         let countdown_within_30 = sec_to_end_nonneg <= 60 && sec_to_end_nonneg > 0;
                                         
                                         let price_greater_than_07 = price > dec!(0.7);
@@ -746,15 +746,13 @@ async fn main() -> Result<()> {
                                                 let up_price = yes_price * dec!(1.02); // 上涨方向价格
                                                 let down_price = no_price * dec!(0.99); // 下跌方向价格
                                                 
-                                                // let (up_size, down_size) = if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
-                                                //     if up_price <= down_price {
-                                                //        (dec!(10), dec!(5))
-                                                //     } else {
-                                                //      (dec!(5), dec!(10))
-                                                       
-                                                //     }
-                                                // } else 
-                                                let (up_size, down_size) =if ((up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8))) && price_greater_count  {
+                                                let (up_size, down_size) = if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
+                                                    if up_price <= down_price {
+                                                     (dec!(10), dec!(5))
+                                                    } else {
+                                                     (dec!(5), dec!(10))
+                                                    }
+                                                } else if ((up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8))) && price_greater_count  {
                                                     if up_price <= down_price {
                                                      (dec!(5), dec!(10))
                                                     } else {
@@ -763,7 +761,6 @@ async fn main() -> Result<()> {
                                                 } else {
                                                     (dec!(0), dec!(0))
                                                 };
-
                                            if up_size > dec!(0) && down_size > dec!(0) {
                                             first_order=true;
                                                 let up_total_cost_single = up_price * up_size;
