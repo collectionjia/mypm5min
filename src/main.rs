@@ -752,12 +752,13 @@ async fn main() -> Result<()> {
                                                     } else {
                                                      (dec!(5), dec!(10))
                                                     }
-                                                } else if ((up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8))) && price_greater_count  {
+                                                } else if ((up_price >= dec!(0.7) && up_price <= dec!(0.9)) || (down_price >= dec!(0.7) && down_price <= dec!(0.9))) && price_greater_count  {
                                                     if up_price <= down_price {
                                                      (dec!(5), dec!(10))
                                                     } else {
                                                      (dec!(10), dec!(5))
                                                     }
+                                                    
                                                 } else {
                                                     (dec!(0), dec!(0))
                                                 };
