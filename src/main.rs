@@ -1376,9 +1376,9 @@ async fn main() -> Result<()> {
                             // 使用存储的累计数据输出日志
                             let win_profit = if winner == "UP" { history.up_gross_profit - history.down_total_cost } else { history.down_gross_profit - history.up_total_cost };
                             info!("{} | UP方向 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
-                                market_key, history.up_price, history.up_size, history.up_total_cost, history.up_avg_price, history.up_total_qty, history.up_gross_profit, history.up_net_profit, history.up_order_count);
+                                market_key, history.up_price, history.up_size, history.up_total_cost, history.up_avg_price, history.up_total_qty, history.up_gross_profit, history.up_gross_profit-history.down_total_cost, history.up_order_count);
                             info!("{} | DOWN方向 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
-                                market_key, history.down_price, history.down_size, history.down_total_cost, history.down_avg_price, history.down_total_qty, history.down_gross_profit, history.down_net_profit, history.down_order_count);
+                                market_key, history.down_price, history.down_size, history.down_total_cost, history.down_avg_price, history.down_total_qty, history.down_gross_profit, history.down_gross_profit-history.up_total_cost, history.down_order_count);
                             info!("{} | 本局结束 | YES价格={:.4} | NO价格={:.4} | 获胜方: {} | 纯利润: {:.4}", market_key, yes_final_price, no_final_price, winner, win_profit);
                         }
 
