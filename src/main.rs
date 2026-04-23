@@ -749,15 +749,16 @@ async fn main() -> Result<()> {
                                                 
                                                 let (up_size, down_size) = if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
                                                     if up_price <= down_price {
-                                                        (dec!(5), dec!(10))
+                                                       (dec!(10), dec!(5))
                                                     } else {
-                                                        (dec!(10), dec!(5))
+                                                     (dec!(5), dec!(10))
+                                                       
                                                     }
                                                 } else if (up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8)) {
                                                     if up_price <= down_price {
                                                      (dec!(10), dec!(5))
                                                     } else {
-                                                       (dec!(5), dec!(10))
+                                                     (dec!(5), dec!(10))
                                                     }
                                                 } else {
                                                     (dec!(0), dec!(0))
