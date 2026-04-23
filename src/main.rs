@@ -1054,7 +1054,7 @@ async fn main() -> Result<()> {
                                             let high_price = if high_price_side == "Yes" { yes_price } else { no_price };
                                             let low_price_side = if high_price_side == "Yes" { "No" } else { "Yes" };
                                             let low_price_val = if low_price_side == "Yes" { yes_price } else { no_price };
-                                            info!("{} | 首单下单条件: high_price={:.4}  high_side_qty={:.0} ", market_str, high_price, high_side_qty);
+                                            info!(" 下单条件: high_price={:.4}  high_side_qty={:.0} ", high_price, high_side_qty);
                                             // 检查是否满足下单条件
                                             if (high_side_qty > dec!(5) && high_side_qty<dec!(10)) && high_price<dec!(0.97) {
                                                 is_small=false;
