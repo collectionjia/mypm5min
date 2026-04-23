@@ -1056,7 +1056,7 @@ async fn main() -> Result<()> {
                                             let low_price_val = if low_price_side == "Yes" { yes_price } else { no_price };
                                             info!(" 下单条件: high_price={:.4}  high_side_qty={:.0} ", high_price, high_side_qty);
                                             // 检查是否满足下单条件
-                                            if (high_side_qty > dec!(5) && high_side_qty<dec!(10)) && high_price<dec!(0.97) {
+                                            if (high_side_qty >= dec!(5) && high_side_qty<dec!(10)) && high_price<dec!(0.97) {
                                                 is_small=false;
                                                 let order_size = dec!(10);
                                                 // 确定市场方向
