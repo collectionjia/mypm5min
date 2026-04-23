@@ -720,7 +720,7 @@ async fn main() -> Result<()> {
                                             (pair.no_book.asset_id, no_price, "No")
                                         };
 
-                                        let countdown_within_180 = sec_to_end_nonneg <= 250 && sec_to_end_nonneg > 60;
+                                        let countdown_within_180 = sec_to_end_nonneg <= 180 && sec_to_end_nonneg > 60;
                                         let countdown_within_30 = sec_to_end_nonneg <= 60 && sec_to_end_nonneg > 0;
                                         
                                         let price_greater_than_07 = price > dec!(0.7);
@@ -739,7 +739,6 @@ async fn main() -> Result<()> {
                                         //jiajiatodo
                                         if countdown_within_180  {
                                             if first_order==false {
-                                             
                                                     //加个条件，如果价格小于0.90，才下单
                                             //up和down分别根据当前价格下单限价单
                                             if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
@@ -747,14 +746,15 @@ async fn main() -> Result<()> {
                                                 let up_price = yes_price * dec!(1.02); // 上涨方向价格
                                                 let down_price = no_price * dec!(0.99); // 下跌方向价格
                                                 
-                                                let (up_size, down_size) = if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
-                                                    if up_price <= down_price {
-                                                       (dec!(10), dec!(5))
-                                                    } else {
-                                                     (dec!(5), dec!(10))
+                                                // let (up_size, down_size) = if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
+                                                //     if up_price <= down_price {
+                                                //        (dec!(10), dec!(5))
+                                                //     } else {
+                                                //      (dec!(5), dec!(10))
                                                        
-                                                    }
-                                                } else if ((up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8))) && price_greater_count  {
+                                                //     }
+                                                // } else 
+                                                if ((up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8))) && price_greater_count  {
                                                     if up_price <= down_price {
                                                      (dec!(5), dec!(10))
                                                     } else {
@@ -900,7 +900,7 @@ async fn main() -> Result<()> {
                                         let lowest_price_threshold = if let Some(history) = up_down_history.get(&market_display.clone()) {
                                             if low_side_name == "Yes" { history.up_avg_price - dec!(0.2) } else { history.down_avg_price - dec!(0.2) }
                                         } else { dec!(0) };
-                                        if low_price <= lowest_price_threshold && low_side_qty < high_side_qty && first_order==true {
+                                        if low_price <= lowest_price_threshold &&  first_order==true {
                                             is_small=false;
                                             let small_order_size = dec!(5);
                                             let small_total_cost = low_price * small_order_size;
