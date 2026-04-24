@@ -719,8 +719,9 @@ async fn main() -> Result<()> {
                                             (pair.no_book.asset_id, no_price, "No")
                                         };
 
-                                        let countdown_within_180 = sec_to_end_nonneg <= 250 && sec_to_end_nonneg > 30;
-                                        let countdown_within_30 = sec_to_end_nonneg <= 30 && sec_to_end_nonneg > 0;
+                                        let phase1_first_15min = sec_to_end_nonneg <= 300 && sec_to_end_nonneg > 210;
+                                        let phase2_middle_2min = sec_to_end_nonneg <= 210 && sec_to_end_nonneg > 90;
+                                        let phase3_last_15min = sec_to_end_nonneg <= 90 && sec_to_end_nonneg > 0;
                                         
                                         let price_greater_than_07 = price > dec!(0.7);
                                         let price_greater_than_97 = price < dec!(0.97);
@@ -733,29 +734,113 @@ async fn main() -> Result<()> {
                                         if price_greater_count {
                                             yes_greater_than_no_counters.insert(market_id, 0);
                                         }
-
-                                        //如果有订单,而且订单中购买的token这边价格卖价在0.97,对订单进行清仓
-                                        //jiajiatodo
-                                        if first_order==false && countdown_within_180  {
+                                        
+                                        // 前1.5分钟(300-210秒): 轻仓看涨
+                                        if first_order==false && phase1_first_15min {
                                             first_order=true;
-                                            //加个条件，如果价格小于0.90，才下单
-                                            //up和down分别根据当前价格下单限价单
+                                            // 轻仓看涨，只下UP方向的少量单
+                                            if let (Some((yes_price, _)), _) = (yes_best_ask, no_best_ask) {
+                                                let up_price = yes_price * dec!(1.02);
+                                                let up_size = dec!(5); // 轻仓
+                                                
+                                                if up_price > dec!(0) && up_size > dec!(0) {
+                                                    let up_total_cost_single = up_price * up_size;
+                                                    let market_key = market_display.clone();
+                                                    
+                                                    let (up_avg_price, up_total_qty, up_total_cost_acc, up_last_profit, up_last_net_profit) = if let Some(history) = up_down_history.get(&market_key) {
+                                                        let prev_up_price = history.up_avg_price;
+                                                        let prev_up_size = history.up_total_qty;
+                                                        let prev_up_total_cost = history.up_total_cost;
+                                                        let prev_down_total_cost = history.down_total_cost;
+
+                                                        let new_up_avg_price = (prev_up_price * prev_up_size + up_price * up_size) / (prev_up_size + up_size);
+                                                        let new_up_total_qty = prev_up_size + up_size;
+                                                        let new_up_total_cost = prev_up_total_cost + up_total_cost_single;
+                                                        let new_up_gross_profit = (dec!(1) - new_up_avg_price) * new_up_total_qty;
+                                                        let new_up_net_profit = new_up_gross_profit - prev_down_total_cost;
+
+                                                        (new_up_avg_price, new_up_total_qty, new_up_total_cost, new_up_gross_profit, new_up_net_profit)
+                                                    } else {
+                                                        let up_gross_profit = (dec!(1) - up_price) * up_size;
+                                                        (up_price, up_size, up_total_cost_single, up_gross_profit, up_gross_profit)
+                                                    };
+                                                    
+                                                    let existing_history = up_down_history.get(&market_key)
+                                                        .map(|r| r.clone())
+                                                        .unwrap_or(UpDownOrderInfo {
+                                                            up_price: dec!(0),
+                                                            up_size: dec!(0),
+                                                            up_total_qty: dec!(0),
+                                                            up_total_cost: dec!(0),
+                                                            up_avg_price: dec!(0),
+                                                            up_gross_profit: dec!(0),
+                                                            up_net_profit: dec!(0),
+                                                            up_order_count: 0,
+                                                            down_price: dec!(0),
+                                                            down_size: dec!(0),
+                                                            down_total_qty: dec!(0),
+                                                            down_total_cost: dec!(0),
+                                                            down_avg_price: dec!(0),
+                                                            down_gross_profit: dec!(0),
+                                                            down_net_profit: dec!(0),
+                                                            down_order_count: 0,
+                                                            yes_final_price: dec!(0),
+                                                            no_final_price: dec!(0),
+                                                        });
+                                                    
+                                                    let up_order_cnt = existing_history.up_order_count + 1;
+                                                    
+                                                    info!("{} | UP方向(前1.5分钟轻仓看涨)下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
+                                                        market_display, up_price, up_size, up_total_cost_acc, up_avg_price, up_total_qty, up_last_profit, up_last_net_profit, up_order_cnt);
+                                                    
+                                                    up_down_history.insert(market_key.clone(), UpDownOrderInfo {
+                                                        up_price: up_avg_price,
+                                                        up_size: up_total_qty,
+                                                        up_total_qty: up_total_qty,
+                                                        up_total_cost: up_total_cost_acc,
+                                                        up_avg_price: up_avg_price,
+                                                        up_gross_profit: up_last_profit,
+                                                        up_net_profit: up_last_net_profit,
+                                                        up_order_count: up_order_cnt,
+                                                        ..existing_history
+                                                    });
+                                                    
+                                                    let is_live = is_running.load(Ordering::Relaxed);
+                                                    if is_live {
+                                                        let exec = executor.clone();
+                                                        let up_token = pair.yes_book.asset_id;
+                                                        let up_p = up_price;
+                                                        let up_s = up_size;
+                                                        tokio::spawn(async move {
+                                                            match exec.buy_at_price(up_token, up_p, up_s).await {
+                                                                Ok(_) => info!("UP方向限价单买入成功: YES token={:#x} price={:.4} size={:.0}", up_token, up_p, up_s),
+                                                                Err(e) => error!("UP方向限价单买入失败: {}", e),
+                                                            }
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        
+                                        // 中2分钟(210-90秒): 重仓主打看跌（核心）
+                                        if first_order==false && phase2_middle_2min {
+                                            first_order=true;
+                                            // 重仓主打看跌，UP和DOWN都下，但DOWN数量更多
                                             if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
-                                                // 为up和down方向分别下单限价单
-                                                let up_price = yes_price * dec!(1.02); // 上涨方向价格
-                                                let down_price = no_price * dec!(0.99); // 下跌方向价格
+                                                let up_price = yes_price * dec!(1.02);
+                                                let down_price = no_price * dec!(0.99);
                                                 
                                                 let (up_size, down_size) = if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
                                                     if up_price <= down_price {
-                                                        (dec!(5), dec!(10))
+                                                        (dec!(5), dec!(15)) // DOWN更多
                                                     } else {
-                                                        (dec!(10), dec!(5))
+                                                        (dec!(15), dec!(5)) // UP更多但实际是看跌
                                                     }
                                                 } else if (up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8)) {
                                                     if up_price <= down_price {
-                                                        (dec!(5), dec!(10))
+                                                        (dec!(5), dec!(15))
                                                     } else {
-                                                        (dec!(10), dec!(5))
+                                                        (dec!(15), dec!(5))
                                                     }
                                                 } else {
                                                     (dec!(0), dec!(0))
@@ -851,9 +936,9 @@ async fn main() -> Result<()> {
                                                 let up_order_cnt = existing_history.up_order_count + 1;
                                                 let down_order_cnt = existing_history.down_order_count + 1;
                                                 
-                                                info!("{} | UP方向下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
+                                                info!("{} | UP方向(中2分钟重仓看跌)下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
                                                     market_display, up_price, up_size, up_total_cost_acc, up_avg_price, up_total_qty, up_last_profit, up_last_net_profit, up_order_cnt);
-                                                info!("{} | DOWN方向下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
+                                                info!("{} | DOWN方向(中2分钟重仓看跌)下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}",
                                                     market_display, down_price, down_size, down_total_cost_acc, down_avg_price, down_total_qty, down_last_profit, down_last_net_profit, down_order_cnt);
                                                 
                                                 let is_live = is_running.load(Ordering::Relaxed);
@@ -897,7 +982,10 @@ async fn main() -> Result<()> {
                                         let lowest_price_threshold = if let Some(history) = up_down_history.get(&market_display.clone()) {
                                             if low_side_name == "Yes" { history.up_avg_price - dec!(0.2) } else { history.down_avg_price - dec!(0.2) }
                                         } else { dec!(0) };
-                                        if low_price <= lowest_price_threshold && low_side_qty < high_side_qty {
+                                        
+                                        // 后1.5分钟(90-0秒): 双向平衡对冲
+                                        if phase3_last_15min && low_side_qty != high_side_qty {
+                                            // 双向平衡对冲 - 补齐少的那边
                                             is_small=false;
                                             let small_order_size = dec!(5);
                                             let small_total_cost = low_price * small_order_size;
@@ -924,7 +1012,7 @@ async fn main() -> Result<()> {
                                             };
                                             
                                             let side_label = if low_side_name == "Yes" { "UP" } else { "DOWN" };
-                                            info!("{} | {}方向(小边)下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}", 
+                                            info!("{} | {}方向(后1.5分钟双向对冲)下单 | 单边成交单价={:.4} | 单边成交数量={:.0} | 单边总成本={:.4} | 单边平均价={:.4} | 单边总数量={:.0} | 单边毛利润={:.4} | 单边纯利润={:.4} | 下单次数={}", 
                                                 market_display, side_label, low_price, small_order_size, small_total_cost, small_avg_price, small_total_qty, small_gross_profit, small_net_profit, small_order_count);
                                             
                                             // 更新历史记录
