@@ -735,13 +735,15 @@ async fn main() -> Result<()> {
                                             yes_greater_than_no_counters.insert(market_id, 0);
                                         }
                                        
-                                        // 前1.5分钟(300-210秒): 轻仓看涨
-                                        if first_order==false && phase1_first_15min {
+                                        // 前1.5分钟(300-210秒): 轻仓看涨，只做两极(UP<0.45或UP>0.75)，最多3单
+                                        let up_price_raw = yes_price;
+                                        let phase1_odds_match = up_price_raw < dec!(0.45) || up_price_raw > dec!(0.75);
+                                        let up_连续下单次数 = up_down_history.get(&market_display.clone()).map(|h| h.up_order_count).unwrap_or(0);
+                                        if first_order==false && phase1_first_15min && phase1_odds_match && up_连续下单次数 < 3 {
                                             first_order=true;
-                                            // 轻仓看涨，只下UP方向的少量单
                                             if let (Some((yes_price, _)), _) = (yes_best_ask, no_best_ask) {
                                                 let up_price = yes_price * dec!(1.02);
-                                                let up_size = dec!(5); // 轻仓
+                                                let up_size = dec!(40); // 固定基础投注额40
                                                 
                                                 if up_price > dec!(0) && up_size > dec!(0) {
                                                     let up_total_cost_single = up_price * up_size;
@@ -822,29 +824,17 @@ async fn main() -> Result<()> {
                                             }
                                         }
                                         
-                                        // 中2分钟(210-90秒): 重仓主打看跌（核心）
-                                        if first_order==false && phase2_middle_2min {
+                                        // 中2分钟(210-90秒): 重仓主打看跌，DOWN在0.55-0.61区间，最多3单
+                                        let down_price_raw = no_price;
+                                        let phase2_odds_match = down_price_raw >= dec!(0.55) && down_price_raw <= dec!(0.61);
+                                        let down_连续下单次数 = up_down_history.get(&market_display.clone()).map(|h| h.down_order_count).unwrap_or(0);
+                                        if first_order==false && phase2_middle_2min && phase2_odds_match && down_连续下单次数 < 3 {
                                             first_order=true;
-                                            // 重仓主打看跌，UP和DOWN都下，但DOWN数量更多
                                             if let (Some((yes_price, _)), Some((no_price, _))) = (yes_best_ask, no_best_ask) {
                                                 let up_price = yes_price * dec!(1.02);
                                                 let down_price = no_price * dec!(0.99);
                                                 
-                                                let (up_size, down_size) = if (up_price >= dec!(0.5) && up_price <= dec!(0.6)) || (down_price >= dec!(0.5) && down_price <= dec!(0.6)) {
-                                                    if up_price <= down_price {
-                                                        (dec!(5), dec!(15)) // DOWN更多
-                                                    } else {
-                                                        (dec!(15), dec!(5)) // UP更多但实际是看跌
-                                                    }
-                                                } else if (up_price >= dec!(0.7) && up_price <= dec!(0.8)) || (down_price >= dec!(0.7) && down_price <= dec!(0.8)) {
-                                                    if up_price <= down_price {
-                                                        (dec!(5), dec!(15))
-                                                    } else {
-                                                        (dec!(15), dec!(5))
-                                                    }
-                                                } else {
-                                                    (dec!(0), dec!(0))
-                                                };
+                                                let (up_size, down_size) = (dec!(10), dec!(40)); // UP用小仓微调，DOWN主打
 
                                            if up_size > dec!(0) && down_size > dec!(0) {
                                                 let up_total_cost_single = up_price * up_size;
@@ -979,15 +969,13 @@ async fn main() -> Result<()> {
                                         let high_side_qty = if let Some(history) = up_down_history.get(&market_display.clone()) {
                                             if low_side_name == "Yes" { history.down_total_qty } else { history.up_total_qty }
                                         } else { dec!(0) };
-                                        let lowest_price_threshold = if let Some(history) = up_down_history.get(&market_display.clone()) {
-                                            if low_side_name == "Yes" { history.up_avg_price - dec!(0.2) } else { history.down_avg_price - dec!(0.2) }
-                                        } else { dec!(0) };
+                                        let low_side_order_count = if let Some(history) = up_down_history.get(&market_display.clone()) {
+                                            if low_side_name == "Yes" { history.up_order_count } else { history.down_order_count }
+                                        } else { 0 };
                                         
-                                        // 后1.5分钟(90-0秒): 双向平衡对冲
-                                        if phase3_last_15min && low_side_qty != high_side_qty {
-                                            // 双向平衡对冲 - 补齐少的那边
-                                            is_small=false;
-                                            let small_order_size = dec!(5);
+                                        // 后1.5分钟(90-0秒): 双向平衡对冲，最多3单
+                                        if phase3_last_15min && low_side_qty != high_side_qty && low_side_order_count < 3 {
+                                            let small_order_size = dec!(10); // 小仓微调
                                             let small_total_cost = low_price * small_order_size;
                                             let market_key = market_display.clone();
                                             
