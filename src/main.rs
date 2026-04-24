@@ -734,7 +734,7 @@ async fn main() -> Result<()> {
                                         if price_greater_count {
                                             yes_greater_than_no_counters.insert(market_id, 0);
                                         }
-                                        
+                                       
                                         // 前1.5分钟(300-210秒): 轻仓看涨
                                         if first_order==false && phase1_first_15min {
                                             first_order=true;
