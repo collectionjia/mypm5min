@@ -2,7 +2,7 @@ use alloy::primitives::Address;
 use alloy::providers::ProviderBuilder;
 use alloy::sol;
 use anyhow::Result;
-use polymarket_client_sdk::{contract_config, POLYGON};
+use polymarket_client_sdk_v2::{contract_config, POLYGON};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use tracing::{info, warn};

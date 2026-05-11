@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use dotenvy::dotenv;
 use poly_5min_bot::merge::redeem_outcomes;
 use poly_5min_bot::positions::get_positions;
-use polymarket_client_sdk::types::{Address, B256};
+use polymarket_client_sdk_v2::types::{Address, B256};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::str::FromStr;

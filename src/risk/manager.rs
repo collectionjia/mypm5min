@@ -1,8 +1,8 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use polymarket_client_sdk::clob::Client;
-use polymarket_client_sdk::types::{Decimal, B256, U256};
+use polymarket_client_sdk_v2::clob::Client;
+use polymarket_client_sdk_v2::types::{Decimal, B256, U256};
 use rust_decimal_macros::dec;
 use tracing::{debug, error, info};
 
@@ -39,7 +39,7 @@ pub struct OrderPair {
 
 pub struct RiskManager {
     clob_client: Client<
-        polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+        polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
     >,
     pending_pairs: DashMap<String, OrderPair>,
     position_tracker: std::sync::Arc<PositionTracker>,
@@ -49,7 +49,7 @@ pub struct RiskManager {
 impl RiskManager {
     pub fn new(
         clob_client: Client<
-            polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+            polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
         >,
         config: &BotConfig,
     ) -> Self {

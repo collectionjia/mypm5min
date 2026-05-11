@@ -1,5 +1,5 @@
 use anyhow::Result;
-use polymarket_client_sdk::types::{Decimal, U256};
+use polymarket_client_sdk_v2::types::{Decimal, U256};
 use rust_decimal_macros::dec;
 use tracing::debug;
 

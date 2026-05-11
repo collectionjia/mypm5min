@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use dotenvy::dotenv;
 use poly_5min_bot::funds::check_and_manage_funds;
-use polymarket_client_sdk::types::Address;
+use polymarket_client_sdk_v2::types::Address;
 use std::env;
 use std::str::FromStr;
 use tracing::{error, info};

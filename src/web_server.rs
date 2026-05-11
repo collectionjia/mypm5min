@@ -495,7 +495,7 @@ async fn buy_handler(
         }
     };
 
-    let token_id = match polymarket_client_sdk::types::U256::from_str(&token_id_str) {
+    let token_id = match polymarket_client_sdk_v2::types::U256::from_str(&token_id_str) {
         Ok(v) => v,
         Err(e) => {
             return Json(BuyResponse {

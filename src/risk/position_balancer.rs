@@ -1,10 +1,10 @@
 //! 仓位平衡器：定时检查持仓和挂单，取消多余挂单以保持平衡
 
 use anyhow::Result;
-use polymarket_client_sdk::clob::types::request::OrdersRequest;
-use polymarket_client_sdk::clob::types::Side;
-use polymarket_client_sdk::clob::Client;
-use polymarket_client_sdk::types::{Decimal, B256, U256};
+use polymarket_client_sdk_v2::clob::types::request::OrdersRequest;
+use polymarket_client_sdk_v2::clob::types::Side;
+use polymarket_client_sdk_v2::clob::Client;
+use polymarket_client_sdk_v2::types::{Decimal, B256, U256};
 use rust_decimal_macros::dec;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
@@ -16,7 +16,7 @@ use poly_5min_bot::positions::get_positions;
 /// 仓位平衡器
 pub struct PositionBalancer {
     clob_client: Client<
-        polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+        polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
     >,
     position_tracker: std::sync::Arc<PositionTracker>,
     threshold: Decimal,
@@ -27,7 +27,7 @@ pub struct PositionBalancer {
 impl PositionBalancer {
     pub fn new(
         clob_client: Client<
-            polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+            polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
         >,
         position_tracker: std::sync::Arc<PositionTracker>,
         config: &BotConfig,

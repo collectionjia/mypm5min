@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use polymarket_client_sdk::gamma::{types::request::MarketsRequest, Client};
-use polymarket_client_sdk::types::{B256, U256};
+use polymarket_client_sdk_v2::gamma::{types::request::MarketsRequest, Client};
+use polymarket_client_sdk_v2::types::{B256, U256};
 use tracing::{info, warn};
 
 /// 5分钟窗口的秒数（供 main 等模块计算 window_end 使用）
@@ -85,7 +85,7 @@ impl MarketDiscoverer {
     /// 解析市场信息，提取YES和NO的token_id
     fn parse_market(
         &self,
-        market: polymarket_client_sdk::gamma::types::response::Market,
+        market: polymarket_client_sdk_v2::gamma::types::response::Market,
     ) -> Option<MarketInfo> {
         // 检查市场是否活跃、启用订单簿且接受订单
         if !market.active.unwrap_or(false)

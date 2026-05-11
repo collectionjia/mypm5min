@@ -1,4 +1,4 @@
-use polymarket_client_sdk::types::B256;
+use polymarket_client_sdk_v2::types::B256;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::HashMap;

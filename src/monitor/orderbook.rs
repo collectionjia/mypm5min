@@ -2,8 +2,8 @@ use anyhow::Result;
 use dashmap::DashMap;
 use futures::Stream;
 use futures::StreamExt;
-use polymarket_client_sdk::clob::ws::{types::response::{BookUpdate, MarketResolved}, Client as WsClient};
-use polymarket_client_sdk::types::{B256, U256};
+use polymarket_client_sdk_v2::clob::ws::{types::response::{BookUpdate, MarketResolved}, Client as WsClient};
+use polymarket_client_sdk_v2::types::{B256, U256};
 use std::collections::HashMap;
 use std::pin::Pin;
 use tracing::{debug, info};
@@ -52,7 +52,7 @@ impl OrderBookMonitor {
 
         let ws_client = WsClient::new(
             &ws_url,
-            polymarket_client_sdk::ws::config::Config::default(),
+            polymarket_client_sdk_v2::ws::config::Config::default(),
         )
         .expect("创建 WsClient 失败");
 

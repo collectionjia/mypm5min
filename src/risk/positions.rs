@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dashmap::DashMap;
-use polymarket_client_sdk::types::{Decimal, U256};
+use polymarket_client_sdk_v2::types::{Decimal, U256};
 use rust_decimal_macros::dec;
 use tracing::{debug, info, trace};
 
@@ -214,7 +214,7 @@ impl PositionTracker {
     /// 这个方法会从API获取最新持仓，清空并重建本地positions map
     /// 用于定时同步任务，确保本地缓存与链上实际持仓一致
     pub async fn sync_from_api(&self) -> Result<Vec<Position>> {
-        use polymarket_client_sdk::types::B256;
+        use polymarket_client_sdk_v2::types::B256;
         use std::collections::HashMap;
 
         let positions = get_positions().await?;

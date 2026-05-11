@@ -1,7 +1,7 @@
 use poly_5min_bot::merge;
 use poly_5min_bot::positions::{get_positions, Position};
 
-use polymarket_client_sdk::types::{Address, B256, U256};
+use polymarket_client_sdk_v2::types::{Address, B256, U256};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet};

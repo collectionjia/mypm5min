@@ -2,11 +2,11 @@ use alloy::signers::local::LocalSigner;
 use alloy::signers::Signer;
 use anyhow::Result;
 use dashmap::DashMap;
-use polymarket_client_sdk::clob::types::{OrderType, Side};
-use polymarket_client_sdk::clob::ws::types::response::BookUpdate;
-use polymarket_client_sdk::clob::Client;
-use polymarket_client_sdk::types::{Address, Decimal, U256};
-use polymarket_client_sdk::POLYGON;
+use polymarket_client_sdk_v2::clob::types::{OrderType, Side};
+use polymarket_client_sdk_v2::clob::ws::types::response::BookUpdate;
+use polymarket_client_sdk_v2::clob::Client;
+use polymarket_client_sdk_v2::types::{Address, Decimal, U256};
+use polymarket_client_sdk_v2::POLYGON;
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal_macros::dec;
 use std::str::FromStr;
@@ -32,7 +32,7 @@ pub struct HedgePosition {
 
 pub struct HedgeMonitor {
     client: Client<
-        polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+        polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
     >,
     private_key: String,
     proxy_address: Option<Address>,
@@ -43,7 +43,7 @@ pub struct HedgeMonitor {
 impl HedgeMonitor {
     pub fn new(
         client: Client<
-            polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+            polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
         >,
         private_key: String,
         proxy_address: Option<Address>,
@@ -409,7 +409,7 @@ impl HedgeMonitor {
     /// 静态方法：执行卖出订单
     async fn execute_sell_order(
         client: &Client<
-            polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+            polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
         >,
         signer: &impl Signer<alloy::primitives::Signature>,
         position: &HedgePosition,

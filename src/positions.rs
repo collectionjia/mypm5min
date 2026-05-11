@@ -1,12 +1,12 @@
 //! 获取用户当前持仓（Data API）
 
 use anyhow::{Context, Result};
-use polymarket_client_sdk::data::types::request::PositionsRequest;
-use polymarket_client_sdk::data::Client;
-use polymarket_client_sdk::types::Address;
+use polymarket_client_sdk_v2::data::types::request::PositionsRequest;
+use polymarket_client_sdk_v2::data::Client;
+use polymarket_client_sdk_v2::types::Address;
 
 /// Data API 返回的持仓结构，重新导出便于调用方使用
-pub use polymarket_client_sdk::data::types::response::Position;
+pub use polymarket_client_sdk_v2::data::types::response::Position;
 
 /// 从环境变量 `POLYMARKET_PROXY_ADDRESS` 读取用户地址，调用 Data API 获取当前未平仓持仓。
 ///

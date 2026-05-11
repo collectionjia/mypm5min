@@ -1,8 +1,8 @@
 use anyhow::Result;
-use polymarket_client_sdk::clob::types::OrderType;
+use polymarket_client_sdk_v2::clob::types::OrderType;
 use std::env;
 
-use polymarket_client_sdk::types::Address;
+use polymarket_client_sdk_v2::types::Address;
 
 /// 解析套利订单类型：GTC、GTD、FOK、FAK，大小写不敏感，无效或未知值默认 GTD。
 fn parse_arbitrage_order_type(s: &str) -> OrderType {

@@ -25,12 +25,12 @@ use alloy::signers::local::LocalSigner;
 use alloy::signers::Signer as _;
 use alloy::sol_types::SolCall;
 use anyhow::Result;
-use polymarket_client_sdk::ctf::types::{
+use polymarket_client_sdk_v2::ctf::types::{
     CollectionIdRequest, MergePositionsRequest, PositionIdRequest,
 };
-use polymarket_client_sdk::ctf::Client;
-use polymarket_client_sdk::types::address;
-use polymarket_client_sdk::{contract_config, POLYGON};
+use polymarket_client_sdk_v2::ctf::Client;
+use polymarket_client_sdk_v2::types::address;
+use polymarket_client_sdk_v2::{contract_config, POLYGON};
 use std::str::FromStr as _;
 use tracing::{info, warn};
 

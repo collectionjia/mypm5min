@@ -1,5 +1,5 @@
-use polymarket_client_sdk::clob::ws::types::response::BookUpdate;
-use polymarket_client_sdk::types::{Decimal, B256, U256};
+use polymarket_client_sdk_v2::clob::ws::types::response::BookUpdate;
+use polymarket_client_sdk_v2::types::{Decimal, B256, U256};
 use rust_decimal_macros::dec;
 use tracing::debug;
 

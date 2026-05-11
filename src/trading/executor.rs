@@ -2,11 +2,12 @@ use alloy::signers::local::LocalSigner;
 use alloy::signers::Signer;
 use anyhow::Result;
 use chrono::Utc;
-use polymarket_client_sdk::clob::types::request::OrderBookSummaryRequest;
-use polymarket_client_sdk::clob::types::{OrderType, Side, SignatureType};
-use polymarket_client_sdk::clob::{Client, Config};
-use polymarket_client_sdk::types::{Address, Decimal, U256};
-use polymarket_client_sdk::POLYGON;
+use polymarket_client_sdk_v2::clob::types::request::OrderBookSummaryRequest;
+use polymarket_client_sdk_v2::clob::types::{OrderType, Side, SignatureType};
+use polymarket_client_sdk_v2::clob::{Client, Config};
+use polymarket_client_sdk_v2::types::{Address, U256};
+use polymarket_client_sdk_v2::POLYGON;
+use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::str::FromStr;
 use std::time::Instant;
@@ -28,7 +29,7 @@ pub struct OrderPairResult {
 
 pub struct TradingExecutor {
     client: Client<
-        polymarket_client_sdk::auth::state::Authenticated<polymarket_client_sdk::auth::Normal>,
+        polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
     >,
     private_key: String,
     max_order_size: Decimal,
@@ -62,7 +63,7 @@ impl TradingExecutor {
             .with_chain_id(Some(POLYGON));
 
         let config = Config::builder().use_server_time(false).build();
-        let mut auth_builder = Client::new("https://clob.polymarket.com", config)
+        let mut auth_builder = Client::new("https://clob-v2.polymarket.com", config)
             .map_err(|e| anyhow::anyhow!("创建CLOB客户端失败: {}", e))?
             .authentication_builder(&signer);
 
@@ -109,7 +110,7 @@ impl TradingExecutor {
     /// 取消该账户所有挂单（收尾时使用）
     pub async fn cancel_all_orders(
         &self,
-    ) -> Result<polymarket_client_sdk::clob::types::response::CancelOrdersResponse> {
+    ) -> Result<polymarket_client_sdk_v2::clob::types::response::CancelOrdersResponse> {
         self.client
             .cancel_all_orders()
             .await
@@ -122,7 +123,7 @@ impl TradingExecutor {
         token_id: U256,
         price: Decimal,
         size: Decimal,
-    ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
+    ) -> Result<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse> {
         let price = price.round_dp(2);
         info!(
             "🧾 下单参数详情 | action=sell_at_price | token_id={} | side=SELL | order_type=GTC | price={} | size={}",
@@ -158,7 +159,7 @@ impl TradingExecutor {
         token_id: U256,
         price: Decimal,
         size: Decimal,
-    ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
+    ) -> Result<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse> {
         let price = price.round_dp(2);
         info!(
             "🧾 下单参数详情 | action=buy_at_price | token_id={} | side=BUY | order_type=GTC | price={} | size={}",
@@ -193,7 +194,7 @@ impl TradingExecutor {
         token_id: U256,
         reference_ask: Decimal,
         usd_amount: Decimal,
-    ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
+    ) -> Result<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse> {
         if usd_amount <= dec!(0) {
             return Err(anyhow::anyhow!("usd_amount 必须大于 0"));
         }

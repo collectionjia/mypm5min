@@ -10,7 +10,7 @@ use anyhow::Result;
 use alloy::signers::Signer;
 use dashmap::DashMap;
 use futures::StreamExt;
-use polymarket_client_sdk::types::{B256, U256};
+use polymarket_client_sdk_v2::types::{B256, U256};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
     // 验证私钥格式
     info!("正在验证私钥格式...");
     use alloy::signers::local::LocalSigner;
-    use polymarket_client_sdk::POLYGON;
+    use polymarket_client_sdk_v2::POLYGON;
     use std::str::FromStr;
 
     let _signer_test = LocalSigner::from_str(&config.private_key)
@@ -101,12 +101,12 @@ async fn main() -> Result<()> {
 
     // 创建CLOB客户端用于风险管理（需要认证）
     info!("正在初始化风险管理客户端（需要API认证）...");
-    use polymarket_client_sdk::clob::types::SignatureType;
-    use polymarket_client_sdk::clob::{Client, Config as ClobConfig};
+    use polymarket_client_sdk_v2::clob::types::SignatureType;
+    use polymarket_client_sdk_v2::clob::{Client, Config as ClobConfig};
 
     let signer_for_risk = LocalSigner::from_str(&config.private_key)?.with_chain_id(Some(POLYGON));
     let clob_config = ClobConfig::builder().use_server_time(true).build();
-    let mut auth_builder_risk = Client::new("https://clob.polymarket.com", clob_config)?
+    let mut auth_builder_risk = Client::new("https://clob-v2.polymarket.com", clob_config)?
         .authentication_builder(&signer_for_risk);
 
     // 如果提供了proxy_address，设置funder和signature_type
