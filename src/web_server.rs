@@ -18,7 +18,7 @@ use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
-use crate::merge;
+use poly_5min_bot::merge;
 use crate::trading::TradingExecutor;
 use crate::utils::balance_checker::get_usdc_balance;
 use alloy::primitives::Address;

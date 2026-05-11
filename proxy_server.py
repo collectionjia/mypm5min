@@ -215,7 +215,7 @@ class ProxyServer:
                 if not readable:
                     continue
                     
-                for sock in readable:
+                for sock in readable:  
                     data = sock.recv(4096)
                     if not data:
                         return

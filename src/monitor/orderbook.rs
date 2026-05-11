@@ -201,4 +201,16 @@ impl OrderBookMonitor {
         self.books.clear();
         self.market_map.clear();
     }
+
+    /// 获取指定市场的最新订单簿对
+    pub fn get_latest_pair(&self, market_id: &B256) -> Option<OrderBookPair> {
+        let (yes_token, no_token) = self.market_map.get(market_id)?;
+        let yes_book = self.books.get(yes_token)?.clone();
+        let no_book = self.books.get(no_token)?.clone();
+        Some(OrderBookPair {
+            yes_book,
+            no_book,
+            market_id: *market_id,
+        })
+    }
 }

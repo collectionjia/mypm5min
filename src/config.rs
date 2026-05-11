@@ -45,6 +45,10 @@ pub struct Config {
     /// 滑点 [first, second]：仅下降侧用 second，上涨与持平用 first。如 "-0.02,0.0"
     pub slippage: [f64; 2],
     pub gtd_expiration_secs: u64, // GTD订单过期时间（秒），默认300秒（5分钟）；仅当 arbitrage_order_type=GTD 时有效
+    /// 分割单数量：将订单分成几个小单分批下单，默认 1（不分割）
+    pub split_order_count: usize,
+    /// 分割单间隔（毫秒）：每两个小单之间的间隔，默认 0
+    pub split_order_interval_ms: u64,
     /// 套利下单时的订单类型：GTC（一直有效）、GTD（配合 gtd_expiration_secs）、FOK（立即全部成交否则取消）、FAK（立即部分成交其余取消）
     pub arbitrage_order_type: OrderType,
     pub stop_arbitrage_before_end_minutes: u64, // 市场结束前N分钟停止执行套利，默认0（不停止）
@@ -85,6 +89,9 @@ pub struct Config {
     pub ai_prompt_template: String,   // 自定义 Prompt 模板（可选）
     pub ai_confidence_threshold: f64, // 最小置信度阈值（0.0-1.0）
     pub ai_check_interval_secs: u64,  // AI 检查间隔（秒）
+
+    /// 是否启用 1 美元 split 订单策略（进入市场时下一单 1 美元 split 订单）
+    pub enable_split_order_strategy: bool,
 }
 
 impl Config {
@@ -105,9 +112,9 @@ impl Config {
                 .parse()
                 .unwrap_or(0.001),
             max_order_size_usdc: env::var("MAX_ORDER_SIZE_USDC")
-                .unwrap_or_else(|_| "100.0".to_string())
+                .unwrap_or_else(|_| "1.0".to_string())
                 .parse()
-                .unwrap_or(100.0),
+                .unwrap_or(1.0),
             crypto_symbols: env::var("CRYPTO_SYMBOLS")
                 .unwrap_or_else(|_| "btc,eth,xrp,sol".to_string())
                 .split(',')
@@ -144,6 +151,14 @@ impl Config {
                 .unwrap_or_else(|_| "300".to_string())
                 .parse()
                 .unwrap_or(300), // 默认300秒（5分钟）
+            split_order_count: env::var("SPLIT_ORDER_COUNT")
+                .unwrap_or_else(|_| "1".to_string())
+                .parse()
+                .unwrap_or(1), // 默认1（不分割）
+            split_order_interval_ms: env::var("SPLIT_ORDER_INTERVAL_MS")
+                .unwrap_or_else(|_| "0".to_string())
+                .parse()
+                .unwrap_or(0), // 默认0（无间隔）
             arbitrage_order_type: parse_arbitrage_order_type(
                 &env::var("ARBITRAGE_ORDER_TYPE").unwrap_or_else(|_| "GTD".to_string()),
             ),
@@ -227,6 +242,11 @@ impl Config {
                 .unwrap_or_else(|_| "30".to_string())
                 .parse()
                 .unwrap_or(30),
+
+            enable_split_order_strategy: env::var("ENABLE_SPLIT_ORDER_STRATEGY")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse::<bool>()
+                .unwrap_or(false),
         })
     }
 }
