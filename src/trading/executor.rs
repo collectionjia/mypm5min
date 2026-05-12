@@ -73,7 +73,7 @@ impl TradingExecutor {
         if let Some(funder) = proxy_address {
             auth_builder = auth_builder
                 .funder(funder)
-                .signature_type(SignatureType::Proxy);
+                .signature_type(SignatureType::Poly1271);
         }
 
         let client = auth_builder.authenticate().await.map_err(|e| {
