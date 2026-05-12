@@ -7,18 +7,14 @@ use std::sync::{Arc, Mutex};
 pub struct TradeRecord {
     pub id: String,
     pub market_id: String,
-    pub market_slug: String, // 市场名称/显示名
-    pub side: String,        // "YES" or "NO"
-    pub order_price: f64,//订单价格
+    pub market_slug: String,
+    pub side: String,
+    pub order_price: f64,
     pub price: f64,
     pub size: f64,
-    pub timestamp: i64,      // Unix timestamp
-    pub status: String,      // "Pending", "Won", "Lost"
-    pub profit: Option<f64>, // 盈亏金额
-    #[serde(default)]
-    pub buy_countdown: Option<String>,
-    #[serde(default)]
-    pub sell_countdown: Option<String>,
+    pub timestamp: i64,
+    pub status: String,
+    pub profit: Option<f64>,
 }
 
 lazy_static! {

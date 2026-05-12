@@ -48,8 +48,6 @@ pub struct Config {
     /// 套利下单时的订单类型：GTC（一直有效）、GTD（配合 gtd_expiration_secs）、FOK（立即全部成交否则取消）、FAK（立即部分成交其余取消）
     pub arbitrage_order_type: OrderType,
     pub stop_arbitrage_before_end_minutes: u64, // 市场结束前N分钟停止执行套利，默认0（不停止）
-    /// 定时 Merge 间隔（分钟），0 表示不启用。CONDITION_ID 与订单簿一样由当前窗口市场获取。
-    pub merge_interval_minutes: u64,
     /// YES 价格阈值：只有当 YES 价格 >= 此阈值时才执行套利，默认 0.0（不限制）
     pub min_yes_price_threshold: f64,
     /// NO 价格阈值：只有当 NO 价格 >= 此阈值时才执行套利，默认 0.0（不限制）
@@ -62,29 +60,10 @@ pub struct Config {
     pub position_balance_threshold: f64,
     /// 最小总持仓要求，只有当总持仓 >= 此值时才执行平衡，默认5.0
     pub position_balance_min_total: f64,
-    /// 窗口结束前收尾：距离当前5分钟窗口结束还有多少分钟时触发收尾（取消挂单→Merge→市价卖剩余）。0=不启用。
+    /// 窗口结束前收尾：距离当前5分钟窗口结束还有多少分钟时触发收尾（取消挂单→市价卖剩余）。0=不启用。
     pub wind_down_before_window_end_minutes: u64,
     /// 收尾时单腿卖出的限价单价格（尽量快速成交），默认0.01
     pub wind_down_sell_price: f64,
-
-    /// 倒计时窗口开始时间（秒，距离结束），默认 10
-    pub countdown_window_max_sec: i64,
-    /// 倒计时窗口结束时间（秒，距离结束），默认 5
-    pub countdown_window_min_sec: i64,
-    /// 倒计时策略最高买入价格，超过此价格不下单，默认 0.99
-    pub countdown_max_price: f64,
-    /// 倒计时策略最低买入价格，低于此价格不下单，默认 0.0 (不限制)
-    pub countdown_min_price: f64,
-    pub countdown_buy_price: f64,
-    pub countdown_sell_price: f64,
-
-    /// AI 预测配置
-    pub ai_api_url: String, // AI 接口地址
-    pub ai_api_key: String,           // AI API Key
-    pub ai_model: String,             // AI 模型名称
-    pub ai_prompt_template: String,   // 自定义 Prompt 模板（可选）
-    pub ai_confidence_threshold: f64, // 最小置信度阈值（0.0-1.0）
-    pub ai_check_interval_secs: u64,  // AI 检查间隔（秒）
 }
 
 impl Config {
@@ -151,10 +130,6 @@ impl Config {
                 .unwrap_or_else(|_| "0".to_string())
                 .parse()
                 .unwrap_or(0), // 默认0（不停止）
-            merge_interval_minutes: env::var("MERGE_INTERVAL_MINUTES")
-                .unwrap_or_else(|_| "0".to_string())
-                .parse()
-                .unwrap_or(0), // 0=不启用
             min_yes_price_threshold: env::var("MIN_YES_PRICE_THRESHOLD")
                 .unwrap_or_else(|_| "0.0".to_string())
                 .parse()
@@ -187,46 +162,6 @@ impl Config {
                 .unwrap_or_else(|_| "0.01".to_string())
                 .parse()
                 .unwrap_or(0.01), // 默认0.01
-
-            countdown_window_max_sec: env::var("COUNTDOWN_WINDOW_MAX_SEC")
-                .unwrap_or_else(|_| "10".to_string())
-                .parse()
-                .unwrap_or(10), // 默认10秒
-            countdown_window_min_sec: env::var("COUNTDOWN_WINDOW_MIN_SEC")
-                .unwrap_or_else(|_| "5".to_string())
-                .parse()
-                .unwrap_or(5), // 默认5秒
-            countdown_max_price: env::var("COUNTDOWN_MAX_PRICE")
-                .unwrap_or_else(|_| "0.99".to_string())
-                .parse()
-                .unwrap_or(0.99), // 默认0.99
-            countdown_min_price: env::var("COUNTDOWN_MIN_PRICE")
-                .unwrap_or_else(|_| "0.0".to_string())
-                .parse()
-                .unwrap_or(0.0), // 默认0.0
-            countdown_buy_price: env::var("COUNTDOWN_BUY_PRICE")
-                .unwrap_or_else(|_| "0.3".to_string())
-                .parse()
-                .unwrap_or(0.3),
-            countdown_sell_price: env::var("COUNTDOWN_SELL_PRICE")
-                .unwrap_or_else(|_| "0.6".to_string())
-                .parse()
-                .unwrap_or(0.6),
-
-            // AI 配置
-            ai_api_url: env::var("AI_API_URL")
-                .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string()),
-            ai_api_key: env::var("AI_API_KEY").unwrap_or_else(|_| "".to_string()),
-            ai_model: env::var("AI_MODEL").unwrap_or_else(|_| "gpt-4-turbo".to_string()),
-            ai_prompt_template: env::var("AI_PROMPT_TEMPLATE").unwrap_or_else(|_| "".to_string()),
-            ai_confidence_threshold: env::var("AI_CONFIDENCE_THRESHOLD")
-                .unwrap_or_else(|_| "0.7".to_string())
-                .parse()
-                .unwrap_or(0.7),
-            ai_check_interval_secs: env::var("AI_CHECK_INTERVAL_SECS")
-                .unwrap_or_else(|_| "30".to_string())
-                .parse()
-                .unwrap_or(30),
         })
     }
 }
