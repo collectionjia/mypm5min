@@ -230,57 +230,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        info!("start jiajia  split ");
-        // 如果启用了 1 美元 split 订单策略，直接下单（跳过订单簿等待）
-        if config.enable_split_order_strategy {
-            info!("🎯 1美元 Split 订单策略已启用，直接下单...");
-
-            for market in &markets {
-                let market_display = if !market.crypto_symbol.is_empty() {
-                    market.crypto_symbol.clone()
-                } else {
-                    market.title.clone()
-                };
-
-                // 使用固定价格下单（0.5）
-                let yes_price = dec!(0.5);
-                let no_price = dec!(0.5);
-
-                let yes_token_id = market.yes_token_id;
-                let no_token_id = market.no_token_id;
-                let condition_id = market.condition_id;
-
-                info!(
-                    "📤 执行 1 美元 Split 订单 | {} | YES {:.4} | NO {:.4}",
-                    market_display,
-                    yes_price,
-                    no_price
-                );
-
-                match executor.execute_split_order(
-                    condition_id,
-                    yes_token_id,
-                    no_token_id,
-                    yes_price,
-                    no_price,
-                ).await {
-                    Ok(result) => {
-                        if result.success {
-                            info!("✅ Split 订单成功 | {}", market_display);
-                        } else {
-                            warn!("⚠️ Split 订单部分成交 | {}", market_display);
-                        }
-                    }
-                    Err(e) => {
-                        error!(error = %e, market = %market_display, "Split 订单失败");
-                    }
-                }
-
-                // 每个市场间隔 1 秒
-                sleep(Duration::from_secs(1)).await;
-            }
-            info!("🎯 1美元 Split 订单策略执行完毕");
-        }
+     
 
         // 创建订单簿流
         let mut stream = match monitor.create_orderbook_stream() {
@@ -397,7 +347,57 @@ async fn main() -> Result<()> {
                                     };
 
 
-                                     
+                                        info!("start jiajia  split ");
+        // 如果启用了 1 美元 split 订单策略，直接下单（跳过订单簿等待）
+        if config.enable_split_order_strategy {
+            info!("🎯 1美元 Split 订单策略已启用，直接下单...");
+
+            for market in &markets {
+                let market_display = if !market.crypto_symbol.is_empty() {
+                    market.crypto_symbol.clone()
+                } else {
+                    market.title.clone()
+                };
+
+                // 使用固定价格下单（0.5）
+                let yes_price = dec!(0.5);
+                let no_price = dec!(0.5);
+
+                let yes_token_id = market.yes_token_id;
+                let no_token_id = market.no_token_id;
+                let condition_id = market.condition_id;
+
+                info!(
+                    "📤 执行 1 美元 Split 订单 | {} | YES {:.4} | NO {:.4}",
+                    market_display,
+                    yes_price,
+                    no_price
+                );
+
+                match executor.execute_split_order(
+                    condition_id,
+                    yes_token_id,
+                    no_token_id,
+                    yes_price,
+                    no_price,
+                ).await {
+                    Ok(result) => {
+                        if result.success {
+                            info!("✅ Split 订单成功 | {}", market_display);
+                        } else {
+                            warn!("⚠️ Split 订单部分成交 | {}", market_display);
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, market = %market_display, "Split 订单失败");
+                    }
+                }
+
+                // 每个市场间隔 1 秒
+                sleep(Duration::from_secs(1)).await;
+            }
+            info!("🎯 1美元 Split 订单策略执行完毕");
+        }
 
                                     let yes_info = match yes_best_ask {
                                         Some((ap, asz)) => format!("Yes:A{:.4}({:.2}){}", ap, asz, yes_dir),
