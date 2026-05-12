@@ -32,7 +32,6 @@ pub struct TradingExecutor {
         polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
     >,
     private_key: String,
-    maker: Option<Address>, // Deposit Wallet (Proxy/Funder) 地址，下单时作为 maker
     max_order_size: Decimal,
     slippage: [Decimal; 2], // [first, second]，仅下降侧用 second，上涨与持平用 first
     gtd_expiration_secs: u64,
@@ -87,7 +86,6 @@ impl TradingExecutor {
         Ok(Self {
             client,
             private_key,
-            maker: proxy_address, // 保存 Deposit Wallet 地址作为 maker
             max_order_size: Decimal::try_from(max_order_size_usdc)
                 .unwrap_or(rust_decimal_macros::dec!(100.0)),
             slippage: [
@@ -134,21 +132,16 @@ impl TradingExecutor {
             token_id, price, size
         );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
-        let order_builder = self
+        let order = self
             .client
             .limit_order()
             .token_id(token_id)
             .side(Side::Sell)
             .price(price)
             .size(size)
-            .order_type(OrderType::GTC);
-        // 设置 maker 参数（新版 API 要求）
-        let order_builder = if let Some(maker) = self.maker {
-            order_builder.maker(maker)
-        } else {
-            order_builder
-        };
-        let order = order_builder.build().await?;
+            .order_type(OrderType::GTC)
+            .build()
+            .await?;
         let signed = self.client.sign(&signer, order).await?;
         self.client
             .post_order(signed)
@@ -175,21 +168,16 @@ impl TradingExecutor {
             token_id, price, size
         );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
-        let order_builder = self
+        let order = self
             .client
             .limit_order()
             .token_id(token_id)
             .side(Side::Buy)
             .price(price)
             .size(size)
-            .order_type(OrderType::GTC);
-        // 设置 maker 参数（新版 API 要求）
-        let order_builder = if let Some(maker) = self.maker {
-            order_builder.maker(maker)
-        } else {
-            order_builder
-        };
-        let order = order_builder.build().await?;
+            .order_type(OrderType::GTC)
+            .build()
+            .await?;
         let signed = self.client.sign(&signer, order).await?;
         self.client
             .post_order(signed)
@@ -233,21 +221,16 @@ impl TradingExecutor {
             token_id, reference_ask, usd_amount, price, min_size_for_order_price, size, order_amount
         );
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
-        let order_builder = self
+        let order = self
             .client
             .limit_order()
             .token_id(token_id)
             .side(Side::Buy)
             .price(reference_ask)
             .size(size)
-            .order_type(OrderType::FOK);
-        // 设置 maker 参数（新版 API 要求）
-        let order_builder = if let Some(maker) = self.maker {
-            order_builder.maker(maker)
-        } else {
-            order_builder
-        };
-        let order = order_builder.build().await?;
+            .order_type(OrderType::FOK)
+            .build()
+            .await?;
         let signed = self.client.sign(&signer, order).await?;
         self.client
             .post_order(signed)
@@ -348,7 +331,7 @@ impl TradingExecutor {
             // 构建并发送 YES 和 NO 小单（并行）
             let (yes_result, no_result) = tokio::join!(
                 async {
-                    let mut order_builder = self
+                    let order = self
                         .client
                         .limit_order()
                         .token_id(yes_token_id)
@@ -356,20 +339,16 @@ impl TradingExecutor {
                         .price(yes_price_with_slippage)
                         .size(split_size)
                         .order_type(self.arbitrage_order_type.clone());
-                    // 设置 maker 参数（新版 API 要求）
-                    if let Some(maker) = self.maker {
-                        order_builder = order_builder.maker(maker);
-                    }
                     let order = if matches!(&self.arbitrage_order_type, OrderType::GTD) {
-                        order_builder.expiration(expiration).build().await
+                        order.expiration(expiration).build().await
                     } else {
-                        order_builder.build().await
+                        order.build().await
                     }?;
                     let signed = self.client.sign(&signer, order).await?;
                     self.client.post_order(signed).await
                 },
                 async {
-                    let mut order_builder = self
+                    let order = self
                         .client
                         .limit_order()
                         .token_id(no_token_id)
@@ -377,14 +356,10 @@ impl TradingExecutor {
                         .price(no_price_with_slippage)
                         .size(split_size)
                         .order_type(self.arbitrage_order_type.clone());
-                    // 设置 maker 参数（新版 API 要求）
-                    if let Some(maker) = self.maker {
-                        order_builder = order_builder.maker(maker);
-                    }
                     let order = if matches!(&self.arbitrage_order_type, OrderType::GTD) {
-                        order_builder.expiration(expiration).build().await
+                        order.expiration(expiration).build().await
                     } else {
-                        order_builder.build().await
+                        order.build().await
                     }?;
                     let signed = self.client.sign(&signer, order).await?;
                     self.client.post_order(signed).await
@@ -569,36 +544,30 @@ impl TradingExecutor {
         // 并行下单 YES 和 NO
         let (yes_result, no_result) = tokio::join!(
             async {
-                let mut order_builder = self
+                let order = self
                     .client
                     .limit_order()
                     .token_id(yes_token_id)
                     .side(Side::Buy)
                     .price(final_yes_price)
                     .size(final_yes_size)
-                    .order_type(OrderType::FOK);
-                // 设置 maker 参数（新版 API 要求）
-                if let Some(maker) = self.maker {
-                    order_builder = order_builder.maker(maker);
-                }
-                let order = order_builder.build().await?;
+                    .order_type(OrderType::FOK)
+                    .build()
+                    .await?;
                 let signed = self.client.sign(&signer, order).await?;
                 self.client.post_order(signed).await
             },
             async {
-                let mut order_builder = self
+                let order = self
                     .client
                     .limit_order()
                     .token_id(no_token_id)
                     .side(Side::Buy)
                     .price(final_no_price)
                     .size(final_no_size)
-                    .order_type(OrderType::FOK);
-                // 设置 maker 参数（新版 API 要求）
-                if let Some(maker) = self.maker {
-                    order_builder = order_builder.maker(maker);
-                }
-                let order = order_builder.build().await?;
+                    .order_type(OrderType::FOK)
+                    .build()
+                    .await?;
                 let signed = self.client.sign(&signer, order).await?;
                 self.client.post_order(signed).await
             }
