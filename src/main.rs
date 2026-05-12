@@ -230,9 +230,9 @@ async fn main() -> Result<()> {
         }
 
         info!("start jiajia  split ");
-        // 如果启用了 1 美元 split 订单策略，直接下单（跳过订单簿等待）
+        // 如果启用了 2 美元 split 订单策略，直接下单（跳过订单簿等待）
         if config.enable_split_order_strategy {
-            info!("🎯 1美元 Split 订单策略已启用，直接下单...");
+            info!("🎯 2美元 Split 订单策略已启用，直接下单...");
 
             for market in &markets {
                 let market_display = if !market.crypto_symbol.is_empty() {
@@ -247,15 +247,17 @@ async fn main() -> Result<()> {
 
                 let yes_token_id = market.yes_token_id;
                 let no_token_id = market.no_token_id;
+                let condition_id = market.condition_id;
 
                 info!(
-                    "📤 执行 1 美元 Split 订单 | {} | YES {:.4} | NO {:.4}",
+                    "📤 执行 2 美元 Split 订单 | {} | YES {:.4} | NO {:.4}",
                     market_display,
                     yes_price,
                     no_price
                 );
 
                 match executor.execute_split_order(
+                    condition_id,
                     yes_token_id,
                     no_token_id,
                     yes_price,
@@ -276,7 +278,7 @@ async fn main() -> Result<()> {
                 // 每个市场间隔 1 秒
                 sleep(Duration::from_secs(1)).await;
             }
-            info!("🎯 1美元 Split 订单策略执行完毕");
+            info!("🎯 2美元 Split 订单策略执行完毕");
         }
 
         // 创建订单簿流

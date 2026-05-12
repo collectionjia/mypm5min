@@ -1,10 +1,14 @@
+use alloy::primitives::B256;
+use alloy::providers::Provider;
+use alloy::providers::ProviderBuilder;
 use alloy::signers::local::LocalSigner;
 use alloy::signers::Signer;
 use anyhow::Result;
 use chrono::Utc;
-use polymarket_client_sdk_v2::clob::types::request::OrderBookSummaryRequest;
 use polymarket_client_sdk_v2::clob::types::{OrderType, Side, SignatureType};
 use polymarket_client_sdk_v2::clob::{Client, Config};
+use polymarket_client_sdk_v2::ctf::types::SplitPositionRequest;
+use polymarket_client_sdk_v2::ctf::Client as CtfClient;
 use polymarket_client_sdk_v2::types::{Address, U256};
 use polymarket_client_sdk_v2::POLYGON;
 use rust_decimal::Decimal;
@@ -32,6 +36,7 @@ pub struct TradingExecutor {
         polymarket_client_sdk_v2::auth::state::Authenticated<polymarket_client_sdk_v2::auth::Normal>,
     >,
     private_key: String,
+    proxy_address: Option<Address>,
     max_order_size: Decimal,
     slippage: [Decimal; 2], // [first, second]，仅下降侧用 second，上涨与持平用 first
     gtd_expiration_secs: u64,
@@ -89,6 +94,7 @@ impl TradingExecutor {
         Ok(Self {
             client,
             private_key,
+            proxy_address,
             max_order_size: Decimal::try_from(max_order_size_usdc)
                 .unwrap_or(rust_decimal_macros::dec!(100.0)),
             slippage: [
@@ -477,142 +483,84 @@ impl TradingExecutor {
         })
     }
 
-    /// 执行 1 美元 split 订单（进入市场时使用）
-    /// 同时以指定价格买入 YES 和 NO，各 1 美元
+    /// 执行 2 美元 CTF Split（进入市场时使用）
+    /// 使用 CTF 合约直接 split USDC 为 YES 和 NO 代币
     pub async fn execute_split_order(
         &self,
+        condition_id: B256,
         yes_token_id: U256,
         no_token_id: U256,
-        yes_price: Decimal,
-        no_price: Decimal,
+        _yes_price: Decimal,
+        _no_price: Decimal,
     ) -> Result<OrderPairResult> {
         let total_start = Instant::now();
-        let order_amount = dec!(1.0); // 固定 1 美元
-
-        // 计算每边份额（1美元 / 价格），最小为 1 份
-        let yes_size = (order_amount / yes_price).round_dp(0).max(dec!(1));
-        let no_size = (order_amount / no_price).round_dp(0).max(dec!(1));
+        let order_amount_usdc: u64 = 2_000_000; // 固定 2 USDC (6 位小数)
 
         let pair_id = Uuid::new_v4().to_string();
 
         info!(
-            "📋 1美元 Split 订单 | pair_id={} | YES {:.4}×{} | NO {:.4}×{}",
+            "📋 CTF Split 订单 | pair_id={} | condition_id={} | 金额=2 USDC",
             &pair_id[..8],
-            yes_price, yes_size,
-            no_price, no_size
+            condition_id
         );
 
+        // 创建 CTF Provider 和 Client
         let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
+        let rpc_url = std::env::var("RPC_URL")
+            .unwrap_or_else(|_| "https://polygon-bor.publicnode.com".to_string());
+        
+        let ctf_provider = ProviderBuilder::new()
+            .wallet(signer.clone())
+            .connect(&rpc_url)
+            .await
+            .map_err(|e| anyhow::anyhow!("创建 CTF Provider 失败: {}", e))?;
+        
+        let ctf_client = CtfClient::new(ctf_provider, POLYGON)
+            .map_err(|e| anyhow::anyhow!("创建 CTF Client 失败: {}", e))?;
 
-        // 通过 REST API 获取订单簿以获取最新价格和版本
-        let yes_req = OrderBookSummaryRequest::builder()
-            .token_id(yes_token_id)
-            .build();
-        let no_req = OrderBookSummaryRequest::builder()
-            .token_id(no_token_id)
-            .build();
-        let yes_book = self.client.order_book(&yes_req).await?;
-        let no_book = self.client.order_book(&no_req).await?;
-
-        // 获取卖一价（asks 最后一档）
-        let actual_yes_price = yes_book.asks.last()
-            .map(|a| a.price)
-            .unwrap_or(yes_price);
-        let actual_no_price = no_book.asks.last()
-            .map(|a| a.price)
-            .unwrap_or(no_price);
-
-        // 如果实际价格与预期差异过大，使用实际价格
-        let final_yes_price = if (actual_yes_price - yes_price).abs() < dec!(0.1) {
-            yes_price
-        } else {
-            actual_yes_price
-        };
-        let final_no_price = if (actual_no_price - no_price).abs() < dec!(0.1) {
-            no_price
-        } else {
-            actual_no_price
-        };
-
-        // 重新计算份额
-        let final_yes_size = (order_amount / final_yes_price).round_dp(0).max(dec!(1));
-        let final_no_size = (order_amount / final_no_price).round_dp(0).max(dec!(1));
+        // 构建 CTF Split 请求
+        // partition: [1, 2] 代表 YES 和 NO 两个 outcome
+        let split_req = SplitPositionRequest::for_binary_market(
+            polymarket_client_sdk_v2::types::address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"),
+            condition_id,
+            U256::from(order_amount_usdc),
+        );
 
         info!(
-            "📋 实际价格 | YES {:.4}×{} | NO {:.4}×{}",
-            final_yes_price, final_yes_size,
-            final_no_price, final_no_size
+            "📤 发送 CTF Split 交易 | condition_id={} | amount={} USDC",
+            condition_id,
+            order_amount_usdc / 1_000_000
         );
 
-        // 并行下单 YES 和 NO
-        let (yes_result, no_result) = tokio::join!(
-            async {
-                let order = self
-                    .client
-                    .limit_order()
-                    .token_id(yes_token_id)
-                    .side(Side::Buy)
-                    .price(final_yes_price)
-                    .size(final_yes_size)
-                    .order_type(OrderType::FOK)
-                    .build()
-                    .await?;
-                let signed = self.client.sign(&signer, order).await?;
-                self.client.post_order(signed).await
-            },
-            async {
-                let order = self
-                    .client
-                    .limit_order()
-                    .token_id(no_token_id)
-                    .side(Side::Buy)
-                    .price(final_no_price)
-                    .size(final_no_size)
-                    .order_type(OrderType::FOK)
-                    .build()
-                    .await?;
-                let signed = self.client.sign(&signer, order).await?;
-                self.client.post_order(signed).await
-            }
-        );
+        // 使用 CTF Client 执行 split
+        let split_result = ctf_client.split_position(&split_req).await;
 
         let total_elapsed = total_start.elapsed().as_millis();
 
-        let (yes_filled, no_filled) = match (yes_result, no_result) {
-            (Ok(y), Ok(n)) => (y.taking_amount, n.taking_amount),
-            (Err(e), _) => {
-                error!("❌ YES 下单失败: {}", e);
-                return Err(anyhow::anyhow!("YES 下单失败: {}", e));
+        match split_result {
+            Ok(resp) => {
+                info!(
+                    "✅ CTF Split 成功 | pair_id={} | tx={:#x} | block={} | 耗时:{}ms",
+                    &pair_id[..8],
+                    resp.transaction_hash,
+                    resp.block_number,
+                    total_elapsed
+                );
+                Ok(OrderPairResult {
+                    pair_id,
+                    yes_order_id: format!("{:#x}", resp.transaction_hash),
+                    no_order_id: String::new(),
+                    yes_filled: dec!(2.0),
+                    no_filled: dec!(2.0),
+                    yes_size: dec!(1),
+                    no_size: dec!(1),
+                    success: true,
+                })
             }
-            (_, Err(e)) => {
-                error!("❌ NO 下单失败: {}", e);
-                return Err(anyhow::anyhow!("NO 下单失败: {}", e));
+            Err(e) => {
+                error!("❌ CTF Split 失败: {}", e);
+                Err(anyhow::anyhow!("CTF Split 失败: {}", e))
             }
-        };
-
-        let success = yes_filled > dec!(0) && no_filled > dec!(0);
-
-        if success {
-            info!(
-                "✅ 1美元 Split 订单成功 | pair_id={} | YES成交:{:.2} | NO成交:{:.2} | 耗时:{}ms",
-                &pair_id[..8], yes_filled, no_filled, total_elapsed
-            );
-        } else {
-            warn!(
-                "⚠️ 1美元 Split 订单部分成交 | YES:{:.2} | NO:{:.2}",
-                yes_filled, no_filled
-            );
         }
-
-        Ok(OrderPairResult {
-            pair_id,
-            yes_order_id: String::new(),
-            no_order_id: String::new(),
-            yes_filled,
-            no_filled,
-            yes_size: final_yes_size,
-            no_size: final_no_size,
-            success,
-        })
     }
 }

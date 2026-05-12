@@ -17,6 +17,7 @@ pub struct MarketInfo {
     pub price_to_beat: Option<f64>,
     pub end_date: DateTime<Utc>,
     pub crypto_symbol: String,
+    pub condition_id: B256,
 }
 
 pub struct MarketDiscoverer {
@@ -138,6 +139,7 @@ impl MarketDiscoverer {
             price_to_beat,
             end_date,
             crypto_symbol,
+            condition_id: market_id,
         })
     }
 }
