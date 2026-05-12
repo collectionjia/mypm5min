@@ -2,7 +2,11 @@ use anyhow::Result;
 use dashmap::DashMap;
 use futures::Stream;
 use futures::StreamExt;
-use polymarket_client_sdk_v2::clob::ws::{types::response::{BookUpdate, MarketResolved}, Client as WsClient};
+use polymarket_client_sdk_v2::clob::ws::{
+    types::response::{BookUpdate, MarketResolved},
+    Client as WsClient,
+};
+use polymarket_client_sdk_v2::ws::config::Config;
 use polymarket_client_sdk_v2::types::{B256, U256};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -50,11 +54,8 @@ impl OrderBookMonitor {
             .unwrap_or_else(|_| "wss://ws-subscriptions-clob.polymarket.com".to_string());
         info!(ws_url = %ws_url, "WebSocket 客户端连接地址");
 
-        let ws_client = WsClient::new(
-            &ws_url,
-            polymarket_client_sdk_v2::ws::config::Config::default(),
-        )
-        .expect("创建 WsClient 失败");
+        let ws_client = WsClient::new(&ws_url, Config::default())
+            .expect("创建 WsClient 失败");
 
         Self {
             // 使用未认证的客户端：订单簿订阅不需要认证，这是公开数据
@@ -77,7 +78,6 @@ impl OrderBookMonitor {
             no = short_u256(&market.no_token_id),
             "订阅市场订单簿"
         );
-
         Ok(())
     }
 
