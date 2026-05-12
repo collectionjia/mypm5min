@@ -484,83 +484,85 @@ impl TradingExecutor {
     }
 
     /// 执行 2 美元 CTF Split（进入市场时使用）
-    /// 使用 CTF 合约直接 split USDC 为 YES 和 NO 代币
+    /// 通过 Relayer 使用 Proxy 钱包中的 USDC 执行 split
     pub async fn execute_split_order(
         &self,
         condition_id: B256,
-        yes_token_id: U256,
-        no_token_id: U256,
+        _yes_token_id: U256,
+        _no_token_id: U256,
         _yes_price: Decimal,
         _no_price: Decimal,
     ) -> Result<OrderPairResult> {
-        let total_start = Instant::now();
-        let order_amount_usdc: u64 = 2_000_000; // 固定 2 USDC (6 位小数)
+        use crate::merge::{encode_split_calldata, relayer_execute_split};
 
+        let total_start = Instant::now();
+        let order_amount_usdc: u64 = 1_000_000; // 固定 1 USDC (6 位小数)
         let pair_id = Uuid::new_v4().to_string();
 
+        let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
+
+        let proxy_address = match &self.proxy_address {
+            Some(addr) => *addr,
+            None => anyhow::bail!("执行 split 需要配置 PROXY_ADDRESS"),
+        };
+
         info!(
-            "📋 CTF Split 订单 | pair_id={} | condition_id={} | 金额=2 USDC",
+            "📋 CTF Split | pair_id={} | proxy={} | 金额=1 USDC | condition_id={}",
             &pair_id[..8],
+            proxy_address,
             condition_id
         );
 
-        // 创建 CTF Provider 和 Client
-        let signer = LocalSigner::from_str(&self.private_key)?.with_chain_id(Some(POLYGON));
-        let rpc_url = std::env::var("RPC_URL")
-            .unwrap_or_else(|_| "https://polygon-bor.publicnode.com".to_string());
-        
-        let ctf_provider = ProviderBuilder::new()
-            .wallet(signer.clone())
-            .connect(&rpc_url)
-            .await
-            .map_err(|e| anyhow::anyhow!("创建 CTF Provider 失败: {}", e))?;
-        
-        let ctf_client = CtfClient::new(ctf_provider, POLYGON)
-            .map_err(|e| anyhow::anyhow!("创建 CTF Client 失败: {}", e))?;
-
-        // 构建 CTF Split 请求
-        // partition: [1, 2] 代表 YES 和 NO 两个 outcome
-        let split_req = SplitPositionRequest::for_binary_market(
+        // 构建 split calldata
+        let split_calldata = encode_split_calldata(
             polymarket_client_sdk_v2::types::address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"),
+            B256::ZERO, // parentCollectionId
             condition_id,
+            vec![U256::from(1), U256::from(2)], // partition: YES=1, NO=2
             U256::from(order_amount_usdc),
         );
 
-        info!(
-            "📤 发送 CTF Split 交易 | condition_id={} | amount={} USDC",
-            condition_id,
-            order_amount_usdc / 1_000_000
-        );
+        let relayer_url = std::env::var("RELAYER_URL")
+            .unwrap_or_else(|_| "https://relayer-v2.polymarket.com".to_string());
+        let builder_key = std::env::var("POLY_BUILDER_API_KEY")
+            .map_err(|_| anyhow::anyhow!("需要配置 POLY_BUILDER_API_KEY"))?;
+        let builder_secret = std::env::var("POLY_BUILDER_SECRET")
+            .map_err(|_| anyhow::anyhow!("需要配置 POLY_BUILDER_SECRET"))?;
+        let builder_passphrase = std::env::var("POLY_BUILDER_PASSPHRASE")
+            .map_err(|_| anyhow::anyhow!("需要配置 POLY_BUILDER_PASSPHRASE"))?;
 
-        // 使用 CTF Client 执行 split
-        let split_result = ctf_client.split_position(&split_req).await;
+        info!("📤 通过 Relayer 发送 CTF Split 交易...");
+
+        let tx_hash = relayer_execute_split(
+            &split_calldata,
+            polymarket_client_sdk_v2::types::address!("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"), // CTF 地址
+            proxy_address,
+            &signer,
+            &builder_key,
+            &builder_secret,
+            &builder_passphrase,
+            &relayer_url,
+        )
+        .await?;
 
         let total_elapsed = total_start.elapsed().as_millis();
 
-        match split_result {
-            Ok(resp) => {
-                info!(
-                    "✅ CTF Split 成功 | pair_id={} | tx={:#x} | block={} | 耗时:{}ms",
-                    &pair_id[..8],
-                    resp.transaction_hash,
-                    resp.block_number,
-                    total_elapsed
-                );
-                Ok(OrderPairResult {
-                    pair_id,
-                    yes_order_id: format!("{:#x}", resp.transaction_hash),
-                    no_order_id: String::new(),
-                    yes_filled: dec!(2.0),
-                    no_filled: dec!(2.0),
-                    yes_size: dec!(1),
-                    no_size: dec!(1),
-                    success: true,
-                })
-            }
-            Err(e) => {
-                error!("❌ CTF Split 失败: {}", e);
-                Err(anyhow::anyhow!("CTF Split 失败: {}", e))
-            }
-        }
+        info!(
+            "✅ CTF Split 成功 | pair_id={} | tx={} | 耗时:{}ms",
+            &pair_id[..8],
+            tx_hash,
+            total_elapsed
+        );
+
+        Ok(OrderPairResult {
+            pair_id,
+            yes_order_id: tx_hash,
+            no_order_id: String::new(),
+            yes_filled: dec!(1.0),
+            no_filled: dec!(1.0),
+            yes_size: dec!(1),
+            no_size: dec!(1),
+            success: true,
+        })
     }
 }

@@ -81,6 +81,7 @@ sol! {
     function proxy(ProxyCallTuple[] calls) external payable returns (bytes[] returnValues);
 
     function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] calldata indexSets) external;
+    function splitPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] calldata partition, uint256 amount) external;
 }
 
 pub fn encode_redeem_calldata(
@@ -94,6 +95,24 @@ pub fn encode_redeem_calldata(
         parentCollectionId: parent,
         conditionId: condition,
         indexSets: index_sets,
+    }
+    .abi_encode()
+    .into()
+}
+
+pub fn encode_split_calldata(
+    collateral: Address,
+    parent: B256,
+    condition: B256,
+    partition: Vec<U256>,
+    amount: U256,
+) -> Bytes {
+    splitPositionsCall {
+        collateralToken: collateral,
+        parentCollectionId: parent,
+        conditionId: condition,
+        partition: partition,
+        amount: amount,
     }
     .abi_encode()
     .into()
@@ -344,6 +363,107 @@ async fn relayer_execute_merge(
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as u64;
     // 支持标准 Base64 (+/) 与 Base64URL (-_) 两种格式
+    let secret_b64 = builder_secret.trim().replace('-', "+").replace('_', "/");
+    let secret_bytes = base64::engine::general_purpose::STANDARD
+        .decode(&secret_b64)
+        .map_err(|e| anyhow::anyhow!("POLY_BUILDER_SECRET base64 解码失败: {}", e))?;
+    let sig_hmac = build_hmac_signature(&secret_bytes, timestamp, method, path, &body_str);
+
+    let url = format!("{}{}", base, path);
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("POLY_BUILDER_API_KEY", builder_key)
+        .header("POLY_BUILDER_TIMESTAMP", timestamp.to_string())
+        .header("POLY_BUILDER_PASSPHRASE", builder_passphrase)
+        .header("POLY_BUILDER_SIGNATURE", sig_hmac)
+        .body(body_str)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await?;
+    if !status.is_success() {
+        anyhow::bail!("Relayer 请求失败 status={} body={}", status, text);
+    }
+    let json: serde_json::Value = serde_json::from_str(&text)?;
+    let hash = json
+        .get("transactionHash")
+        .or_else(|| json.get("transaction_hash"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Ok(hash.unwrap_or_else(|| text))
+}
+
+/// 通过 Relayer 执行 Split 操作（使用 Proxy 钱包中的 USDC）
+pub async fn relayer_execute_split(
+    split_calldata: &[u8],
+    ctf_address: Address,
+    proxy_wallet: Address,
+    signer: &impl alloy::signers::Signer,
+    builder_key: &str,
+    builder_secret: &str,
+    builder_passphrase: &str,
+    relayer_url: &str,
+) -> Result<String> {
+    let client = reqwest::Client::new();
+    let eoa = signer.address();
+    let base = relayer_url.trim_end_matches('/');
+
+    let (relay, nonce) = get_relay_payload(&client, base, eoa).await?;
+    let proxy_data = encode_proxy_call(ctf_address, split_calldata);
+    let gas_limit: u64 = env::var("SPLIT_PROXY_GAS_LIMIT")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(PROXY_DEFAULT_GAS);
+
+    let to = PROXY_FACTORY;
+    let struct_hash = create_struct_hash(
+        eoa,
+        to,
+        &proxy_data,
+        0,
+        0,
+        gas_limit,
+        &nonce,
+        RELAY_HUB,
+        relay,
+    );
+    let to_sign = eip191_hash(struct_hash);
+    let sig = signer
+        .sign_hash(&to_sign)
+        .await
+        .map_err(|e| anyhow::anyhow!("EOA 签名失败: {}", e))?;
+    let mut sig_bytes = sig.as_bytes().to_vec();
+    if sig_bytes.len() == 65 && (sig_bytes[64] == 0 || sig_bytes[64] == 1) {
+        sig_bytes[64] += 27;
+    }
+    let signature_hex = to_hex_0x(&sig_bytes);
+
+    let signature_params = serde_json::json!({
+        "gasPrice": "0",
+        "gasLimit": gas_limit.to_string(),
+        "relayerFee": "0",
+        "relayHub": format!("{:#x}", RELAY_HUB),
+        "relay": format!("{:#x}", relay)
+    });
+    let body = serde_json::json!({
+        "from": format!("{:#x}", eoa),
+        "to": format!("{:#x}", to),
+        "proxyWallet": format!("{:#x}", proxy_wallet),
+        "data": to_hex_0x(&proxy_data),
+        "nonce": nonce,
+        "signature": signature_hex,
+        "signatureParams": signature_params,
+        "type": "PROXY",
+        "metadata": "Split positions"
+    });
+    let body_str = serde_json::to_string(&body)?;
+
+    let path = RELAYER_SUBMIT;
+    let method = "POST";
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64;
     let secret_b64 = builder_secret.trim().replace('-', "+").replace('_', "/");
     let secret_bytes = base64::engine::general_purpose::STANDARD
         .decode(&secret_b64)
