@@ -63,7 +63,9 @@ impl TradingExecutor {
             .with_chain_id(Some(POLYGON));
 
         let config = Config::builder().use_server_time(false).build();
-        let mut auth_builder = Client::new("https://clob-v2.polymarket.com", config)
+        let clob_url = std::env::var("CLOB_URL")
+            .unwrap_or_else(|_| "https://clob.polymarket.com".to_string());
+        let mut auth_builder = Client::new(&clob_url, config)
             .map_err(|e| anyhow::anyhow!("创建CLOB客户端失败: {}", e))?
             .authentication_builder(&signer);
 

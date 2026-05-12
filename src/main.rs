@@ -106,7 +106,8 @@ async fn main() -> Result<()> {
 
     let signer_for_risk = LocalSigner::from_str(&config.private_key)?.with_chain_id(Some(POLYGON));
     let clob_config = ClobConfig::builder().use_server_time(true).build();
-    let mut auth_builder_risk = Client::new("https://clob-v2.polymarket.com", clob_config)?
+    let clob_url = std::env::var("CLOB_URL").unwrap_or_else(|_| "https://clob.polymarket.com".to_string());
+    let mut auth_builder_risk = Client::new(&clob_url, clob_config)?
         .authentication_builder(&signer_for_risk);
 
     // 如果提供了proxy_address，设置funder和signature_type
