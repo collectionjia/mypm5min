@@ -65,15 +65,9 @@ impl TradingExecutor {
         let config = Config::builder().use_server_time(false).build();
         let clob_url = std::env::var("CLOB_URL")
             .unwrap_or_else(|_| "https://clob.polymarket.com".to_string());
-        let api_key = std::env::var("POLYMARKET_API_KEY").ok();
         let mut auth_builder = Client::new(&clob_url, config)
             .map_err(|e| anyhow::anyhow!("创建CLOB客户端失败: {}", e))?
             .authentication_builder(&signer);
-
-        // 设置 API Key
-        if let Some(key) = api_key {
-            auth_builder = auth_builder.api_key(key);
-        }
 
         // 如果提供了proxy_address，设置funder和signature_type（按照Python SDK模式）
         if let Some(funder) = proxy_address {
